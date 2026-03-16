@@ -1,0 +1,87 @@
+graph TB
+    subgraph CLI["CLI Layer"]
+        A["sbi analyze &lt;bundle.tar.gz&gt;"]
+        B["parseArgs (Commander)"]
+        C["Output Formatters<br/>json | text | summary"]
+    end
+
+    subgraph Pipeline["Analysis Pipeline"]
+        P1["1. extractBundle"]
+        P2["2. profileBundle"]
+        P3["3. parseAnalyzers"]
+        P4["4. parseResources"]
+        P5["5. parseEvents"]
+        P6["6. parseLogs"]
+        P7["7. buildGraph"]
+    end
+
+    subgraph Ingestion["Ingestion Layer"]
+        E1["Extractor<br/>tar.gz → temp dir"]
+        E2["Manifest Builder<br/>file walk → ArtifactEntry[]"]
+        E3["Classifier<br/>path → ArtifactCategory"]
+        E4["Profiler<br/>BundleManifest → BundleProfile"]
+    end
+
+    subgraph Parsers["Structured Parsers"]
+        SP1["Analyzer Parser<br/>JSON → AnalyzerResult[]"]
+        SP2["K8s Resource Parser<br/>YAML/JSON → K8sResource[]"]
+        SP3["K8s Helpers<br/>isPodHealthy, getRestartCount,<br/>getContainerErrors"]
+        SP4["Event Parser<br/>JSON → K8sEvent[]"]
+        SP5["Timeline Builder<br/>events → sorted timeline"]
+        SP6["Log Parser<br/>text → LogFile, LogLine[]"]
+        SP7["Log Classifier<br/>LogFile → LogClassification"]
+    end
+
+    subgraph Graph["Investigation Graph & Tree"]
+        G1["InvestigationGraphImpl<br/>nodes + edges, BFS path,<br/>subgraph, serialize"]
+        G2["Finding Tree<br/>buildFindingTree,<br/>DFS/BFS traversal"]
+        G3["Chunker<br/>chunkLogFile, chunkResource,<br/>chunkAnalyzer"]
+    end
+
+    subgraph Types["Domain Types"]
+        T1["BundleManifest<br/>ArtifactEntry"]
+        T2["BundleProfile<br/>WorkloadSummary"]
+        T3["AnalyzerResult"]
+        T4["K8sResource<br/>PodStatus<br/>K8sEvent"]
+        T5["Finding<br/>Evidence"]
+        T6["GraphNode<br/>GraphEdge"]
+        T7["Chunk<br/>RetrieverInterface"]
+    end
+
+    subgraph Fixtures["Test Fixtures (3 Scenarios)"]
+        F1["wrong-db-endpoint<br/>DNS resolution failure"]
+        F2["missing-secret-crashloop<br/>CrashLoopBackOff"]
+        F3["bad-image-tag<br/>ImagePullBackOff"]
+    end
+
+    A --> B
+    B --> P1
+    P1 --> P2
+    P2 --> P3
+    P2 --> P4
+    P2 --> P5
+    P2 --> P6
+    P3 --> P7
+    P4 --> P7
+    P5 --> P7
+    P6 --> P7
+    P7 --> C
+
+    P1 --> E1
+    E1 --> E2
+    E2 --> E3
+    E3 --> E4
+
+    P3 --> SP1
+    P4 --> SP2
+    SP2 --> SP3
+    P5 --> SP4
+    SP4 --> SP5
+    P6 --> SP6
+    SP6 --> SP7
+
+    P7 --> G1
+    G1 --> G2
+    G1 --> G3
+
+    Fixtures -.->|"createTestBundle"| Pipeline
