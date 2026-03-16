@@ -1,0 +1,14 @@
+All four checks pass cleanly with 249 tests across 10 test files.
+
+## Review Summary
+
+**What I reviewed:**
+- `src/parsers/event-parser.ts` — well-structured with `normaliseToArray` handling plain arrays, EventList wrappers, and single Event documents; `mapToEvent` validates `involvedObject` before accepting a record; `parseEventsYaml` splits on `---` to handle multi-document YAML
+- `src/parsers/timeline.ts` — all 6 required functions implemented correctly; `sortEventsByTime` doesn't mutate input; `getTimestampMs` prefers `firstTimestamp` with fallback to `lastTimestamp`
+- `src/parsers/__tests__/event-parser.test.ts` — 20 tests covering raw arrays, EventList wrappers, single documents, missing timestamps, malformed inputs, empty inputs, blank content, skipping malformed event records, multi-doc YAML
+- `src/parsers/__tests__/timeline.test.ts` — 30 tests covering all 6 timeline functions with appropriate edge cases
+- `src/parsers/index.ts` — all new exports present
+
+**What I changed:** Nothing. The implementation is complete, correct, and all 249 tests pass with zero lint/typecheck/build errors. The previous agent already resolved the single-YAML-document parsing bug and added the hardening improvements described in their notes.
+
+Verdict: approve

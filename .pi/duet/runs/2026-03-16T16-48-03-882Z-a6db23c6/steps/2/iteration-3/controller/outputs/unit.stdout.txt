@@ -1,0 +1,15 @@
+
+> support-bundle-investigator@0.1.0 test
+> vitest run
+
+
+ RUN  v2.1.9 /Users/henrydegrasse/Development/GauntletAi/HPP/Replicated
+
+ ✓ test/placeholder.test.ts (1 test) 2ms
+ ✓ src/utils/__tests__/type-guards.test.ts (51 tests) 8ms
+
+ Test Files  2 passed (2)
+      Tests  52 passed (52)
+   Start at  12:12:53
+   Duration  383ms (transform 66ms, setup 0ms, collect 81ms, tests 10ms, environment 0ms, prepare 188ms)
+

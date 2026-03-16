@@ -1,0 +1,30 @@
+
+> support-bundle-investigator@0.1.0 build
+> tsup
+
+CLI Building entry: {"index":"src/index.ts","cli/run":"src/cli/run.ts"}
+CLI Using tsconfig: tsconfig.json
+CLI tsup v8.5.1
+CLI Using tsup config: /Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/tsup.config.ts
+CLI Target: es2022
+CLI Cleaning output folder
+CJS Build start
+ESM Build start
+ESM dist/index.mjs              465.00 B
+ESM dist/cli/run.mjs            1.07 KB
+ESM dist/chunk-6GYYOGQX.mjs     36.66 KB
+ESM dist/index.mjs.map          726.00 B
+ESM dist/cli/run.mjs.map        2.22 KB
+ESM dist/chunk-6GYYOGQX.mjs.map 90.44 KB
+ESM ⚡️ Build success in 22ms
+CJS dist/index.js       38.84 KB
+CJS dist/cli/run.js     38.72 KB
+CJS dist/index.js.map   91.14 KB
+CJS dist/cli/run.js.map 92.62 KB
+CJS ⚡️ Build success in 23ms
+DTS Build start
+DTS ⚡️ Build success in 1145ms
+DTS dist/cli/run.d.ts  20.00 B
+DTS dist/index.d.ts    8.38 KB
+DTS dist/cli/run.d.mts 20.00 B
+DTS dist/index.d.mts   8.38 KB

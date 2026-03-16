@@ -1,0 +1,32 @@
+All four required checks pass cleanly:
+
+- **lint** ✅ — no ESLint warnings or errors
+- **typecheck** ✅ — TypeScript compiles without errors
+- **unit** ✅ — 98/98 tests pass across 4 test files (10 ingestion tests, 36 fixture tests, 51 type-guard tests, 1 placeholder)
+- **build** ✅ — tsup produces CJS + ESM + DTS output successfully
+
+**What I reviewed:**
+
+1. **`src/ingestion/extractor.ts`** — Clean implementation: validates file readability, enforces `.tar.gz` extension, runs a pre-extraction `tar.t()` pass that checks for unsafe paths (`../`, absolute paths, drive-rooted paths) and enforces `maxSize`, then extracts and builds the manifest. Auto-created temp dirs are cleaned up on failure. Logic is correct and complete.
+
+2. **`src/ingestion/manifest.ts`** — Uses `glob('**/*', { nodir: true, dot: true, posix: true })` with sorted results for deterministic ordering, resolves all paths, collects `stat` sizes, and correctly builds the `BundleManifest`. All `ArtifactEntry` fields populated; `category` defaults to `'unknown'` as required.
+
+3. **`src/ingestion/index.ts`** — Exports both `extractBundle` and `buildManifest` with their types.
+
+4. **`src/ingestion/__tests__/extractor.test.ts`** — All 8 step-required tests are present and working:
+   - Successful extraction ✅
+   - BundleManifest with all file entries ✅
+   - Rejects non-`.tar.gz` files ✅
+   - Handles empty archive gracefully ✅
+   - Path traversal protection (explicit rejection) ✅
+   - Detects missing file ✅
+   - Detects unreadable file ✅
+   - Cleans up temp dir on failure ✅
+   - Populates file sizes correctly ✅
+   - Additional `maxSize` enforcement ✅
+
+5. **`.pi/duet/config.json`** confirmed `unit` → `npm test` (vitest), so the check mapping is correct.
+
+No changes were needed. The implementation is solid, correct, and fully satisfies the Step 4 requirements.
+
+Verdict: approve

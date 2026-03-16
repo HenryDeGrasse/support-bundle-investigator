@@ -1,0 +1,13 @@
+[33mThe CJS build of Vite's Node API is deprecated. See https://vite.dev/guide/troubleshooting.html#vite-cjs-node-api-deprecated for more details.[39m
+Usage: sbi [options] [command]
+
+Support Bundle Investigator — evidence-backed diagnosis from support bundles
+
+Options:
+  -V, --version                    output the version number
+  -h, --help                       display help for command
+
+Commands:
+  analyze [options] <bundle-path>  Analyze a support bundle .tar.gz archive
+  help [command]                   display help for command
+error: option '--format <format>' argument 'xml' is invalid. Invalid format "xml". Must be one of: json, text, summary.
