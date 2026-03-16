@@ -1,0 +1,18 @@
+[
+  {
+    "name": "deployment-status",
+    "insight": {
+      "severity": "error",
+      "primary": "Pod in CrashLoopBackOff",
+      "detail": "Pod 'app-pod' in namespace 'default' is in CrashLoopBackOff with 8 restarts. The container exits immediately on startup, likely due to a missing required secret."
+    }
+  },
+  {
+    "name": "secret-existence",
+    "insight": {
+      "severity": "error",
+      "primary": "Required Secret 'app-credentials' Not Found",
+      "detail": "The deployment 'app-deployment' references secret 'app-credentials' but it does not exist in namespace 'default'. Create the secret to resolve the CrashLoopBackOff."
+    }
+  }
+]

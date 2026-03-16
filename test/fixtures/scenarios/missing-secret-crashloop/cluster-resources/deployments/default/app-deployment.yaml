@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-deployment
+  namespace: default
+  creationTimestamp: "2024-01-15T13:29:00Z"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: myapp
+  template:
+    metadata:
+      labels:
+        app: myapp
+    spec:
+      containers:
+        - name: app
+          image: myapp:v1.2.3
+          envFrom:
+            - secretRef:
+                name: app-credentials
+status:
+  replicas: 1
+  updatedReplicas: 1
+  readyReplicas: 0
+  availableReplicas: 0
+  conditions:
+    - type: Available
+      status: "False"
+      reason: MinimumReplicasUnavailable
+      message: "Deployment does not have minimum availability."
+      lastUpdateTime: "2024-01-15T13:30:00Z"
+      lastTransitionTime: "2024-01-15T13:30:00Z"

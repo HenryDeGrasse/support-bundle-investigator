@@ -1,0 +1,6 @@
+2024-01-15T13:30:03Z INFO  Starting application v1.2.3
+2024-01-15T13:30:03Z INFO  Loading configuration from environment
+2024-01-15T13:30:03Z ERROR Error: secret app-credentials not found
+2024-01-15T13:30:03Z ERROR     at loadSecrets (/app/src/config.js:42:11)
+2024-01-15T13:30:03Z ERROR     at bootstrap (/app/src/index.js:15:5)
+2024-01-15T13:30:03Z FATAL Application startup failed — exiting with code 1

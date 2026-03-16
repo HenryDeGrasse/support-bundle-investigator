@@ -1,0 +1,18 @@
+[
+  {
+    "name": "database-connectivity",
+    "insight": {
+      "severity": "warn",
+      "primary": "Database Endpoint Unreachable",
+      "detail": "The application cannot reach the configured database endpoint 'db.internal:5432'. DNS resolution failed: lookup db.internal: no such host. Verify the DB_HOST environment variable and ensure the database service exists in the cluster."
+    }
+  },
+  {
+    "name": "pod-status",
+    "insight": {
+      "severity": "warn",
+      "primary": "Application Pod Not Ready",
+      "detail": "Pod 'app-pod' in namespace 'default' is Running but not Ready. The readiness probe is failing, likely due to the database connectivity issue."
+    }
+  }
+]

@@ -1,0 +1,23 @@
+2024-01-15T10:00:10Z INFO  Starting application v1.2.3
+2024-01-15T10:00:10Z INFO  Loading configuration from environment
+2024-01-15T10:00:11Z INFO  DB_HOST=db.internal DB_PORT=5432
+2024-01-15T10:00:11Z INFO  Connecting to database at db.internal:5432
+2024-01-15T10:00:16Z ERROR dial tcp: lookup db.internal: no such host
+2024-01-15T10:00:16Z WARN  Retrying database connection (attempt 1/5)
+2024-01-15T10:00:21Z ERROR dial tcp: lookup db.internal: no such host
+2024-01-15T10:00:21Z WARN  Retrying database connection (attempt 2/5)
+2024-01-15T10:00:26Z ERROR dial tcp: lookup db.internal: no such host
+2024-01-15T10:00:26Z WARN  Retrying database connection (attempt 3/5)
+2024-01-15T10:00:31Z ERROR dial tcp: lookup db.internal: no such host
+2024-01-15T10:00:31Z WARN  Retrying database connection (attempt 4/5)
+2024-01-15T10:00:36Z ERROR dial tcp: lookup db.internal: no such host
+2024-01-15T10:00:36Z WARN  Retrying database connection (attempt 5/5)
+2024-01-15T10:00:36Z ERROR Failed to connect to database after 5 attempts: dial tcp: lookup db.internal: no such host
+2024-01-15T10:00:36Z INFO  Starting HTTP server on :8080 (degraded mode — no DB)
+2024-01-15T10:00:37Z INFO  HTTP server listening
+2024-01-15T10:01:00Z ERROR connection timeout: context deadline exceeded while connecting to db.internal:5432
+2024-01-15T10:01:30Z INFO  GET /healthz -> 503 Service Unavailable (db not connected)
+2024-01-15T10:02:00Z ERROR connection timeout: context deadline exceeded while connecting to db.internal:5432
+2024-01-15T10:02:30Z INFO  GET /healthz -> 503 Service Unavailable (db not connected)
+2024-01-15T10:03:00Z ERROR connection timeout: context deadline exceeded while connecting to db.internal:5432
+2024-01-15T10:03:30Z INFO  GET /healthz -> 503 Service Unavailable (db not connected)

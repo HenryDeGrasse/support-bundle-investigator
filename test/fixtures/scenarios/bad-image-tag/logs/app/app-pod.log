@@ -1,0 +1,8 @@
+2024-01-15T10:00:00Z INFO  Starting application v1.2.3
+2024-01-15T10:00:01Z INFO  Attempting to load configuration
+2024-01-15T10:00:02Z ERROR Failed to pull image "myapp:bad-tag-xyz": rpc error: code = Unknown desc = failed to pull and unpack image
+2024-01-15T10:00:02Z ERROR ErrImagePull: image pull failed for myapp:bad-tag-xyz
+2024-01-15T10:00:05Z WARN  Retrying image pull (attempt 1)
+2024-01-15T10:00:10Z ERROR ErrImagePull: image pull failed for myapp:bad-tag-xyz
+2024-01-15T10:00:15Z WARN  Retrying image pull (attempt 2)
+2024-01-15T10:00:20Z ERROR ImagePullBackOff: Back-off pulling image "myapp:bad-tag-xyz"
