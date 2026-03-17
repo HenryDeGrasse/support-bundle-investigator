@@ -10,9 +10,19 @@ import {
   identifyLogFiles,
   parseLogFile,
 } from '../parsers/index.js';
-import { InvestigationGraphImpl } from '../graph/index.js';
-import type { AnalyzerResult, BundleProfile, K8sEvent, K8sResource } from '../types/index.js';
+import { InvestigationGraphImpl, buildResourceGraph } from '../graph/index.js';
+import type {
+  AnalyzerResult,
+  BundleProfile,
+  Evidence,
+  Finding,
+  K8sEvent,
+  K8sResource,
+} from '../types/index.js';
 import type { LogFile } from '../parsers/index.js';
+import { runInvestigation } from '../investigators/index.js';
+import type { AIInvestigatorDeps } from '../investigators/index.js';
+import { loadAIConfig, isAIEnabled, buildChunkIndex, LexicalSearchIndex, LLMClient, EmbeddingClient, VectorStore } from '../ai/index.js';
 import {
   createTrace,
   startTraceStep,
@@ -27,9 +37,11 @@ import type { InvestigationTrace } from './trace.js';
 
 export interface PipelineOptions {
   outputDir?: string;
-  format?: 'json' | 'text' | 'summary';
+  format?: 'json' | 'text' | 'summary' | 'markdown' | 'html';
   verbose?: boolean;
   trace?: boolean;
+  /** When true, AI features are disabled regardless of API key presence. */
+  noAi?: boolean;
 }
 
 export interface PipelineResult {
@@ -38,6 +50,8 @@ export interface PipelineResult {
   resources: K8sResource[];
   events: K8sEvent[];
   logs: LogFile[];
+  /** Verified, deduplicated findings produced by the investigation pipeline. */
+  findings: Finding[];
   graph: InvestigationGraphImpl;
   trace: InvestigationTrace;
 }
@@ -50,6 +64,88 @@ function log(message: string, verbose: boolean): void {
   if (verbose) {
     console.log(`[pipeline] ${message}`);
   }
+}
+
+function addInvestigationEvidenceNode(
+  graph: InvestigationGraphImpl,
+  nodeId: string,
+  evidence: Evidence,
+): boolean {
+  if (graph.getNode(nodeId)) {
+    return false;
+  }
+
+  graph.addNode({
+    id: nodeId,
+    type: 'evidence',
+    data: evidence,
+    metadata: {
+      category: evidence.artifactType ?? 'unknown',
+      timestamp: evidence.timestamp,
+      derived: true,
+    },
+  });
+
+  return true;
+}
+
+function addInvestigationEvidenceNodes(
+  graph: InvestigationGraphImpl,
+  findings: Finding[],
+): number {
+  let addedCount = 0;
+
+  for (const finding of findings) {
+    for (const evidence of finding.evidence) {
+      if (addInvestigationEvidenceNode(graph, `evidence:${evidence.path}`, evidence)) {
+        addedCount++;
+      }
+    }
+  }
+
+  return addedCount;
+}
+
+function ensureInvestigationEdgeEndpoints(
+  graph: InvestigationGraphImpl,
+  findings: Finding[],
+  investigationEdges: ReadonlyArray<{ source: string; target: string }>,
+): number {
+  let addedCount = 0;
+  const evidenceByPath = new Map<string, Evidence>();
+
+  for (const finding of findings) {
+    for (const evidence of finding.evidence) {
+      evidenceByPath.set(`evidence:${evidence.path}`, evidence);
+    }
+  }
+
+  for (const edge of investigationEdges) {
+    for (const nodeId of [edge.source, edge.target]) {
+      if (!nodeId.startsWith('evidence:') || graph.getNode(nodeId)) {
+        continue;
+      }
+
+      const basePath = nodeId.split(':').slice(0, 2).join(':');
+      const baseEvidence = evidenceByPath.get(basePath);
+      const placeholderEvidence: Evidence = baseEvidence
+        ? {
+            ...baseEvidence,
+            note: `${baseEvidence.note} (derived graph node: ${nodeId})`,
+          }
+        : {
+            path: nodeId.slice('evidence:'.length),
+            note: `Derived investigation evidence node for ${nodeId}`,
+            artifactType: 'unknown',
+          };
+
+      if (addInvestigationEvidenceNode(graph, nodeId, placeholderEvidence)) {
+        addedCount++;
+      }
+    }
+  }
+
+  return addedCount;
 }
 
 // ---------------------------------------------------------------------------
@@ -66,9 +162,10 @@ function log(message: string, verbose: boolean): void {
  * 4. Parse K8s resource files → K8sResource[]
  * 5. Parse event files → K8sEvent[]
  * 6. Parse log files → LogFile[]
- * 7. Build investigation graph
- * 8. Build investigation trace
- * 9. Return PipelineResult
+ * 7. (AI only) Build chunk index + lexical index + LLM client → AIInvestigatorDeps
+ * 8. Build the base investigation graph from parsed artifacts
+ * 9. Run the investigation orchestrator → findings + graph updates
+ * 10. Complete the investigation trace
  *
  * @param bundlePath - Path to the `.tar.gz` support bundle archive.
  * @param options    - Optional pipeline configuration.
@@ -80,9 +177,9 @@ export async function analyzeBundlePipeline(
   const { verbose = false } = options;
   const trace = createTrace(path.resolve(bundlePath));
 
-  // `outputDir` is reserved for user-facing artifacts (result.json, trace.json).
-  // Bundle extraction always uses an internal temp directory so cleanup does not
-  // delete user-requested outputs.
+  // `outputDir` is reserved for user-facing artifacts (findings.json, report.md,
+  // report.html, trace.json).  Bundle extraction always uses an internal temp
+  // directory so cleanup does not delete user-requested outputs.
 
   // ── 1. Extract bundle ─────────────────────────────────────────────────────
   const step1 = startTraceStep(trace, 'extract');
@@ -159,7 +256,79 @@ export async function analyzeBundlePipeline(
   completeTraceStep(trace, step6, logs.length);
   log(`Parsed ${logs.length} log files`, verbose);
 
-  // ── 7. Build investigation graph ──────────────────────────────────────────
+  // ── 7. Build AI chunk index and lexical index (optional, AI-gated) ────────
+  let aiDeps: AIInvestigatorDeps | undefined;
+
+  const aiConfig = loadAIConfig({ noAi: options.noAi });
+  if (isAIEnabled(aiConfig)) {
+    const stepAI = startTraceStep(trace, 'ai-index');
+    log('Building AI chunk index…', verbose);
+
+    try {
+      const chunks = buildChunkIndex({ analyzerResults, resources, events, logs, profile });
+      const resourceGraph = buildResourceGraph(resources, events);
+      const lexicalIndex = new LexicalSearchIndex();
+      lexicalIndex.build(chunks);
+      const llmClient = new LLMClient(aiConfig);
+
+      // ── Semantic index (optional expansion layer) ──────────────────────────
+      // Attempt to embed all chunk summaries and build a vector store.
+      // If embedding fails, aiDeps is still set (without embeddingClient/
+      // vectorStore) so graph + lexical retrieval remains available.
+      let embeddingClient: EmbeddingClient | undefined;
+      let vectorStore: VectorStore | undefined;
+
+      try {
+        embeddingClient = new EmbeddingClient(aiConfig);
+        const summaries = chunks.map((c) => c.summary);
+        const embeddings = await embeddingClient.embed(summaries);
+
+        // Only build the store when at least one embedding succeeded
+        const hasValidEmbeddings = embeddings.some((e) => e.length > 0);
+        if (hasValidEmbeddings) {
+          vectorStore = new VectorStore();
+          vectorStore.addAll(chunks, embeddings);
+          log(`Semantic index built: ${vectorStore.size} embedded chunks`, verbose);
+        } else {
+          log('Semantic index skipped: no valid embeddings returned', verbose);
+          embeddingClient = undefined;
+        }
+      } catch (embeddingError) {
+        const embeddingMessage =
+          embeddingError instanceof Error ? embeddingError.message : String(embeddingError);
+        console.warn(
+          `[pipeline] Semantic embedding failed, continuing without vector store: ` +
+            embeddingMessage,
+        );
+        embeddingClient = undefined;
+        vectorStore = undefined;
+      }
+
+      aiDeps = {
+        chunkIndex: chunks,
+        resourceGraph,
+        lexicalIndex,
+        llmClient,
+        verbose,
+        ...(embeddingClient !== undefined && vectorStore !== undefined
+          ? { embeddingClient, vectorStore }
+          : {}),
+      };
+
+      completeTraceStep(trace, stepAI, chunks.length);
+      log(`AI index built: ${chunks.length} chunks`, verbose);
+    } catch (error) {
+      // Graceful degradation: AI setup failed, continue without AI
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `[pipeline] AI index build failed, continuing in heuristic-only mode: ` +
+          errorMessage,
+      );
+      completeTraceStep(trace, stepAI, 0, [errorMessage]);
+    }
+  }
+
+  // ── 8. Build investigation graph ──────────────────────────────────────────
   const step7 = startTraceStep(trace, 'build-graph');
   log('Building investigation graph…', verbose);
 
@@ -213,7 +382,71 @@ export async function analyzeBundlePipeline(
   completeTraceStep(trace, step7, graphNodeCount);
   log(`Built graph with ${graphNodeCount} nodes`, verbose);
 
-  // ── 8. Complete trace ─────────────────────────────────────────────────────
+  // ── 9. Run investigation pipeline ────────────────────────────────────────
+  const step8 = startTraceStep(trace, 'investigate');
+  log('Running investigation pipeline…', verbose);
+
+  const investigationResult = await runInvestigation(
+    {
+      analyzerResults,
+      resources,
+      events,
+      logs,
+      profile,
+    },
+    aiDeps,
+  );
+
+  const evidenceNodeCount = addInvestigationEvidenceNodes(
+    graph,
+    investigationResult.findings,
+  );
+
+  // Add finding nodes to the investigation graph.
+  for (const finding of investigationResult.findings) {
+    graph.addNode({
+      id: finding.id,
+      type: 'finding',
+      data: finding,
+      metadata: {
+        severity: finding.severity,
+        confidence: finding.confidence,
+      },
+    });
+  }
+
+  const derivedEvidenceNodeCount = ensureInvestigationEdgeEndpoints(
+    graph,
+    investigationResult.findings,
+    investigationResult.edges,
+  );
+
+  // Add graph edges discovered by investigators.
+  for (const edge of investigationResult.edges) {
+    graph.addEdge(edge);
+  }
+
+  completeTraceStep(
+    trace,
+    step8,
+    evidenceNodeCount +
+      derivedEvidenceNodeCount +
+      investigationResult.findings.length +
+      investigationResult.edges.length,
+  );
+  const aiSuffix = investigationResult.metadata.aiEnabled
+    ? `, ${investigationResult.metadata.aiFindings} AI findings`
+    : '';
+  log(
+    `Investigation: ${investigationResult.metadata.seedCount} seeds, ` +
+      `${investigationResult.metadata.rawFindingCount} raw findings → ` +
+      `${investigationResult.metadata.finalFindingCount} after verification, ` +
+      `${evidenceNodeCount + derivedEvidenceNodeCount} evidence nodes, ` +
+      `${investigationResult.edges.length} edges${aiSuffix}`,
+    verbose,
+  );
+
+  // ── 10. Complete trace ────────────────────────────────────────────────────
   completeTrace(trace, profile);
 
   return {
@@ -222,6 +455,7 @@ export async function analyzeBundlePipeline(
     resources,
     events,
     logs,
+    findings: investigationResult.findings,
     graph,
     trace,
   };

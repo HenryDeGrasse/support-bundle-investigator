@@ -15,3 +15,11 @@ export {
 export type { SerializedFindingTreeNode } from './finding-tree.js';
 
 export { chunkLogFile, chunkResource, chunkAnalyzer } from './chunker.js';
+
+export {
+  buildResourceGraph,
+  getNeighborhood,
+  getRelatedChunks,
+  parseSeedSource,
+} from './resource-graph.js';
+export type { ResourceNode, ResourceEdge, ResourceRelationshipGraph, RelationshipType } from './resource-graph.js';

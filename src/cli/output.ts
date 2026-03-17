@@ -3,13 +3,20 @@ import * as path from 'path';
 import type { BundleProfile } from '../types/index.js';
 import type { InvestigationTrace } from '../pipeline/trace.js';
 import type { PipelineResult } from '../pipeline/analyze.js';
+import {
+  buildReport,
+  generateJsonReport,
+  generateMarkdownReport,
+  generateHtmlReport,
+  writeJsonReport,
+} from '../reporters/index.js';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export interface OutputOptions {
-  format: 'json' | 'text' | 'summary';
+  format: 'json' | 'text' | 'summary' | 'markdown' | 'html';
   outputDir?: string;
   verbose?: boolean;
 }
@@ -60,8 +67,27 @@ export function printProfileSummary(profile: BundleProfile): void {
   console.log('');
 }
 
+// ---------------------------------------------------------------------------
+// File output
+// ---------------------------------------------------------------------------
+
+/**
+ * Writes the investigation trace to a JSON file in `outputDir`.
+ */
+export async function writeTraceFile(
+  trace: InvestigationTrace,
+  outputDir: string,
+): Promise<void> {
+  await fsp.mkdir(outputDir, { recursive: true });
+  const traceFile = path.join(outputDir, 'trace.json');
+  await fsp.writeFile(traceFile, JSON.stringify(trace, null, 2), 'utf-8');
+}
+
 /**
  * Prints a text summary of analysis results to stdout.
+ *
+ * @deprecated Prefer `writePipelineResult` which now uses the Markdown reporter.
+ *             Kept for backward-compatible re-exports.
  */
 export function printTextSummary(result: PipelineResult): void {
   printProfileSummary(result.profile);
@@ -86,59 +112,23 @@ export function printTextSummary(result: PipelineResult): void {
     }
     console.log('');
   }
-
-  const crashLoopPods = result.resources.filter(
-    (r) =>
-      r.kind === 'Pod' &&
-      JSON.stringify(r.status).includes('CrashLoopBackOff'),
-  );
-
-  const imagePullPods = result.resources.filter(
-    (r) =>
-      r.kind === 'Pod' &&
-      JSON.stringify(r.status).includes('ImagePullBackOff'),
-  );
-
-  if (crashLoopPods.length > 0) {
-    console.log('  🔄  CrashLoopBackOff Pods:');
-    for (const p of crashLoopPods) {
-      console.log(
-        `    - ${p.metadata.namespace ?? '_'}/${p.metadata.name}`,
-      );
-    }
-    console.log('');
-  }
-
-  if (imagePullPods.length > 0) {
-    console.log('  🚫  ImagePullBackOff Pods:');
-    for (const p of imagePullPods) {
-      console.log(
-        `    - ${p.metadata.namespace ?? '_'}/${p.metadata.name}`,
-      );
-    }
-    console.log('');
-  }
-}
-
-// ---------------------------------------------------------------------------
-// File output
-// ---------------------------------------------------------------------------
-
-/**
- * Writes the investigation trace to a JSON file in `outputDir`.
- */
-export async function writeTraceFile(
-  trace: InvestigationTrace,
-  outputDir: string,
-): Promise<void> {
-  await fsp.mkdir(outputDir, { recursive: true });
-  const traceFile = path.join(outputDir, 'trace.json');
-  await fsp.writeFile(traceFile, JSON.stringify(trace, null, 2), 'utf-8');
 }
 
 /**
  * Writes the pipeline result to disk or prints to stdout depending on the
  * output options.
+ *
+ * When `outputDir` is set, always writes all three report files:
+ *   - `findings.json`  — full structured report (via JSON reporter)
+ *   - `report.md`      — human-readable Markdown report
+ *   - `report.html`    — self-contained HTML report with embedded CSS
+ *
+ * When `outputDir` is not set, format controls stdout output:
+ *   - `json`           — prints full JSON report to stdout
+ *   - `text`           — prints Markdown report to stdout
+ *   - `markdown`       — prints Markdown report to stdout
+ *   - `html`           — prints HTML report to stdout
+ *   - `summary`        — prints bundle profile summary to stdout
  */
 export async function writePipelineResult(
   result: PipelineResult,
@@ -146,28 +136,39 @@ export async function writePipelineResult(
 ): Promise<void> {
   const { format, outputDir } = options;
 
-  if (format === 'json') {
-    const output = {
-      profile: result.profile,
-      analyzerResults: result.analyzerResults,
-      resourceCount: result.resources.length,
-      eventCount: result.events.length,
-      logCount: result.logs.length,
-      graphNodeCount: result.graph.nodes.size,
-      trace: result.trace,
-    };
+  if (outputDir) {
+    // Always write all three report files when an output directory is provided.
+    const resolvedDir = path.resolve(outputDir);
+    await fsp.mkdir(resolvedDir, { recursive: true });
 
-    if (outputDir) {
-      await fsp.mkdir(outputDir, { recursive: true });
-      const outFile = path.join(outputDir, 'result.json');
-      await fsp.writeFile(outFile, JSON.stringify(output, null, 2), 'utf-8');
-      console.log(`Results written to ${outFile}`);
-    } else {
-      console.log(JSON.stringify(output, null, 2));
-    }
-  } else if (format === 'text') {
-    printTextSummary(result);
-  } else if (format === 'summary') {
+    const report = buildReport(result);
+
+    await writeJsonReport(report, resolvedDir);
+
+    const mdPath = path.join(resolvedDir, 'report.md');
+    await fsp.writeFile(mdPath, generateMarkdownReport(report), 'utf-8');
+
+    const htmlPath = path.join(resolvedDir, 'report.html');
+    await fsp.writeFile(htmlPath, generateHtmlReport(report), 'utf-8');
+
+    console.log(`Reports written to ${resolvedDir}: findings.json, report.md, report.html`);
+    return;
+  }
+
+  // No outputDir — print to stdout based on format.
+  if (format === 'summary') {
     printProfileSummary(result.profile);
+    return;
+  }
+
+  const report = buildReport(result);
+
+  if (format === 'json') {
+    console.log(generateJsonReport(report));
+  } else if (format === 'html') {
+    console.log(generateHtmlReport(report));
+  } else {
+    // 'text' | 'markdown'
+    console.log(generateMarkdownReport(report));
   }
 }

@@ -8,6 +8,7 @@ import { writePipelineResult, writeTraceFile } from './output.js';
  */
 export async function runCli(argv: string[] = process.argv): Promise<number> {
   let args;
+  let result: Awaited<ReturnType<typeof analyzeBundlePipeline>> | undefined;
 
   try {
     args = parseArgs(argv);
@@ -22,11 +23,11 @@ export async function runCli(argv: string[] = process.argv): Promise<number> {
   }
 
   try {
-    const result = await analyzeBundlePipeline(args.bundlePath, {
+    result = await analyzeBundlePipeline(args.bundlePath, {
       outputDir: args.outputDir,
-      format: args.format,
       verbose: args.verbose,
       trace: args.trace,
+      noAi: args.noAi,
     });
 
     await writePipelineResult(result, {
@@ -39,10 +40,13 @@ export async function runCli(argv: string[] = process.argv): Promise<number> {
       await writeTraceFile(result.trace, args.outputDir);
     }
 
-    await cleanupPipelineResult(result);
     return 0;
   } catch (err) {
     console.error('Error:', (err as Error).message);
     return 1;
+  } finally {
+    if (result) {
+      await cleanupPipelineResult(result);
+    }
   }
 }

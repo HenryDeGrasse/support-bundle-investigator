@@ -12,7 +12,9 @@
     "lint": "eslint \"src/**/*.ts\" \"test/**/*.ts\" --max-warnings 0",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "build": "tsup"
+    "unit": "vitest run",
+    "build": "tsup",
+    "benchmark:hypotheses": "node scripts/benchmark-hypotheses.mjs"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
@@ -29,6 +31,7 @@
     "commander": "^12.0.0",
     "glob": "^11.0.0",
     "js-yaml": "^4.1.0",
+    "openai": "^6.31.0",
     "tar": "^7.0.0"
   }
 }

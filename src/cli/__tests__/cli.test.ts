@@ -59,6 +59,16 @@ describe('parseArgs()', () => {
     expect(result.format).toBe('summary');
   });
 
+  it('accepts --format markdown flag', () => {
+    const result = parseArgs(argv('analyze', 'bundle.tar.gz', '--format', 'markdown'));
+    expect(result.format).toBe('markdown');
+  });
+
+  it('accepts --format html flag', () => {
+    const result = parseArgs(argv('analyze', 'bundle.tar.gz', '--format', 'html'));
+    expect(result.format).toBe('html');
+  });
+
   it('accepts --verbose flag', () => {
     const result = parseArgs(argv('analyze', 'bundle.tar.gz', '--verbose'));
     expect(result.verbose).toBe(true);
@@ -87,6 +97,25 @@ describe('parseArgs()', () => {
     expect(result.format).toBe('json');
     expect(result.verbose).toBe(true);
     expect(result.trace).toBe(true);
+  });
+
+  it('defaults noAi to false when --no-ai is omitted', () => {
+    const result = parseArgs(argv('analyze', 'bundle.tar.gz'));
+    expect(result.noAi).toBe(false);
+  });
+
+  it('sets noAi to true when --no-ai flag is passed', () => {
+    const result = parseArgs(argv('analyze', 'bundle.tar.gz', '--no-ai'));
+    expect(result.noAi).toBe(true);
+  });
+
+  it('accepts --no-ai together with other flags', () => {
+    const result = parseArgs(
+      argv('analyze', 'bundle.tar.gz', '--verbose', '--no-ai', '--format', 'json'),
+    );
+    expect(result.noAi).toBe(true);
+    expect(result.verbose).toBe(true);
+    expect(result.format).toBe('json');
   });
 
   // ── Error cases ─────────────────────────────────────────────────────────

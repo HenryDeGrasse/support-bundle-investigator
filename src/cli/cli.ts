@@ -4,7 +4,7 @@ import { Command, CommanderError, InvalidArgumentError } from 'commander';
 // Types
 // ---------------------------------------------------------------------------
 
-export type OutputFormat = 'json' | 'text' | 'summary';
+export type OutputFormat = 'json' | 'text' | 'summary' | 'markdown' | 'html';
 
 export interface ParsedArgs {
   bundlePath: string;
@@ -12,13 +12,14 @@ export interface ParsedArgs {
   format: OutputFormat;
   verbose: boolean;
   trace: boolean;
+  noAi: boolean;
 }
 
 // ---------------------------------------------------------------------------
 // Validators
 // ---------------------------------------------------------------------------
 
-const VALID_FORMATS: OutputFormat[] = ['json', 'text', 'summary'];
+const VALID_FORMATS: OutputFormat[] = ['json', 'text', 'summary', 'markdown', 'html'];
 
 function validateFormat(value: string): OutputFormat {
   if (!VALID_FORMATS.includes(value as OutputFormat)) {
@@ -53,6 +54,8 @@ export function parseArgs(argv: string[] = process.argv): ParsedArgs {
     format?: OutputFormat;
     verbose?: boolean;
     trace?: boolean;
+    /** Commander --no-ai stores the negation under property `ai` */
+    ai?: boolean;
   } = {};
 
   const program = new Command();
@@ -73,16 +76,17 @@ export function parseArgs(argv: string[] = process.argv): ParsedArgs {
     .argument('<bundle-path>', 'Path to the support bundle .tar.gz file')
     .option(
       '--output-dir <dir>',
-      'Directory to write output artifacts (default: temp directory)',
+      'Directory to write output artifacts (findings.json, report.md, report.html, optional trace.json)',
     )
     .option(
       '--format <format>',
-      'Output format: json | text | summary (default: text)',
+      'Output format: json | text | summary | markdown | html (default: text)',
       validateFormat,
       'text' as OutputFormat,
     )
     .option('--verbose', 'Enable verbose pipeline logging', false)
     .option('--trace', 'Write a JSON trace file to the output directory', false)
+    .option('--no-ai', 'Disable AI features and run in heuristic-only mode')
     .exitOverride()
     .action((bp: string, opts: typeof capturedOpts) => {
       bundlePath = bp;
@@ -107,6 +111,8 @@ export function parseArgs(argv: string[] = process.argv): ParsedArgs {
     format: capturedOpts.format ?? 'text',
     verbose: capturedOpts.verbose ?? false,
     trace: capturedOpts.trace ?? false,
+    // Commander's --no-ai sets `ai` to false; absence means AI is not disabled
+    noAi: capturedOpts.ai === false,
   };
 }
 

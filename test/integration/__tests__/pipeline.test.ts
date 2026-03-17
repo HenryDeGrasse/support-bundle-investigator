@@ -164,6 +164,7 @@ describe('Pipeline Integration', () => {
       expect(stepNames).toContain('parse-events');
       expect(stepNames).toContain('parse-logs');
       expect(stepNames).toContain('build-graph');
+      expect(stepNames).toContain('investigate');
     });
 
     it('trace steps record artifacts processed', async () => {
@@ -177,14 +178,15 @@ describe('Pipeline Integration', () => {
   });
 
   describe('investigation graph', () => {
-    it('graph contains nodes for all parsed artifacts', async () => {
+    it('graph contains nodes for all parsed artifacts plus investigation findings', async () => {
       const result = await runPipeline(wrongDbBundlePath);
-      const { graph, analyzerResults, resources, events, logs } = result;
+      const { graph, analyzerResults, resources, events, logs, findings } = result;
 
       expect(graph.nodes.size).toBeGreaterThan(0);
-      const expectedNodeCount =
-        analyzerResults.length + resources.length + events.length + logs.length;
-      expect(graph.nodes.size).toBe(expectedNodeCount);
+      // Base artifact nodes (analyzer, resource, event, log) + finding nodes must exist.
+      const minimumExpectedNodeCount =
+        analyzerResults.length + resources.length + events.length + logs.length + findings.length;
+      expect(graph.nodes.size).toBeGreaterThanOrEqual(minimumExpectedNodeCount);
     });
 
     it('graph nodes have valid types', async () => {
@@ -192,6 +194,87 @@ describe('Pipeline Integration', () => {
       const validTypes = new Set(['finding', 'evidence', 'artifact', 'hypothesis', 'symptom']);
       for (const node of result.graph.nodes.values()) {
         expect(validTypes.has(node.type)).toBe(true);
+      }
+    });
+
+    it('all graph edges reference nodes present in the graph', async () => {
+      const result = await runPipeline(wrongDbBundlePath);
+
+      for (const edge of result.graph.edges) {
+        expect(result.graph.getNode(edge.source)).toBeDefined();
+        expect(result.graph.getNode(edge.target)).toBeDefined();
+      }
+    });
+  });
+
+  describe('findings quality', () => {
+    it('pipeline result exposes a findings array', async () => {
+      const result = await runPipeline(wrongDbBundlePath);
+      expect(Array.isArray(result.findings)).toBe(true);
+    });
+
+    it('wrong-db pipeline produces at least one finding', async () => {
+      const result = await runPipeline(wrongDbBundlePath);
+      expect(result.findings.length).toBeGreaterThan(0);
+    });
+
+    it('missing-secret pipeline produces at least one finding', async () => {
+      const result = await runPipeline(missingSecretBundlePath);
+      expect(result.findings.length).toBeGreaterThan(0);
+    });
+
+    it('bad-image-tag pipeline produces at least one finding', async () => {
+      const result = await runPipeline(badImageTagBundlePath);
+      expect(result.findings.length).toBeGreaterThan(0);
+    });
+
+    it('every finding has at least one evidence entry', async () => {
+      const result = await runPipeline(wrongDbBundlePath);
+      for (const finding of result.findings) {
+        expect(finding.evidence.length).toBeGreaterThan(0);
+      }
+    });
+
+    it('every finding has at least one contradictionsChecked entry', async () => {
+      const result = await runPipeline(wrongDbBundlePath);
+      for (const finding of result.findings) {
+        expect(finding.contradictionsChecked.length).toBeGreaterThan(0);
+      }
+    });
+
+    it('every finding has a non-empty recommendedAction', async () => {
+      const result = await runPipeline(wrongDbBundlePath);
+      for (const finding of result.findings) {
+        expect(finding.recommendedAction.trim().length).toBeGreaterThan(0);
+      }
+    });
+
+    it('top finding confidence is >= 0.7 for all three scenarios', async () => {
+      const wrongDb = await runPipeline(wrongDbBundlePath);
+      const missingSecret = await runPipeline(missingSecretBundlePath);
+      const badImage = await runPipeline(badImageTagBundlePath);
+
+      expect(wrongDb.findings[0]!.confidence).toBeGreaterThanOrEqual(0.7);
+      expect(missingSecret.findings[0]!.confidence).toBeGreaterThanOrEqual(0.7);
+      expect(badImage.findings[0]!.confidence).toBeGreaterThanOrEqual(0.7);
+    });
+
+    it('findings are sorted by severity — critical/high appear before low/info', async () => {
+      const result = await runPipeline(missingSecretBundlePath);
+      const severityOrder: Record<string, number> = {
+        critical: 4, high: 3, medium: 2, low: 1, info: 0,
+      };
+      for (let i = 0; i < result.findings.length - 1; i++) {
+        const current = severityOrder[result.findings[i]!.severity] ?? 0;
+        const next = severityOrder[result.findings[i + 1]!.severity] ?? 0;
+        // Confidence descending within same severity
+        if (current === next) {
+          expect(result.findings[i]!.confidence).toBeGreaterThanOrEqual(
+            result.findings[i + 1]!.confidence,
+          );
+        } else {
+          expect(current).toBeGreaterThanOrEqual(next);
+        }
       }
     });
   });
@@ -226,8 +309,74 @@ describe('Pipeline Integration', () => {
         await cleanupPipelineResult(result);
 
         expect(fs.existsSync(extractedPath)).toBe(false);
-        expect(fs.existsSync(path.join(outputDir, 'result.json'))).toBe(true);
+        expect(fs.existsSync(path.join(outputDir, 'findings.json'))).toBe(true);
+        expect(fs.existsSync(path.join(outputDir, 'report.md'))).toBe(true);
+        expect(fs.existsSync(path.join(outputDir, 'report.html'))).toBe(true);
         expect(fs.existsSync(path.join(outputDir, 'trace.json'))).toBe(true);
+      } finally {
+        fs.rmSync(outputDir, { recursive: true, force: true });
+      }
+    });
+
+    it('findings.json written to outputDir contains valid JSON with findings array', async () => {
+      const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sbi-output-json-'));
+
+      try {
+        const result = await analyzeBundlePipeline(wrongDbBundlePath, {
+          outputDir,
+          format: 'json',
+        });
+
+        await writePipelineResult(result, { format: 'json', outputDir });
+        await cleanupPipelineResult(result);
+
+        const findingsJson = fs.readFileSync(path.join(outputDir, 'findings.json'), 'utf-8');
+        const parsed = JSON.parse(findingsJson) as Record<string, unknown>;
+        expect(Array.isArray(parsed['findings'])).toBe(true);
+        expect(typeof parsed['executiveSummary']).toBe('string');
+        expect(parsed['schemaVersion']).toBeDefined();
+      } finally {
+        fs.rmSync(outputDir, { recursive: true, force: true });
+      }
+    });
+
+    it('report.md written to outputDir contains expected Markdown sections', async () => {
+      const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sbi-output-md-'));
+
+      try {
+        const result = await analyzeBundlePipeline(wrongDbBundlePath, {
+          outputDir,
+          format: 'markdown',
+        });
+
+        await writePipelineResult(result, { format: 'markdown', outputDir });
+        await cleanupPipelineResult(result);
+
+        const mdContent = fs.readFileSync(path.join(outputDir, 'report.md'), 'utf-8');
+        expect(mdContent).toContain('# Investigation Report');
+        expect(mdContent).toContain('## Executive Summary');
+        expect(mdContent).toContain('## Findings');
+      } finally {
+        fs.rmSync(outputDir, { recursive: true, force: true });
+      }
+    });
+
+    it('report.html written to outputDir contains valid HTML', async () => {
+      const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sbi-output-html-'));
+
+      try {
+        const result = await analyzeBundlePipeline(wrongDbBundlePath, {
+          outputDir,
+          format: 'html',
+        });
+
+        await writePipelineResult(result, { format: 'html', outputDir });
+        await cleanupPipelineResult(result);
+
+        const htmlContent = fs.readFileSync(path.join(outputDir, 'report.html'), 'utf-8');
+        expect(htmlContent).toContain('<!DOCTYPE html>');
+        expect(htmlContent).toContain('<html');
+        expect(htmlContent).toContain('Investigation Report');
       } finally {
         fs.rmSync(outputDir, { recursive: true, force: true });
       }
