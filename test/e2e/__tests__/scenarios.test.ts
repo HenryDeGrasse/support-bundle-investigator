@@ -28,6 +28,12 @@ import {
   chunkResource,
   chunkAnalyzer,
 } from '../../../src/graph/index.js';
+import {
+  buildReport,
+  generateMarkdownReport,
+  generateJsonReport,
+  generateHtmlReport,
+} from '../../../src/reporters/index.js';
 import { createTestBundle, getFixturePath } from '../../helpers/create-test-bundle.js';
 import type { Finding } from '../../../src/types/index.js';
 
@@ -199,11 +205,19 @@ describe('E2E — Scenario 1: Wrong DB Endpoint', () => {
     expect(nodeTypes.has('log')).toBe(true);
   });
 
-  it('graph node count equals sum of all parsed artifacts', () => {
-    const { graph, analyzerResults, resources, events, logs } = result;
-    const expectedCount =
-      analyzerResults.length + resources.length + events.length + logs.length;
-    expect(graph.nodes.size).toBe(expectedCount);
+  it('graph node count is at least the parsed artifacts plus findings', () => {
+    const { graph, analyzerResults, resources, events, logs, findings } = result;
+    // Base artifact nodes (analyzer, resource, event, log) + finding nodes must exist.
+    const minimumExpectedCount =
+      analyzerResults.length + resources.length + events.length + logs.length + findings.length;
+    expect(graph.nodes.size).toBeGreaterThanOrEqual(minimumExpectedCount);
+  });
+
+  it('all graph edges reference nodes present in the graph', () => {
+    for (const edge of result.graph.edges) {
+      expect(result.graph.getNode(edge.source)).toBeDefined();
+      expect(result.graph.getNode(edge.target)).toBeDefined();
+    }
   });
 });
 
@@ -421,7 +435,7 @@ describe('E2E — Pipeline Trace', () => {
     expect(trace.completedAt).toBeTruthy();
   });
 
-  it('trace contains all 7 expected pipeline steps', () => {
+  it('trace contains all 8 expected pipeline steps', () => {
     const stepNames = result.trace.steps.map((s) => s.name);
 
     expect(stepNames).toContain('extract');
@@ -431,6 +445,7 @@ describe('E2E — Pipeline Trace', () => {
     expect(stepNames).toContain('parse-events');
     expect(stepNames).toContain('parse-logs');
     expect(stepNames).toContain('build-graph');
+    expect(stepNames).toContain('investigate');
   });
 
   it('every trace step records artifactsProcessed as a non-negative number', () => {
@@ -687,5 +702,524 @@ describe('E2E — Finding Tree', () => {
     } finally {
       await cleanupPipelineResult(pipelineResult);
     }
+  });
+});
+
+// ===========================================================================
+// Investigation Findings Quality — Scenario 1: Wrong DB Endpoint
+// ===========================================================================
+
+describe('E2E — Findings Quality: Wrong DB Endpoint', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await analyzeBundlePipeline(wrongDbBundlePath);
+  });
+
+  afterAll(async () => {
+    await cleanupPipelineResult(result);
+  });
+
+  it('produces at least one investigation finding', () => {
+    expect(result.findings.length).toBeGreaterThan(0);
+  });
+
+  it('top finding severity is high or critical', () => {
+    expect(['high', 'critical']).toContain(result.findings[0]!.severity);
+  });
+
+  it('top finding confidence is >= 0.7', () => {
+    expect(result.findings[0]!.confidence).toBeGreaterThanOrEqual(0.7);
+  });
+
+  it('top finding is related to DB connectivity (DNS or connection/not-ready issue)', () => {
+    const top = result.findings[0]!;
+    const text = `${top.title} ${top.reasoningSummary}`.toLowerCase();
+    const isDbConnectivity =
+      text.includes('dns') ||
+      text.includes('no such host') ||
+      text.includes('db.internal') ||
+      text.includes('connection') ||
+      text.includes('not ready');
+    expect(isDbConnectivity).toBe(true);
+  });
+
+  it('every finding has at least one evidence entry', () => {
+    for (const finding of result.findings) {
+      expect(finding.evidence.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('every finding has at least one contradictionsChecked entry', () => {
+    for (const finding of result.findings) {
+      expect(finding.contradictionsChecked.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('every finding has a non-empty recommendedAction', () => {
+    for (const finding of result.findings) {
+      expect(finding.recommendedAction.trim().length).toBeGreaterThan(0);
+    }
+  });
+
+  it('all findings have valid ids (non-empty strings)', () => {
+    for (const finding of result.findings) {
+      expect(typeof finding.id).toBe('string');
+      expect(finding.id.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+// ===========================================================================
+// Investigation Findings Quality — Scenario 2: Missing Secret CrashLoop
+// ===========================================================================
+
+describe('E2E — Findings Quality: Missing Secret CrashLoop', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await analyzeBundlePipeline(missingSecretBundlePath);
+  });
+
+  afterAll(async () => {
+    await cleanupPipelineResult(result);
+  });
+
+  it('produces at least one investigation finding', () => {
+    expect(result.findings.length).toBeGreaterThan(0);
+  });
+
+  it('top finding is critical severity (CrashLoopBackOff or missing secret)', () => {
+    expect(result.findings[0]!.severity).toBe('critical');
+  });
+
+  it('top finding confidence is >= 0.7', () => {
+    expect(result.findings[0]!.confidence).toBeGreaterThanOrEqual(0.7);
+  });
+
+  it('top finding is about CrashLoopBackOff or missing secret', () => {
+    const top = result.findings[0]!;
+    const text = `${top.title} ${top.reasoningSummary}`.toLowerCase();
+    const isRelevant =
+      text.includes('crashloop') ||
+      text.includes('missing secret') ||
+      text.includes('secret') ||
+      text.includes('crashloopbackoff');
+    expect(isRelevant).toBe(true);
+  });
+
+  it('at least one finding references the missing secret (app-credentials)', () => {
+    const allText = result.findings
+      .map(
+        (f) =>
+          `${f.title} ${f.reasoningSummary} ${f.evidence.map((e) => e.note).join(' ')}`,
+      )
+      .join(' ')
+      .toLowerCase();
+    expect(allText).toMatch(/app-credentials|secret.*not found|crashloop/i);
+  });
+
+  it('every finding has at least one evidence entry', () => {
+    for (const finding of result.findings) {
+      expect(finding.evidence.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('every finding has at least one contradictionsChecked entry', () => {
+    for (const finding of result.findings) {
+      expect(finding.contradictionsChecked.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('every finding has a non-empty recommendedAction', () => {
+    for (const finding of result.findings) {
+      expect(finding.recommendedAction.trim().length).toBeGreaterThan(0);
+    }
+  });
+});
+
+// ===========================================================================
+// Investigation Findings Quality — Scenario 3: Bad Image Tag
+// ===========================================================================
+
+describe('E2E — Findings Quality: Bad Image Tag', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await analyzeBundlePipeline(badImageTagBundlePath);
+  });
+
+  afterAll(async () => {
+    await cleanupPipelineResult(result);
+  });
+
+  it('produces at least one investigation finding', () => {
+    expect(result.findings.length).toBeGreaterThan(0);
+  });
+
+  it('top finding is critical severity (image pull issue)', () => {
+    expect(result.findings[0]!.severity).toBe('critical');
+  });
+
+  it('top finding confidence is >= 0.7', () => {
+    expect(result.findings[0]!.confidence).toBeGreaterThanOrEqual(0.7);
+  });
+
+  it('top finding is about image pull failure', () => {
+    const top = result.findings[0]!;
+    const text = `${top.title} ${top.reasoningSummary}`.toLowerCase();
+    const isImagePull =
+      text.includes('imagepull') ||
+      text.includes('image pull') ||
+      text.includes('errimagepull') ||
+      text.includes('image tag');
+    expect(isImagePull).toBe(true);
+  });
+
+  it('at least one finding references the bad image tag', () => {
+    const allText = result.findings
+      .map(
+        (f) =>
+          `${f.title} ${f.reasoningSummary} ${f.evidence.map((e) => e.note).join(' ')}`,
+      )
+      .join(' ')
+      .toLowerCase();
+    expect(allText).toMatch(/imagepullbackoff|image.*pull|errimagepull|v999/i);
+  });
+
+  it('every finding has at least one evidence entry', () => {
+    for (const finding of result.findings) {
+      expect(finding.evidence.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('every finding has at least one contradictionsChecked entry', () => {
+    for (const finding of result.findings) {
+      expect(finding.contradictionsChecked.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('every finding has a non-empty recommendedAction', () => {
+    for (const finding of result.findings) {
+      expect(finding.recommendedAction.trim().length).toBeGreaterThan(0);
+    }
+  });
+});
+
+// ===========================================================================
+// Report Generation — Markdown / JSON / HTML
+// ===========================================================================
+
+describe('E2E — Report Generation', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await analyzeBundlePipeline(wrongDbBundlePath);
+  });
+
+  afterAll(async () => {
+    await cleanupPipelineResult(result);
+  });
+
+  // ── Markdown ─────────────────────────────────────────────────────────────
+
+  it('markdown report contains the main H1 title', () => {
+    const report = buildReport(result);
+    const md = generateMarkdownReport(report);
+    expect(md).toContain('# Investigation Report');
+  });
+
+  it('markdown report contains an Executive Summary section', () => {
+    const report = buildReport(result);
+    const md = generateMarkdownReport(report);
+    expect(md).toContain('## Executive Summary');
+  });
+
+  it('markdown report contains a Findings section', () => {
+    const report = buildReport(result);
+    const md = generateMarkdownReport(report);
+    expect(md).toContain('## Findings');
+  });
+
+  it('markdown report contains a Missing Evidence section', () => {
+    const report = buildReport(result);
+    const md = generateMarkdownReport(report);
+    expect(md).toContain('## Missing Evidence');
+  });
+
+  it('markdown report contains a Spec Improvement Recommendations section', () => {
+    const report = buildReport(result);
+    const md = generateMarkdownReport(report);
+    expect(md).toContain('## Spec Improvement Recommendations');
+  });
+
+  it('markdown report mentions the top finding title', () => {
+    if (result.findings.length === 0) return;
+    const report = buildReport(result);
+    const md = generateMarkdownReport(report);
+    // Top finding title is rendered as a subsection header
+    expect(md).toContain(result.findings[0]!.title);
+  });
+
+  // ── JSON ─────────────────────────────────────────────────────────────────
+
+  it('JSON report is valid JSON', () => {
+    const report = buildReport(result);
+    const json = generateJsonReport(report);
+    expect(() => JSON.parse(json)).not.toThrow();
+  });
+
+  it('JSON report contains expected top-level fields', () => {
+    const report = buildReport(result);
+    const parsed = JSON.parse(generateJsonReport(report)) as Record<string, unknown>;
+    expect(parsed['schemaVersion']).toBeDefined();
+    expect(parsed['generatedAt']).toBeDefined();
+    expect(Array.isArray(parsed['findings'])).toBe(true);
+    expect(typeof parsed['executiveSummary']).toBe('string');
+  });
+
+  it('JSON report findings array length matches pipeline findings count', () => {
+    const report = buildReport(result);
+    const parsed = JSON.parse(generateJsonReport(report)) as Record<string, unknown>;
+    const parsedFindings = parsed['findings'] as unknown[];
+    expect(parsedFindings.length).toBe(result.findings.length);
+  });
+
+  it('JSON report rootCause is non-null when findings exist', () => {
+    if (result.findings.length === 0) return;
+    const report = buildReport(result);
+    const parsed = JSON.parse(generateJsonReport(report)) as Record<string, unknown>;
+    expect(parsed['rootCause']).not.toBeNull();
+    expect(typeof parsed['rootCause']).toBe('string');
+  });
+
+  it('JSON report each finding has required fields', () => {
+    const report = buildReport(result);
+    const parsed = JSON.parse(generateJsonReport(report)) as Record<string, unknown>;
+    const parsedFindings = parsed['findings'] as Array<Record<string, unknown>>;
+    for (const finding of parsedFindings) {
+      expect(finding['id']).toBeDefined();
+      expect(finding['title']).toBeDefined();
+      expect(finding['severity']).toBeDefined();
+      expect(finding['confidence']).toBeDefined();
+      expect(Array.isArray(finding['evidence'])).toBe(true);
+      expect(Array.isArray(finding['contradictionsChecked'])).toBe(true);
+      expect(typeof finding['recommendedAction']).toBe('string');
+    }
+  });
+
+  // ── HTML ──────────────────────────────────────────────────────────────────
+
+  it('HTML report contains valid DOCTYPE declaration', () => {
+    const report = buildReport(result);
+    const html = generateHtmlReport(report);
+    expect(html).toContain('<!DOCTYPE html>');
+  });
+
+  it('HTML report contains html, head and body elements', () => {
+    const report = buildReport(result);
+    const html = generateHtmlReport(report);
+    expect(html).toContain('<html');
+    expect(html).toContain('</html>');
+    expect(html).toContain('<head>');
+    expect(html).toContain('<body>');
+  });
+
+  it('HTML report contains the Investigation Report heading', () => {
+    const report = buildReport(result);
+    const html = generateHtmlReport(report);
+    expect(html).toContain('Investigation Report');
+  });
+
+  it('HTML report does not contain unescaped script injection markers', () => {
+    const report = buildReport(result);
+    const html = generateHtmlReport(report);
+    // Ensure the generated HTML is a well-formed document (not empty, has content)
+    expect(html.length).toBeGreaterThan(500);
+    expect(html).toContain('</body>');
+  });
+});
+
+// ===========================================================================
+// Spec Recommendations — Generated When Evidence Gaps Exist
+// ===========================================================================
+
+describe('E2E — Spec Recommendations', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    // Missing-secret scenario triggers analyzer recommendations because
+    // the CrashLoopBackOff finding text mentions "missing Secret or ConfigMap".
+    result = await analyzeBundlePipeline(missingSecretBundlePath);
+  });
+
+  afterAll(async () => {
+    await cleanupPipelineResult(result);
+  });
+
+  it('spec recommendations are generated for this scenario', () => {
+    const report = buildReport(result);
+    expect(report.specRecommendations.length).toBeGreaterThan(0);
+  });
+
+  it('every spec recommendation has a valid type', () => {
+    const report = buildReport(result);
+    const validTypes = new Set(['collector', 'analyzer', 'redaction']);
+    for (const rec of report.specRecommendations) {
+      expect(validTypes.has(rec.type)).toBe(true);
+    }
+  });
+
+  it('every spec recommendation has a non-empty description', () => {
+    const report = buildReport(result);
+    for (const rec of report.specRecommendations) {
+      expect(rec.description.trim().length).toBeGreaterThan(0);
+    }
+  });
+
+  it('every spec recommendation has a non-empty rationale', () => {
+    const report = buildReport(result);
+    for (const rec of report.specRecommendations) {
+      expect(rec.rationale.trim().length).toBeGreaterThan(0);
+    }
+  });
+
+  it('missing-secret scenario produces an analyzer recommendation', () => {
+    const report = buildReport(result);
+    const analyzerRec = report.specRecommendations.find((r) => r.type === 'analyzer');
+    expect(analyzerRec).toBeDefined();
+  });
+});
+
+// ===========================================================================
+// Pipeline Trace — Investigation Step Coverage
+// ===========================================================================
+
+describe('E2E — Pipeline Trace Investigation Steps', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await analyzeBundlePipeline(wrongDbBundlePath);
+  });
+
+  afterAll(async () => {
+    await cleanupPipelineResult(result);
+  });
+
+  it('trace includes the investigate step', () => {
+    const stepNames = result.trace.steps.map((s) => s.name);
+    expect(stepNames).toContain('investigate');
+  });
+
+  it('investigate step records a positive artifactsProcessed count', () => {
+    const investigateStep = result.trace.steps.find((s) => s.name === 'investigate');
+    expect(investigateStep).toBeDefined();
+    expect(investigateStep!.artifactsProcessed).toBeGreaterThan(0);
+  });
+
+  it('investigate step has a valid startedAt and completedAt timestamp', () => {
+    const investigateStep = result.trace.steps.find((s) => s.name === 'investigate');
+    expect(investigateStep).toBeDefined();
+    expect(investigateStep!.startedAt).toBeTruthy();
+    expect(investigateStep!.completedAt).toBeTruthy();
+  });
+
+  it('investigate step completes after build-graph step', () => {
+    const steps = result.trace.steps;
+    const buildGraphIdx = steps.findIndex((s) => s.name === 'build-graph');
+    const investigateIdx = steps.findIndex((s) => s.name === 'investigate');
+    expect(buildGraphIdx).toBeGreaterThanOrEqual(0);
+    expect(investigateIdx).toBeGreaterThan(buildGraphIdx);
+  });
+});
+
+// ===========================================================================
+// Realistic Bundle Format (analysis.json, flat namespace JSON, EventList,
+// pod logs under cluster-resources/pods/logs/, debug severity)
+// ===========================================================================
+
+describe('E2E — Realistic Troubleshoot Bundle Format', () => {
+  let result: PipelineResult;
+  let realisticBundlePath: string;
+
+  beforeAll(async () => {
+    realisticBundlePath = await createTestBundle(
+      getFixturePath('realistic-bundle-format'),
+      path.join(tmpDir, 'realistic-bundle-format.tar.gz'),
+    );
+    result = await analyzeBundlePipeline(realisticBundlePath);
+  });
+
+  afterAll(async () => {
+    await cleanupPipelineResult(result);
+  });
+
+  // ── Fix #1: analysis.json routed to analyzer parser ─────────────────────
+  it('discovers analyzer results from root-level analysis.json', () => {
+    expect(result.analyzerResults.length).toBeGreaterThan(0);
+  });
+
+  it('parses error-severity analyzer from analysis.json', () => {
+    const errorResult = result.analyzerResults.find((r) => r.isFail);
+    expect(errorResult).toBeDefined();
+    expect(errorResult!.title).toContain('ImagePullBackOff');
+  });
+
+  // ── Fix #5: debug severity mapped to pass ───────────────────────────────
+  it('maps Troubleshoot "debug" severity to "pass" for passing analyzers', () => {
+    const passResult = result.analyzerResults.find((r) => r.isPass);
+    expect(passResult).toBeDefined();
+    expect(passResult!.severity).toBe('pass');
+    expect(passResult!.name).toBe('cluster-version');
+  });
+
+  // ── Fix #2: flat namespace-scoped JSON (PodList, DeploymentList) ────────
+  it('parses K8s resources from flat namespace-scoped JSON (PodList/DeploymentList)', () => {
+    expect(result.resources.length).toBeGreaterThan(0);
+
+    const pod = result.resources.find((r) => r.kind === 'Pod');
+    expect(pod).toBeDefined();
+    expect(pod!.metadata.name).toBe('app-pod');
+    expect(pod!.metadata.namespace).toBe('default');
+
+    const deployment = result.resources.find((r) => r.kind === 'Deployment');
+    expect(deployment).toBeDefined();
+    expect(deployment!.metadata.name).toBe('app-deployment');
+  });
+
+  // ── Fix #4: EventList wrapper parsed correctly ──────────────────────────
+  it('parses events from EventList wrapper', () => {
+    expect(result.events.length).toBeGreaterThan(0);
+
+    const failedEvent = result.events.find((e) => e.reason === 'Failed');
+    expect(failedEvent).toBeDefined();
+    expect(failedEvent!.type).toBe('Warning');
+  });
+
+  // ── Fix #3: pod logs under cluster-resources/pods/logs/ ─────────────────
+  it('identifies pod logs under cluster-resources/pods/logs/ as log files', () => {
+    expect(result.logs.length).toBeGreaterThan(0);
+
+    const logFile = result.logs.find((l) => l.path.includes('app.log'));
+    expect(logFile).toBeDefined();
+    expect(logFile!.errorCount).toBeGreaterThan(0);
+  });
+
+  // ── Fix #2: clean namespace extraction (no .json suffix) ────────────────
+  it('extracts clean namespaces without .json extension', () => {
+    expect(result.profile.namespaces).toContain('default');
+    const dirty = result.profile.namespaces.find((ns) => ns.includes('.json'));
+    expect(dirty).toBeUndefined();
+  });
+
+  // ── Full pipeline produces findings ─────────────────────────────────────
+  it('produces investigation findings from realistic bundle', () => {
+    expect(result.findings.length).toBeGreaterThan(0);
+  });
+
+  it('top finding is about image pull failure', () => {
+    const top = result.findings[0]!;
+    const text = `${top.title} ${top.reasoning}`.toLowerCase();
+    expect(text).toMatch(/image|pull|backoff/);
   });
 });

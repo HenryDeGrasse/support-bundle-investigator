@@ -251,6 +251,32 @@ describe('parseAnalyzerJson', () => {
 
     expect(results[0]?.severity).toBe('info');
   });
+
+  // ── Fix #6: Troubleshoot uses "debug" severity for passing analyzers ────
+  it('maps Troubleshoot "debug" severity to "pass"', () => {
+    const json = JSON.stringify([
+      { name: 'passing-check', insight: { severity: 'debug', primary: 'All Good', detail: 'Everything is fine' } },
+    ]);
+
+    const results = parseAnalyzerJson(json);
+
+    expect(results[0]?.severity).toBe('pass');
+    expect(results[0]?.isPass).toBe(true);
+    expect(results[0]?.isFail).toBe(false);
+    expect(results[0]?.isWarn).toBe(false);
+  });
+
+  it('maps "fail" severity to "error"', () => {
+    const json = JSON.stringify([
+      { name: 'failing-check', insight: { severity: 'fail', primary: 'Bad', detail: 'Something is wrong' } },
+    ]);
+
+    const results = parseAnalyzerJson(json);
+
+    expect(results[0]?.severity).toBe('error');
+    expect(results[0]?.isFail).toBe(true);
+    expect(results[0]?.isPass).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

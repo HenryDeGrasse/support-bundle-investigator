@@ -28,14 +28,37 @@ function zeroCounts(): Record<ArtifactCategory, number> {
 }
 
 /**
+ * Strips a `.json` or `.yaml`/`.yml` extension from a filename.
+ * Returns the input unchanged if it has no recognised extension.
+ */
+function stripResourceExtension(name: string): string {
+  return name.replace(/\.(json|yaml|yml)$/i, '');
+}
+
+/**
+ * Returns true when the segment looks like a file (has a recognised
+ * resource-file extension) rather than a bare directory name.
+ */
+function isResourceFile(segment: string): boolean {
+  return /\.(json|yaml|yml)$/i.test(segment);
+}
+
+/**
  * Extracts a namespace string from a classified {@link ArtifactEntry}.
  *
- * - For kubernetes-resource files the path structure is:
- *   `…/cluster-resources/<kind>/<namespace>/<file>`
- * - For event files the path structure is:
- *   `…/cluster-resources/events/<namespace>.{json,yaml}`
+ * Supports two path layouts produced by the Troubleshoot collector:
  *
- * Returns `undefined` when the path does not conform to either structure.
+ * **Flat (real bundles):**
+ *   `…/cluster-resources/<kind>/<namespace>.json`
+ *
+ * **Nested (legacy / test fixtures):**
+ *   `…/cluster-resources/<kind>/<namespace>/<file>`
+ *
+ * **Cluster-scoped resources** (e.g. `cluster-resources/nodes.json`) have
+ * no namespace segment and return `undefined`.
+ *
+ * Returns `undefined` when the path does not conform to any supported
+ * structure.
  */
 function extractNamespace(entry: ArtifactEntry): string | undefined {
   const segments = entry.relativePath.split('/');
@@ -45,16 +68,26 @@ function extractNamespace(entry: ArtifactEntry): string | undefined {
   const subKind = segments[crIdx + 1];
   if (!subKind) return undefined;
 
+  // Cluster-scoped: cluster-resources/<kind>.json (no namespace at all)
+  if (isResourceFile(subKind)) return undefined;
+
   if (subKind === 'events') {
     // events/<namespace>.json  →  strip extension to get namespace
     const evFile = segments[crIdx + 2];
     if (!evFile) return undefined;
-    return evFile.replace(/\.(json|yaml)$/i, '') || undefined;
+    return stripResourceExtension(evFile) || undefined;
   }
 
-  // <kind>/<namespace>/<file>  →  namespace is the directory
-  const ns = segments[crIdx + 2];
-  return ns || undefined;
+  const namespacePart = segments[crIdx + 2];
+  if (!namespacePart) return undefined;
+
+  // Flat layout: <kind>/<namespace>.json  →  strip extension
+  if (isResourceFile(namespacePart)) {
+    return stripResourceExtension(namespacePart) || undefined;
+  }
+
+  // Nested layout: <kind>/<namespace>/<file>  →  namespace is the directory
+  return namespacePart || undefined;
 }
 
 /**
@@ -74,6 +107,13 @@ const WORKLOAD_KINDS = new Set([
  * Attempts to build a {@link WorkloadSummary} stub from a kubernetes-resource
  * entry whose sub-kind is a recognised workload controller.
  *
+ * Supports two path layouts:
+ * - **Flat:** `cluster-resources/<kind>/<namespace>.json` — the namespace is
+ *   derived from the filename; the workload name is set to `<namespace>`
+ *   (individual workloads are discovered at parse-time, not from paths).
+ * - **Nested:** `cluster-resources/<kind>/<namespace>/<file>` — name comes
+ *   from the file, namespace from the directory.
+ *
  * Returns `undefined` for non-workload resources (e.g. services, configmaps).
  */
 function buildWorkloadSummary(entry: ArtifactEntry): WorkloadSummary | undefined {
@@ -84,7 +124,22 @@ function buildWorkloadSummary(entry: ArtifactEntry): WorkloadSummary | undefined
   const kind = segments[crIdx + 1];
   if (!kind || !WORKLOAD_KINDS.has(kind)) return undefined;
 
-  const namespace = segments[crIdx + 2];
+  const namespacePart = segments[crIdx + 2];
+  if (!namespacePart) return undefined;
+
+  // ── Flat layout: cluster-resources/<kind>/<namespace>.json ─────────────
+  if (isResourceFile(namespacePart) && segments.length === crIdx + 3) {
+    const namespace = stripResourceExtension(namespacePart);
+    if (!namespace) return undefined;
+    // In flat layout, the file contains a List with many workloads — we
+    // represent it as a single placeholder stub per namespace file. The
+    // actual workload names are resolved at parse time when the List items
+    // are unwrapped.
+    return { name: `${kind}/${namespace}`, namespace, kind };
+  }
+
+  // ── Nested layout: cluster-resources/<kind>/<namespace>/<file> ─────────
+  const namespace = namespacePart;
   if (!namespace) return undefined;
 
   const filename = segments[segments.length - 1] ?? '';

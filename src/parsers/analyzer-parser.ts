@@ -7,6 +7,18 @@ import type { AnalyzerResult, AnalyzerSeverity } from '../types/index.js';
 
 const VALID_SEVERITIES = new Set<AnalyzerSeverity>(['error', 'warn', 'pass', 'info']);
 
+/**
+ * Maps Troubleshoot severity aliases to canonical AnalyzerSeverity values.
+ *
+ * Real bundles use:
+ * - `"debug"` for passing checks → maps to `"pass"`
+ * - `"fail"` for failing checks → maps to `"error"`
+ */
+const SEVERITY_ALIASES: Record<string, AnalyzerSeverity> = {
+  debug: 'pass',
+  fail: 'error',
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -20,8 +32,12 @@ function getOptionalString(value: unknown): string | undefined {
 }
 
 function normalizeSeverity(raw: unknown): AnalyzerSeverity {
-  if (typeof raw === 'string' && VALID_SEVERITIES.has(raw as AnalyzerSeverity)) {
-    return raw as AnalyzerSeverity;
+  if (typeof raw === 'string') {
+    if (VALID_SEVERITIES.has(raw as AnalyzerSeverity)) {
+      return raw as AnalyzerSeverity;
+    }
+    const alias = SEVERITY_ALIASES[raw];
+    if (alias) return alias;
   }
   if (raw !== undefined) {
     console.warn(`[analyzer-parser] Unknown severity "${String(raw)}", defaulting to "info"`);

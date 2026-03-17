@@ -12,14 +12,16 @@ function indexOf(segments: string[], segment: string): number {
  * Classifies a single ArtifactEntry by inspecting its relativePath.
  *
  * Classification rules (evaluated in priority order):
- * - filename is "version.yaml"           -> 'cluster-info'
- * - path contains "cluster-info" segment -> 'cluster-info'
- * - path contains "analyzers" segment    -> 'analyzer'
- * - path is "cluster-resources/events/"  -> 'event'
- * - path contains "cluster-resources"    -> 'kubernetes-resource'
- * - path contains "logs" segment         -> 'log'
- * - path contains "helm" segment         -> 'helm-release'
- * - (anything else)                      -> 'unknown'
+ * - filename is "version.yaml"                        -> 'cluster-info'
+ * - path contains "cluster-info" segment              -> 'cluster-info'
+ * - filename is "analysis.json"                       -> 'analyzer'
+ * - path contains "analyzers" segment                 -> 'analyzer'
+ * - path under cluster-resources/pods/logs/           -> 'log'
+ * - path under cluster-resources/events/              -> 'event'
+ * - path contains "cluster-resources" segment         -> 'kubernetes-resource'
+ * - path contains "logs" segment                      -> 'log'
+ * - path contains "helm" segment                      -> 'helm-release'
+ * - (anything else)                                   -> 'unknown'
  *
  * The path is split on '/' so that a bundle root directory prefix (e.g.
  * "my-bundle/analyzers/output.json") is handled transparently.
@@ -39,7 +41,13 @@ export function classifyArtifact(entry: ArtifactEntry): ArtifactCategory {
     return 'cluster-info';
   }
 
-  // analyzers directory segment → analyzer
+  // analysis.json at any level → analyzer (real Troubleshoot bundles use this
+  // filename at the bundle root instead of an analyzers/ directory)
+  if (filename === 'analysis.json') {
+    return 'analyzer';
+  }
+
+  // analyzers directory segment → analyzer (legacy / custom bundles)
   if (indexOf(segments, 'analyzers') >= 0) {
     return 'analyzer';
   }
@@ -48,6 +56,16 @@ export function classifyArtifact(entry: ArtifactEntry): ArtifactCategory {
   const crIdx = indexOf(segments, 'cluster-resources');
   if (crIdx >= 0) {
     const subKind = segments[crIdx + 1];
+
+    // Pod logs live under cluster-resources/pods/logs/ — classify as log
+    // *before* the generic kubernetes-resource fallback
+    if (subKind === 'pods') {
+      const nextSegment = segments[crIdx + 2];
+      if (nextSegment === 'logs') {
+        return 'log';
+      }
+    }
+
     if (subKind === 'events') {
       return 'event';
     }

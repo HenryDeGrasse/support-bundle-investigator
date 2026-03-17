@@ -1,0 +1,6 @@
+2024-01-15T16:00:02Z ERROR Failed to pull image "myapp:v999.99.99": rpc error: code = NotFound
+2024-01-15T16:00:02Z ERROR ErrImagePull: image pull failed for myapp:v999.99.99
+2024-01-15T16:00:05Z WARN  Retrying image pull (attempt 1)
+2024-01-15T16:00:10Z ERROR ErrImagePull: image pull failed for myapp:v999.99.99
+2024-01-15T16:00:15Z WARN  Retrying image pull (attempt 2)
+2024-01-15T16:00:20Z ERROR ImagePullBackOff: Back-off pulling image "myapp:v999.99.99"

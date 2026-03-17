@@ -1,0 +1,37 @@
+{
+  "apiVersion": "apps/v1",
+  "kind": "DeploymentList",
+  "items": [
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "app-deployment",
+        "namespace": "default"
+      },
+      "spec": {
+        "replicas": 1,
+        "selector": { "matchLabels": { "app": "myapp" } },
+        "template": {
+          "spec": {
+            "containers": [
+              { "name": "app", "image": "myapp:v999.99.99" }
+            ]
+          }
+        }
+      },
+      "status": {
+        "replicas": 1,
+        "readyReplicas": 0,
+        "availableReplicas": 0,
+        "conditions": [
+          {
+            "type": "Available",
+            "status": "False",
+            "reason": "MinimumReplicasUnavailable"
+          }
+        ]
+      }
+    }
+  ]
+}

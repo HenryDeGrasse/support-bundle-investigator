@@ -88,6 +88,57 @@ describe('classifyArtifact', () => {
     const entry = makeEntry('cluster-resources/events/production.json');
     expect(classifyArtifact(entry)).toBe('event');
   });
+
+  // ── Fix #1: analysis.json at bundle root ────────────────────────────────
+  it('classifies root-level analysis.json as "analyzer"', () => {
+    expect(classifyArtifact(makeEntry('analysis.json'))).toBe('analyzer');
+    // With a bundle-root prefix
+    expect(classifyArtifact(makeEntry('my-bundle/analysis.json'))).toBe('analyzer');
+  });
+
+  it('still classifies analyzers/ directory as "analyzer"', () => {
+    // Backward compatibility: both the old path and new filename should work
+    expect(classifyArtifact(makeEntry('analyzers/output.json'))).toBe('analyzer');
+    expect(classifyArtifact(makeEntry('my-bundle/analyzers/output.json'))).toBe('analyzer');
+  });
+
+  // ── Fix #2: flat namespace-scoped JSON files ────────────────────────────
+  it('classifies flat namespace-scoped JSON files as "kubernetes-resource"', () => {
+    // Real bundles: cluster-resources/pods/default.json (no subdirectory)
+    expect(classifyArtifact(makeEntry('cluster-resources/pods/default.json'))).toBe(
+      'kubernetes-resource',
+    );
+    expect(classifyArtifact(makeEntry('cluster-resources/deployments/production.json'))).toBe(
+      'kubernetes-resource',
+    );
+  });
+
+  // ── Fix #3: log path priority ───────────────────────────────────────────
+  it('classifies cluster-resources/pods/logs/ as "log", not "kubernetes-resource"', () => {
+    expect(
+      classifyArtifact(
+        makeEntry('cluster-resources/pods/logs/default/app-pod/container.log'),
+      ),
+    ).toBe('log');
+    expect(
+      classifyArtifact(
+        makeEntry('bundle/cluster-resources/pods/logs/kube-system/coredns/coredns.log'),
+      ),
+    ).toBe('log');
+  });
+
+  // ── Fix #5: cluster-scoped resources (no namespace subdir) ──────────────
+  it('classifies cluster-scoped resource files as "kubernetes-resource"', () => {
+    expect(classifyArtifact(makeEntry('cluster-resources/nodes.json'))).toBe(
+      'kubernetes-resource',
+    );
+    expect(classifyArtifact(makeEntry('cluster-resources/storage-classes.json'))).toBe(
+      'kubernetes-resource',
+    );
+    expect(
+      classifyArtifact(makeEntry('cluster-resources/custom-resource-definitions.json')),
+    ).toBe('kubernetes-resource');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -135,6 +186,46 @@ describe('profileBundle', () => {
 
     // Namespaces are sorted alphabetically
     expect(profile.namespaces).toEqual(['default', 'kube-system', 'production', 'staging']);
+  });
+
+  // ── Fix #2: flat namespace-scoped JSON (real bundle format) ─────────────
+  it('extracts namespace from flat namespace-scoped JSON resource paths', async () => {
+    // Real bundle format: cluster-resources/<kind>/<namespace>.json
+    const manifest = makeManifest([
+      'bundle/cluster-resources/pods/default.json',
+      'bundle/cluster-resources/deployments/production.json',
+      'bundle/cluster-resources/services/staging.json',
+    ]);
+
+    const profile = await profileBundle(manifest);
+
+    expect(profile.namespaces).toEqual(['default', 'production', 'staging']);
+  });
+
+  it('extracts namespace from flat namespace-scoped JSON event paths', async () => {
+    // Real bundle format: cluster-resources/events/<namespace>.json
+    const manifest = makeManifest([
+      'bundle/cluster-resources/events/default.json',
+      'bundle/cluster-resources/events/kube-system.json',
+    ]);
+
+    const profile = await profileBundle(manifest);
+
+    expect(profile.namespaces).toEqual(['default', 'kube-system']);
+  });
+
+  // ── Fix #4: cluster-scoped resources return no namespace ────────────────
+  it('does not produce spurious namespace from cluster-scoped resource files', async () => {
+    const manifest = makeManifest([
+      'bundle/cluster-resources/nodes.json',
+      'bundle/cluster-resources/storage-classes.json',
+      'bundle/cluster-resources/pods/default.json',
+    ]);
+
+    const profile = await profileBundle(manifest);
+
+    // Only 'default' from pods — nodes and storage-classes are cluster-scoped
+    expect(profile.namespaces).toEqual(['default']);
   });
 
   it('deduplicates namespaces that appear in multiple resource files', async () => {
@@ -245,6 +336,27 @@ describe('profileBundle', () => {
     // Only deployments should appear — not services or configmaps
     expect(profile.workloads).toHaveLength(1);
     expect(profile.workloads[0]?.kind).toBe('deployments');
+  });
+
+  // ── Fix #2/#6: workload summaries for flat namespace-scoped JSON files ──
+  it('produces workload summaries from flat namespace-scoped JSON paths', async () => {
+    const manifest = makeManifest([
+      'bundle/cluster-resources/deployments/default.json',
+      'bundle/cluster-resources/statefulsets/production.json',
+    ]);
+
+    const profile = await profileBundle(manifest);
+
+    // Flat format should produce workload stubs with the namespace stripped of extension
+    expect(profile.workloads).toHaveLength(2);
+
+    const dep = profile.workloads.find((w) => w.kind === 'deployments');
+    expect(dep).toBeDefined();
+    expect(dep?.namespace).toBe('default');
+
+    const sts = profile.workloads.find((w) => w.kind === 'statefulsets');
+    expect(sts).toBeDefined();
+    expect(sts?.namespace).toBe('production');
   });
 
   it('stores classified entries in the returned manifest', async () => {
