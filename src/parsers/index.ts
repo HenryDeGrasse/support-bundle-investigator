@@ -34,3 +34,5 @@ export {
 export { classifyLogs, rankLogsByImportance } from './log-classifier.js';
 export type { LogLevel, LogLine, LogFile, ErrorWindow, LogParseOptions } from './log-parser.js';
 export type { LogCategory, LogClassification } from './log-classifier.js';
+export { parseHelmReleaseFile, parseHelmReleaseContent } from './helm-parser.js';
+export type { HelmRelease } from './helm-parser.js';
