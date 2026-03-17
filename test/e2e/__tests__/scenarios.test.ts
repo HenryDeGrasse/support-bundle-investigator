@@ -1,5 +1,5 @@
 /**
- * End-to-End Integration Tests — All 3 Seeded Failure Scenarios
+ * End-to-End Integration Tests — All 4 Seeded Failure Scenarios
  *
  * Each describe block runs the full analysis pipeline once in beforeAll and
  * shares the result across all assertions in that group.  This avoids
@@ -45,11 +45,12 @@ let tmpDir: string;
 let wrongDbBundlePath: string;
 let missingSecretBundlePath: string;
 let badImageTagBundlePath: string;
+let pvcPendingBundlePath: string;
 
 beforeAll(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sbi-e2e-'));
 
-  [wrongDbBundlePath, missingSecretBundlePath, badImageTagBundlePath] = await Promise.all([
+  [wrongDbBundlePath, missingSecretBundlePath, badImageTagBundlePath, pvcPendingBundlePath] = await Promise.all([
     createTestBundle(
       getFixturePath('wrong-db-endpoint'),
       path.join(tmpDir, 'wrong-db-endpoint.tar.gz'),
@@ -61,6 +62,10 @@ beforeAll(async () => {
     createTestBundle(
       getFixturePath('bad-image-tag'),
       path.join(tmpDir, 'bad-image-tag.tar.gz'),
+    ),
+    createTestBundle(
+      getFixturePath('pvc-pending'),
+      path.join(tmpDir, 'pvc-pending.tar.gz'),
     ),
   ]);
 });
@@ -1221,5 +1226,131 @@ describe('E2E — Realistic Troubleshoot Bundle Format', () => {
     const top = result.findings[0]!;
     const text = `${top.title} ${top.reasoning}`.toLowerCase();
     expect(text).toMatch(/image|pull|backoff/);
+  });
+});
+
+// ===========================================================================
+// Scenario 5: PVC Pending — Storage Class Mismatch
+// ===========================================================================
+
+describe('E2E — Scenario 5: PVC Pending (Storage Class Mismatch)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await analyzeBundlePipeline(pvcPendingBundlePath, { noAi: true });
+  });
+
+  afterAll(async () => {
+    await cleanupPipelineResult(result);
+  });
+
+  // ── Bundle extraction ────────────────────────────────────────────────────
+
+  it('bundle extracts successfully and produces a non-empty manifest', () => {
+    expect(result.profile.manifest.files.length).toBeGreaterThan(0);
+  });
+
+  // ── Profile ──────────────────────────────────────────────────────────────
+
+  it('profile shows at least 1 analyzer artifact', () => {
+    expect(result.profile.analyzerCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it('profile shows at least 1 resource (pod, PVC, or storageclass)', () => {
+    expect(result.profile.resourceCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it('profile shows at least 1 event', () => {
+    expect(result.profile.eventCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it('profile shows at least 1 log file', () => {
+    expect(result.profile.logFileCount).toBeGreaterThanOrEqual(1);
+  });
+
+  // ── Parsed artifacts ─────────────────────────────────────────────────────
+
+  it('parses the db-pod resource', () => {
+    const pod = result.resources.find(
+      (r) => r.kind === 'Pod' && r.metadata.name === 'db-pod',
+    );
+    expect(pod).toBeDefined();
+  });
+
+  it('parses PersistentVolumeClaim resources', () => {
+    const pvcs = result.resources.filter(
+      (r) => r.kind === 'PersistentVolumeClaim',
+    );
+    expect(pvcs.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('parses ProvisioningFailed or FailedMount events', () => {
+    const reasons = result.events.map((e) => e.reason);
+    const hasStorage = reasons.some(
+      (r) => /ProvisioningFailed|FailedMount|FailedScheduling/i.test(r),
+    );
+    expect(hasStorage).toBe(true);
+  });
+
+  it('parses log files with volume/storage errors', () => {
+    expect(result.logs.length).toBeGreaterThanOrEqual(1);
+    const logContent = result.logs
+      .flatMap((l) => l.lines.map((line) => line.content))
+      .join(' ')
+      .toLowerCase();
+    expect(logContent).toMatch(/volume|mount|data directory/);
+  });
+
+  // ── Investigation findings ───────────────────────────────────────────────
+
+  it('produces investigation findings', () => {
+    expect(result.findings.length).toBeGreaterThan(0);
+  });
+
+  it('at least one finding references db-pod or data-pvc', () => {
+    const text = result.findings
+      .map((f) => `${f.title} ${f.reasoningSummary} ${f.affectedComponents.join(' ')}`)
+      .join(' ')
+      .toLowerCase();
+    expect(text).toMatch(/db-pod|data-pvc|volume|pvc|storage/);
+  });
+
+  it('top finding has confidence >= 0.5', () => {
+    expect(result.findings[0]!.confidence).toBeGreaterThanOrEqual(0.5);
+  });
+
+  it('every finding has at least one evidence entry', () => {
+    for (const finding of result.findings) {
+      expect(finding.evidence.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('every finding has a non-empty recommendedAction', () => {
+    for (const finding of result.findings) {
+      expect(finding.recommendedAction.trim().length).toBeGreaterThan(0);
+    }
+  });
+
+  // ── Reports ──────────────────────────────────────────────────────────────
+
+  it('markdown report contains the PVC scenario findings', () => {
+    const report = buildReport(result);
+    const md = generateMarkdownReport(report);
+    expect(md).toContain('## Findings');
+    expect(md.toLowerCase()).toMatch(/db-pod|volume|pvc|storage|mount/);
+  });
+
+  it('JSON report is parseable and contains findings', () => {
+    const report = buildReport(result);
+    const jsonStr = generateJsonReport(report);
+    const parsed = JSON.parse(jsonStr);
+    expect(parsed.findings.length).toBeGreaterThan(0);
+  });
+
+  it('HTML report contains valid structure', () => {
+    const report = buildReport(result);
+    const html = generateHtmlReport(report);
+    expect(html).toContain('<!DOCTYPE html>');
+    expect(html).toContain('</html>');
   });
 });

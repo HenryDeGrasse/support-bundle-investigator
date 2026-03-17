@@ -1,0 +1,20 @@
+[
+  {
+    "name": "pod-status",
+    "title": "Pod Status Check",
+    "message": "Pod 'db-pod' in namespace 'default' is stuck in ContainerCreating state — waiting for PersistentVolumeClaim 'data-pvc' to be bound",
+    "severity": "error",
+    "isFail": true,
+    "isWarn": false,
+    "isPass": false
+  },
+  {
+    "name": "pvc-status",
+    "title": "PVC Binding Check",
+    "message": "PersistentVolumeClaim 'data-pvc' in namespace 'default' is in Pending state — no matching PersistentVolume or StorageClass provisioner available",
+    "severity": "error",
+    "isFail": true,
+    "isWarn": false,
+    "isPass": false
+  }
+]

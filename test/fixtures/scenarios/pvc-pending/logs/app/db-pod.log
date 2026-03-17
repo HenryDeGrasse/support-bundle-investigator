@@ -1,0 +1,7 @@
+2024-01-15T10:00:00Z INFO  PostgreSQL container starting
+2024-01-15T10:00:01Z WARN  Waiting for data directory /var/lib/postgresql/data to become available
+2024-01-15T10:00:30Z ERROR Data directory /var/lib/postgresql/data is not mounted — volume not available
+2024-01-15T10:01:00Z ERROR Failed to initialize database: /var/lib/postgresql/data: no such file or directory
+2024-01-15T10:01:30Z WARN  Volume mount for data-volume is not ready after 90 seconds
+2024-01-15T10:02:00Z ERROR Cannot start PostgreSQL: data directory missing, check PersistentVolumeClaim binding
+2024-01-15T10:02:30Z ERROR Shutting down: required volume not available

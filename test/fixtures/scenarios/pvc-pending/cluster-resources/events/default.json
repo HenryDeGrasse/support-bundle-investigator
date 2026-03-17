@@ -1,0 +1,54 @@
+{
+  "apiVersion": "v1",
+  "kind": "EventList",
+  "items": [
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": { "name": "data-pvc.provisioning-failed" },
+      "involvedObject": {
+        "kind": "PersistentVolumeClaim",
+        "name": "data-pvc",
+        "namespace": "default"
+      },
+      "reason": "ProvisioningFailed",
+      "message": "storageclass.storage.k8s.io \"fast-ssd\" not found",
+      "type": "Warning",
+      "count": 8,
+      "firstTimestamp": "2024-01-15T10:00:00Z",
+      "lastTimestamp": "2024-01-15T10:05:00Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": { "name": "db-pod.failedscheduling" },
+      "involvedObject": {
+        "kind": "Pod",
+        "name": "db-pod",
+        "namespace": "default"
+      },
+      "reason": "FailedScheduling",
+      "message": "persistentvolumeclaim \"data-pvc\" not found or is not bound",
+      "type": "Warning",
+      "count": 4,
+      "firstTimestamp": "2024-01-15T10:00:05Z",
+      "lastTimestamp": "2024-01-15T10:05:00Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": { "name": "db-pod.failedmount" },
+      "involvedObject": {
+        "kind": "Pod",
+        "name": "db-pod",
+        "namespace": "default"
+      },
+      "reason": "FailedMount",
+      "message": "Unable to attach or mount volumes: unmounted volumes=[data-volume], unattached volumes=[data-volume]: timed out waiting for the condition",
+      "type": "Warning",
+      "count": 6,
+      "firstTimestamp": "2024-01-15T10:00:10Z",
+      "lastTimestamp": "2024-01-15T10:06:00Z"
+    }
+  ]
+}
