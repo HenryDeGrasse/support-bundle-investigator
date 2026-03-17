@@ -1,0 +1,110 @@
+# ===========================================================================
+# Support Bundle Investigator — GitLab CI/CD
+# ===========================================================================
+#
+# Pipeline structure:
+#   1. test:unit     — lint, typecheck, 1500+ unit tests (every push)
+#   2. test:replay   — replay nightly cassettes, verify pipeline output (every PR)
+#   3. nightly:eval  — real LLM calls, record cassettes, score golden set (scheduled)
+
+stages:
+  - test
+  - evaluate
+  - nightly
+
+# ---------------------------------------------------------------------------
+# Shared setup
+# ---------------------------------------------------------------------------
+
+.node_setup: &node_setup
+  image: node:20-alpine
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}
+    paths:
+      - node_modules/
+  before_script:
+    - npm ci --prefer-offline
+
+# ===========================================================================
+# Stage 1: Unit tests (every push and MR)
+# ===========================================================================
+
+test:unit:
+  <<: *node_setup
+  stage: test
+  script:
+    - npm run lint
+    - npm run typecheck
+    - npm run build
+    - npm test
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+
+# ===========================================================================
+# Stage 2: Replay evaluation (every MR — uses cached cassettes)
+# ===========================================================================
+
+test:replay:
+  <<: *node_setup
+  stage: evaluate
+  needs: [test:unit]
+  variables:
+    SBI_AI_MODE: replay
+  script:
+    - npm run build
+    # Download latest cassettes from nightly artifacts (if available)
+    - |
+      if [ -f test/cassettes/cassettes.json ]; then
+        echo "Using committed cassettes"
+      else
+        echo "No cassettes found — replay tests will use empty cassettes (warn-only)"
+      fi
+    - npx vitest run test/golden/ --reporter=verbose
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == "push"
+      changes:
+        - src/**/*
+        - test/**/*
+  allow_failure: true  # Don't block PRs if cassettes are stale
+
+# ===========================================================================
+# Stage 3: Nightly evaluation (scheduled — real LLM calls)
+# ===========================================================================
+
+nightly:eval:
+  <<: *node_setup
+  stage: nightly
+  variables:
+    OPENAI_API_KEY: $OPENAI_API_KEY
+    SBI_AI_MODE: record
+    SBI_AI_MODEL: gpt-4o
+  script:
+    - npm run build
+    # Run golden set evaluation with real LLM calls + recording
+    - npx vitest run test/golden/ --reporter=verbose
+    # Generate eval report artifact
+    - node -e "
+        const fs = require('fs');
+        const report = fs.existsSync('test/golden/eval-report.json')
+          ? JSON.parse(fs.readFileSync('test/golden/eval-report.json', 'utf-8'))
+          : { status: 'no report generated' };
+        console.log(JSON.stringify(report, null, 2));
+        if (!report.overallPass) {
+          console.error('QUALITY REGRESSION DETECTED');
+          process.exit(1);
+        }
+      "
+  artifacts:
+    paths:
+      - test/cassettes/cassettes.json
+      - test/golden/eval-report.json
+    expire_in: 30 days
+    when: always
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+  # Allow manual trigger for testing the nightly pipeline
+  when: manual
+  allow_failure: false

@@ -1,0 +1,17 @@
+export * from './config.js';
+export { CassetteRecorder, cassetteSeedKey, getRecorderMode } from './recorder.js';
+export type { RecorderMode, Cassette, CassetteStore } from './recorder.js';
+export { summarizeResource, summarizeEvent, summarizeAnalyzer } from './summarizer.js';
+export { buildChunkIndex } from './chunk-indexer.js';
+export type { IndexedChunk } from './chunk-indexer.js';
+export { LexicalSearchIndex } from './lexical-search.js';
+export type { ScoredChunk as LexicalScoredChunk } from './lexical-search.js';
+export { validateAIFindings } from './schemas.js';
+export type { AIFinding, AIFindingEvidence } from './schemas.js';
+export { BASE_SYSTEM_PROMPT, buildInvestigationPrompt, resolvePlaybookCategory } from './prompts.js';
+export type { PlaybookCategory } from './prompts.js';
+export { LLMClient } from './llm-client.js';
+export type { AIFindingResponse } from './llm-client.js';
+export { EmbeddingClient } from './embeddings.js';
+export { VectorStore, cosineSimilarity } from './vector-store.js';
+export type { ScoredChunk } from './vector-store.js';
