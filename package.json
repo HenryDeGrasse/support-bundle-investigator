@@ -6,10 +6,10 @@
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
   "bin": {
-    "sbi": "dist/cli/run.js"
+    "sbi": "dist/cli/run.mjs"
   },
   "scripts": {
-    "lint": "eslint \"src/**/*.ts\" \"test/**/*.ts\" --max-warnings 0",
+    "lint": "eslint \"src/**/*.ts\" \"src/**/*.tsx\" \"test/**/*.ts\" --max-warnings 0",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "unit": "vitest run",
@@ -19,6 +19,7 @@
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.5.0",
+    "@types/react": "^19.2.14",
     "@types/tar": "^6.1.13",
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",
@@ -30,8 +31,11 @@
   "dependencies": {
     "commander": "^12.0.0",
     "glob": "^11.0.0",
+    "ink": "^6.8.0",
+    "ink-spinner": "^5.0.0",
     "js-yaml": "^4.1.0",
     "openai": "^6.31.0",
+    "react": "^19.2.4",
     "tar": "^7.0.0"
   }
 }

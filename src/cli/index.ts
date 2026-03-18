@@ -9,3 +9,4 @@ export {
 } from './output.js';
 export type { OutputOptions } from './output.js';
 export { runCli } from './runner.js';
+export type { RunCliOptions } from './runner.js';

@@ -1,5 +1,5 @@
 export { analyzeBundlePipeline, cleanupPipelineResult } from './analyze.js';
-export type { PipelineOptions, PipelineResult } from './analyze.js';
+export type { PipelineOptions, PipelineResult, PipelineProgressEvent, PipelineStepStatus } from './analyze.js';
 
 export {
   createTrace,

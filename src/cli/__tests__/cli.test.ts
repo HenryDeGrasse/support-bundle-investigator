@@ -140,4 +140,25 @@ describe('parseArgs()', () => {
       parseArgs(argv('analyze', 'bundle.tar.gz', '--format', 'xml')),
     ).toThrow();
   });
+
+  // ── --tui flag ───────────────────────────────────────────────────────────
+
+  it('defaults tui to false when --tui is omitted', () => {
+    const result = parseArgs(argv('analyze', 'bundle.tar.gz'));
+    expect(result.tui).toBe(false);
+  });
+
+  it('sets tui to true when --tui flag is passed', () => {
+    const result = parseArgs(argv('analyze', 'bundle.tar.gz', '--tui'));
+    expect(result.tui).toBe(true);
+  });
+
+  it('accepts --tui together with other flags', () => {
+    const result = parseArgs(
+      argv('analyze', 'bundle.tar.gz', '--tui', '--verbose', '--no-ai'),
+    );
+    expect(result.tui).toBe(true);
+    expect(result.verbose).toBe(true);
+    expect(result.noAi).toBe(true);
+  });
 });

@@ -35,6 +35,17 @@ import type { InvestigationTrace } from './trace.js';
 // Types
 // ---------------------------------------------------------------------------
 
+export type PipelineStepStatus = 'started' | 'completed';
+
+export interface PipelineProgressEvent {
+  /** Name of the pipeline step (matches trace step names: 'extract', 'profile', 'parse-analyzers', 'parse-resources', 'parse-events', 'parse-logs', 'ai-index', 'build-graph', 'investigate'). */
+  step: string;
+  /** Whether the step just started or just completed. */
+  status: PipelineStepStatus;
+  /** Number of artifacts processed (only set when status is 'completed'). */
+  artifactsProcessed?: number;
+}
+
 export interface PipelineOptions {
   outputDir?: string;
   format?: 'json' | 'text' | 'summary' | 'markdown' | 'html';
@@ -42,6 +53,8 @@ export interface PipelineOptions {
   trace?: boolean;
   /** When true, AI features are disabled regardless of API key presence. */
   noAi?: boolean;
+  /** Optional callback invoked when each pipeline step starts and completes. */
+  onProgress?: (event: PipelineProgressEvent) => void;
 }
 
 export interface PipelineResult {
@@ -64,6 +77,10 @@ function log(message: string, verbose: boolean): void {
   if (verbose) {
     console.log(`[pipeline] ${message}`);
   }
+}
+
+function emitProgress(options: PipelineOptions, event: PipelineProgressEvent): void {
+  options.onProgress?.(event);
 }
 
 function addInvestigationEvidenceNode(
@@ -183,20 +200,24 @@ export async function analyzeBundlePipeline(
 
   // ── 1. Extract bundle ─────────────────────────────────────────────────────
   const step1 = startTraceStep(trace, 'extract');
+  emitProgress(options, { step: 'extract', status: 'started' });
   log('Extracting bundle…', verbose);
 
   const manifest = await extractBundle(bundlePath);
 
   completeTraceStep(trace, step1, manifest.files.length);
+  emitProgress(options, { step: 'extract', status: 'completed', artifactsProcessed: manifest.files.length });
   log(`Extracted ${manifest.files.length} files`, verbose);
 
   // ── 2. Profile bundle ─────────────────────────────────────────────────────
   const step2 = startTraceStep(trace, 'profile');
+  emitProgress(options, { step: 'profile', status: 'started' });
   log('Profiling bundle…', verbose);
 
   const profile = await profileBundle(manifest);
 
   completeTraceStep(trace, step2, profile.manifest.files.length);
+  emitProgress(options, { step: 'profile', status: 'completed', artifactsProcessed: profile.manifest.files.length });
   log(
     `Profile: ${profile.analyzerCount} analyzers, ` +
       `${profile.resourceCount} resources, ` +
@@ -207,6 +228,7 @@ export async function analyzeBundlePipeline(
 
   // ── 3. Parse analyzer files ───────────────────────────────────────────────
   const step3 = startTraceStep(trace, 'parse-analyzers');
+  emitProgress(options, { step: 'parse-analyzers', status: 'started' });
   log('Parsing analyzer files…', verbose);
 
   const analyzerFiles = profile.manifest.files.filter((f) => f.category === 'analyzer');
@@ -216,10 +238,12 @@ export async function analyzeBundlePipeline(
   const analyzerResults = mergeAnalyzerResults(analyzerBatches);
 
   completeTraceStep(trace, step3, analyzerResults.length);
+  emitProgress(options, { step: 'parse-analyzers', status: 'completed', artifactsProcessed: analyzerResults.length });
   log(`Parsed ${analyzerResults.length} analyzer results`, verbose);
 
   // ── 4. Parse K8s resource files ───────────────────────────────────────────
   const step4 = startTraceStep(trace, 'parse-resources');
+  emitProgress(options, { step: 'parse-resources', status: 'started' });
   log('Parsing Kubernetes resource files…', verbose);
 
   const resourceFiles = profile.manifest.files.filter(
@@ -231,10 +255,12 @@ export async function analyzeBundlePipeline(
   const resources = resourceBatches.flat();
 
   completeTraceStep(trace, step4, resources.length);
+  emitProgress(options, { step: 'parse-resources', status: 'completed', artifactsProcessed: resources.length });
   log(`Parsed ${resources.length} K8s resources`, verbose);
 
   // ── 5. Parse event files ─────────────────────────────────────────────────
   const step5 = startTraceStep(trace, 'parse-events');
+  emitProgress(options, { step: 'parse-events', status: 'started' });
   log('Parsing event files…', verbose);
 
   const eventFiles = profile.manifest.files.filter((f) => f.category === 'event');
@@ -244,16 +270,19 @@ export async function analyzeBundlePipeline(
   const events = eventBatches.flat();
 
   completeTraceStep(trace, step5, events.length);
+  emitProgress(options, { step: 'parse-events', status: 'completed', artifactsProcessed: events.length });
   log(`Parsed ${events.length} K8s events`, verbose);
 
   // ── 6. Parse log files ────────────────────────────────────────────────────
   const step6 = startTraceStep(trace, 'parse-logs');
+  emitProgress(options, { step: 'parse-logs', status: 'started' });
   log('Parsing log files…', verbose);
 
   const logEntries = identifyLogFiles(profile.manifest);
   const logs = await Promise.all(logEntries.map((f) => parseLogFile(f.absolutePath)));
 
   completeTraceStep(trace, step6, logs.length);
+  emitProgress(options, { step: 'parse-logs', status: 'completed', artifactsProcessed: logs.length });
   log(`Parsed ${logs.length} log files`, verbose);
 
   // ── 7. Build AI chunk index and lexical index (optional, AI-gated) ────────
@@ -262,6 +291,7 @@ export async function analyzeBundlePipeline(
   const aiConfig = loadAIConfig({ noAi: options.noAi });
   if (isAIEnabled(aiConfig)) {
     const stepAI = startTraceStep(trace, 'ai-index');
+    emitProgress(options, { step: 'ai-index', status: 'started' });
     log('Building AI chunk index…', verbose);
 
     try {
@@ -316,6 +346,7 @@ export async function analyzeBundlePipeline(
       };
 
       completeTraceStep(trace, stepAI, chunks.length);
+      emitProgress(options, { step: 'ai-index', status: 'completed', artifactsProcessed: chunks.length });
       log(`AI index built: ${chunks.length} chunks`, verbose);
     } catch (error) {
       // Graceful degradation: AI setup failed, continue without AI
@@ -325,11 +356,13 @@ export async function analyzeBundlePipeline(
           errorMessage,
       );
       completeTraceStep(trace, stepAI, 0, [errorMessage]);
+      emitProgress(options, { step: 'ai-index', status: 'completed', artifactsProcessed: 0 });
     }
   }
 
   // ── 8. Build investigation graph ──────────────────────────────────────────
   const step7 = startTraceStep(trace, 'build-graph');
+  emitProgress(options, { step: 'build-graph', status: 'started' });
   log('Building investigation graph…', verbose);
 
   const graph = new InvestigationGraphImpl();
@@ -380,10 +413,12 @@ export async function analyzeBundlePipeline(
   }
 
   completeTraceStep(trace, step7, graphNodeCount);
+  emitProgress(options, { step: 'build-graph', status: 'completed', artifactsProcessed: graphNodeCount });
   log(`Built graph with ${graphNodeCount} nodes`, verbose);
 
   // ── 9. Run investigation pipeline ────────────────────────────────────────
   const step8 = startTraceStep(trace, 'investigate');
+  emitProgress(options, { step: 'investigate', status: 'started' });
   log('Running investigation pipeline…', verbose);
 
   const investigationResult = await runInvestigation(
@@ -426,14 +461,13 @@ export async function analyzeBundlePipeline(
     graph.addEdge(edge);
   }
 
-  completeTraceStep(
-    trace,
-    step8,
+  const investigateArtifactsProcessed =
     evidenceNodeCount +
-      derivedEvidenceNodeCount +
-      investigationResult.findings.length +
-      investigationResult.edges.length,
-  );
+    derivedEvidenceNodeCount +
+    investigationResult.findings.length +
+    investigationResult.edges.length;
+  completeTraceStep(trace, step8, investigateArtifactsProcessed);
+  emitProgress(options, { step: 'investigate', status: 'completed', artifactsProcessed: investigateArtifactsProcessed });
   const aiSuffix = investigationResult.metadata.aiEnabled
     ? `, ${investigationResult.metadata.aiFindings} AI findings`
     : '';

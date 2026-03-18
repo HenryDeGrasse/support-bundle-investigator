@@ -13,6 +13,8 @@ export interface ParsedArgs {
   verbose: boolean;
   trace: boolean;
   noAi: boolean;
+  /** When true, launch the interactive TUI instead of printing to stdout. */
+  tui: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -56,6 +58,7 @@ export function parseArgs(argv: string[] = process.argv): ParsedArgs {
     trace?: boolean;
     /** Commander --no-ai stores the negation under property `ai` */
     ai?: boolean;
+    tui?: boolean;
   } = {};
 
   const program = new Command();
@@ -87,6 +90,7 @@ export function parseArgs(argv: string[] = process.argv): ParsedArgs {
     .option('--verbose', 'Enable verbose pipeline logging', false)
     .option('--trace', 'Write a JSON trace file to the output directory', false)
     .option('--no-ai', 'Disable AI features and run in heuristic-only mode')
+    .option('--tui', 'Launch interactive terminal UI for investigation results', false)
     .exitOverride()
     .action((bp: string, opts: typeof capturedOpts) => {
       bundlePath = bp;
@@ -113,6 +117,7 @@ export function parseArgs(argv: string[] = process.argv): ParsedArgs {
     trace: capturedOpts.trace ?? false,
     // Commander's --no-ai sets `ai` to false; absence means AI is not disabled
     noAi: capturedOpts.ai === false,
+    tui: capturedOpts.tui ?? false,
   };
 }
 

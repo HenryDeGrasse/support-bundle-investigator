@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CommanderError } from '../cli.js';
 import type { PipelineResult } from '../../pipeline/analyze.js';
+import type { RunCliOptions } from '../runner.js';
 
 vi.mock('../cli.js', async () => {
   const actual = await vi.importActual<typeof import('../cli.js')>('../cli.js');
@@ -90,6 +91,7 @@ describe('runCli()', () => {
       verbose: false,
       trace: true,
       noAi: false,
+      tui: false,
     });
     analyzeBundlePipelineMock.mockResolvedValue(result);
     writePipelineResultMock.mockResolvedValue();
@@ -117,6 +119,7 @@ describe('runCli()', () => {
       verbose: false,
       trace: false,
       noAi: true,
+      tui: false,
     });
     analyzeBundlePipelineMock.mockResolvedValue(result);
     writePipelineResultMock.mockResolvedValue();
@@ -142,6 +145,7 @@ describe('runCli()', () => {
       verbose: true,
       trace: false,
       noAi: false,
+      tui: false,
     });
     analyzeBundlePipelineMock.mockResolvedValue(result);
     writePipelineResultMock.mockRejectedValue(new Error('disk full'));
@@ -162,5 +166,113 @@ describe('runCli()', () => {
 
     expect(analyzeBundlePipelineMock).not.toHaveBeenCalled();
     expect(cleanupPipelineResultMock).not.toHaveBeenCalled();
+  });
+
+  // ── TUI mode tests ────────────────────────────────────────────────────────
+
+  it('calls renderTUI with correct args when --tui flag is set and loadTUI is provided', async () => {
+    const renderTUIMock = vi.fn().mockResolvedValue(undefined);
+    const loadTUIMock = vi.fn().mockResolvedValue({ renderTUI: renderTUIMock });
+
+    const options: RunCliOptions = { loadTUI: loadTUIMock };
+
+    parseArgsMock.mockReturnValue({
+      bundlePath: '/tmp/bundle.tar.gz',
+      format: 'text',
+      outputDir: '/tmp/out',
+      verbose: false,
+      trace: false,
+      noAi: false,
+      tui: true,
+    });
+
+    await expect(runCli(['node', 'sbi', 'analyze', '/tmp/bundle.tar.gz', '--tui'], options)).resolves.toBe(0);
+
+    expect(loadTUIMock).toHaveBeenCalledOnce();
+    expect(renderTUIMock).toHaveBeenCalledWith('/tmp/bundle.tar.gz', {
+      outputDir: '/tmp/out',
+      verbose: false,
+      noAi: false,
+      trace: false,
+    });
+    // Pipeline should NOT run in TUI mode
+    expect(analyzeBundlePipelineMock).not.toHaveBeenCalled();
+    expect(cleanupPipelineResultMock).not.toHaveBeenCalled();
+  });
+
+  it('returns 1 and prints error when --tui is set but no loadTUI is provided', async () => {
+    parseArgsMock.mockReturnValue({
+      bundlePath: '/tmp/bundle.tar.gz',
+      format: 'text',
+      outputDir: undefined,
+      verbose: false,
+      trace: false,
+      noAi: false,
+      tui: true,
+    });
+
+    await expect(runCli(['node', 'sbi', 'analyze', '/tmp/bundle.tar.gz', '--tui'])).resolves.toBe(1);
+
+    expect(console.error).toHaveBeenCalledWith(
+      'Error: --tui is only supported when running via the sbi CLI binary.',
+    );
+    expect(analyzeBundlePipelineMock).not.toHaveBeenCalled();
+  });
+
+  it('returns 1 when loading or rendering the TUI fails', async () => {
+    const renderTUIMock = vi.fn().mockRejectedValue(new Error('tui failed'));
+    const loadTUIMock = vi.fn().mockResolvedValue({ renderTUI: renderTUIMock });
+
+    parseArgsMock.mockReturnValue({
+      bundlePath: '/tmp/bundle.tar.gz',
+      format: 'text',
+      outputDir: '/tmp/out',
+      verbose: true,
+      trace: true,
+      noAi: true,
+      tui: true,
+    });
+
+    await expect(
+      runCli(['node', 'sbi', 'analyze', '/tmp/bundle.tar.gz', '--tui'], { loadTUI: loadTUIMock }),
+    ).resolves.toBe(1);
+
+    expect(loadTUIMock).toHaveBeenCalledOnce();
+    expect(renderTUIMock).toHaveBeenCalledWith('/tmp/bundle.tar.gz', {
+      outputDir: '/tmp/out',
+      verbose: true,
+      noAi: true,
+      trace: true,
+    });
+    expect(console.error).toHaveBeenCalledWith('Error:', 'tui failed');
+    expect(analyzeBundlePipelineMock).not.toHaveBeenCalled();
+    expect(cleanupPipelineResultMock).not.toHaveBeenCalled();
+  });
+
+  it('runs the standard pipeline path when tui is false, even if loadTUI is provided', async () => {
+    const result = makePipelineResult();
+    const renderTUIMock = vi.fn().mockResolvedValue(undefined);
+    const loadTUIMock = vi.fn().mockResolvedValue({ renderTUI: renderTUIMock });
+
+    const options: RunCliOptions = { loadTUI: loadTUIMock };
+
+    parseArgsMock.mockReturnValue({
+      bundlePath: '/tmp/bundle.tar.gz',
+      format: 'text',
+      outputDir: undefined,
+      verbose: false,
+      trace: false,
+      noAi: false,
+      tui: false,
+    });
+    analyzeBundlePipelineMock.mockResolvedValue(result);
+    writePipelineResultMock.mockResolvedValue();
+    cleanupPipelineResultMock.mockResolvedValue();
+
+    await expect(runCli(['node', 'sbi', 'analyze', '/tmp/bundle.tar.gz'], options)).resolves.toBe(0);
+
+    expect(loadTUIMock).not.toHaveBeenCalled();
+    expect(renderTUIMock).not.toHaveBeenCalled();
+    expect(analyzeBundlePipelineMock).toHaveBeenCalledOnce();
   });
 });

@@ -4,7 +4,12 @@ export const VERSION = "0.1.0";
 
 // Pipeline
 export { analyzeBundlePipeline, cleanupPipelineResult } from './pipeline/index.js';
-export type { PipelineOptions, PipelineResult } from './pipeline/index.js';
+export type {
+  PipelineOptions,
+  PipelineResult,
+  PipelineProgressEvent,
+  PipelineStepStatus,
+} from './pipeline/index.js';
 export type { InvestigationTrace, TraceStep } from './pipeline/index.js';
 
 // CLI helpers
