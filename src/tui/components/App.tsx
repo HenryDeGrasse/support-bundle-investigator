@@ -1,19 +1,17 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Box, Text, useInput, useApp } from 'ink';
+import { Box, Text, useInput, useApp, useStdout } from 'ink';
 import type { PipelineOptions, PipelineResult } from '../../pipeline/index.js';
 import { buildReport } from '../../reporters/index.js';
 import { writePipelineResult } from '../../cli/output.js';
 import {
-  initialState,
-  transition,
-  mapKeyToAction,
-} from '../state-machine.js';
-import type { TUIState } from '../state-machine.js';
+  initialDashboardState,
+  dashboardTransition,
+  mapKeyToDashboardAction,
+} from '../dashboard-state.js';
+import type { DashboardState } from '../dashboard-state.js';
 import { ProgressView } from './ProgressView.js';
 import type { ProgressStep } from './ProgressView.js';
-import { Dashboard } from './Dashboard.js';
-import { DetailView } from './DetailView.js';
-import { SpecsView } from './SpecsView.js';
+import { DashboardLayout } from './DashboardLayout.js';
 import { ExportStatus } from './ExportStatus.js';
 
 // ---------------------------------------------------------------------------
@@ -62,9 +60,9 @@ const PIPELINE_STEPS = [
  *
  * - Runs the pipeline via an async effect on mount.
  * - Subscribes to onProgress to update step statuses.
- * - On completion, auto-transitions to dashboard.
+ * - On completion, auto-transitions to the pane-based dashboard.
  * - Handles keyboard input via useInput.
- * - Renders the appropriate view based on navigation state.
+ * - Renders ProgressView during loading, then DashboardLayout once ready.
  */
 export function App({
   bundlePath,
@@ -74,8 +72,8 @@ export function App({
 }: AppProps): React.ReactElement {
   const { exit } = useApp();
 
-  // Navigation state
-  const [navState, setNavState] = useState<TUIState>(initialState());
+  // Navigation state (pane-based)
+  const [dashState, setDashState] = useState<DashboardState>(initialDashboardState());
 
   // Pipeline progress steps
   const [steps, setSteps] = useState<ProgressStep[]>(
@@ -122,7 +120,9 @@ export function App({
       .then((pipelineResult) => {
         if (cancelled) return;
         setResult(pipelineResult);
-        setNavState((prev) => transition(prev, { type: 'PIPELINE_COMPLETE' }, 0));
+        setDashState((prev) =>
+          dashboardTransition(prev, { type: 'PIPELINE_COMPLETE' }, 0),
+        );
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -187,23 +187,24 @@ export function App({
   useInput((input, key) => {
     // Derive a string key identifier from the Ink key object
     let keyId = '';
-    if (key.upArrow) keyId = 'upArrow';
+    if (key.tab && key.shift) keyId = 'shift+tab';
+    else if (key.upArrow) keyId = 'upArrow';
     else if (key.downArrow) keyId = 'downArrow';
     else if (key.return) keyId = 'return';
     else if (key.escape) keyId = 'escape';
     else if (key.tab) keyId = 'tab';
 
-    // Handle 's' for export
-    if (input === 's' && navState.view !== 'progress') {
+    // Handle 's' for export (only when not in loading phase)
+    if (input === 's' && dashState.phase !== 'loading') {
       void handleExport();
       return;
     }
 
-    const action = mapKeyToAction(
+    const action = mapKeyToDashboardAction(
       keyId,
       input,
-      navState.view,
-      navState.selectedIndex,
+      dashState.activePane,
+      dashState.selectedIndex,
     );
 
     if (!action) return;
@@ -213,12 +214,8 @@ export function App({
       return;
     }
 
-    if (action.type === 'SELECT_FINDING' && (result?.findings.length ?? 0) === 0) {
-      return;
-    }
-
-    setNavState((prev) =>
-      transition(prev, action, result?.findings.length ?? 0),
+    setDashState((prev) =>
+      dashboardTransition(prev, action, result?.findings.length ?? 0),
     );
   });
 
@@ -237,48 +234,41 @@ export function App({
     );
   }
 
+  // ── Terminal dimensions for fullscreen layout ────────────────────────────
+  const { stdout } = useStdout();
+  const termWidth = stdout?.columns ?? 120;
+  const termHeight = stdout?.rows ?? 40;
+
   // ── Derive data for views ─────────────────────────────────────────────────
   const findings = result?.findings ?? [];
   const report = result ? buildReport(result) : null;
-  const selectedFinding = findings[navState.selectedIndex] ?? null;
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <Box flexDirection="column" padding={1}>
-      {/* View header */}
-      <Box marginBottom={1}>
-        <Text bold color="cyan">
-          Support Bundle Investigator
-        </Text>
-        {navState.view !== 'progress' && (
-          <Text color="gray"> — {findings.length} finding{findings.length !== 1 ? 's' : ''}</Text>
-        )}
-      </Box>
-
-      {/* Active view */}
-      {navState.view === 'progress' && <ProgressView steps={steps} />}
-
-      {navState.view === 'dashboard' && (
-        <Dashboard
+    <Box flexDirection="column" width={termWidth} height={termHeight}>
+      {dashState.phase === 'loading' ? (
+        <Box flexDirection="column" flexGrow={1} justifyContent="center" alignItems="center">
+          <Box marginBottom={1}>
+            <Text bold color="cyan">
+              Support Bundle Investigator
+            </Text>
+          </Box>
+          <ProgressView steps={steps} />
+          <Box flexGrow={1} />
+          <Box>
+            <Text color="gray" dimColor>
+              {'  [q] quit'}
+            </Text>
+          </Box>
+        </Box>
+      ) : (
+        <DashboardLayout
           findings={findings}
-          selectedIndex={navState.selectedIndex}
-          onSelect={(index) =>
-            setNavState((prev) =>
-              transition(prev, { type: 'SELECT_FINDING', index }, findings.length),
-            )
-          }
+          recommendations={report?.specRecommendations ?? []}
+          state={dashState}
+          height={termHeight}
+          width={termWidth}
         />
-      )}
-
-      {navState.view === 'detail' && selectedFinding && (
-        <DetailView
-          finding={selectedFinding}
-          scrollOffset={navState.detailScrollOffset}
-        />
-      )}
-
-      {navState.view === 'specs' && report && (
-        <SpecsView recommendations={report.specRecommendations} />
       )}
 
       {/* Export status overlay */}

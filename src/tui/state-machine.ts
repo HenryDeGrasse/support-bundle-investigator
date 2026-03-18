@@ -4,6 +4,9 @@
 // Pure, side-effect-free types and functions that govern all keyboard-driven
 // navigation within the TUI. No Ink or React imports — fully testable in a
 // Node environment.
+//
+// @deprecated Use dashboard-state.ts for pane-based navigation. This module
+// is kept for backward compatibility.
 // ---------------------------------------------------------------------------
 
 /** The set of screens the TUI can display. */

@@ -11,6 +11,17 @@ export type { TUIOptions, StepStatus } from './types.js';
 export { initialState, transition, mapKeyToAction } from './state-machine.js';
 export type { TUIView, TUIAction, TUIState } from './state-machine.js';
 export {
+  initialDashboardState,
+  dashboardTransition,
+  mapKeyToDashboardAction,
+} from './dashboard-state.js';
+export type {
+  DashboardPane,
+  DashboardPhase,
+  DashboardState,
+  DashboardAction,
+} from './dashboard-state.js';
+export {
   severityColor,
   formatSeverityLabel,
   sourceTag,
@@ -35,6 +46,9 @@ export async function renderTUI(
 ): Promise<void> {
   const { outputDir, ...pipelineOptions } = options;
 
+  // Use Ink's fullscreen mode: clears the terminal on enter, restores on exit.
+  // Combined with explicit width/height on the root Box (set in App.tsx via
+  // useStdout), this produces a full-terminal dashboard experience.
   const { waitUntilExit } = render(
     <App
       bundlePath={bundlePath}
@@ -42,7 +56,14 @@ export async function renderTUI(
       outputDir={outputDir}
       runPipeline={analyzeBundlePipeline}
     />,
+    { exitOnCtrlC: true },
   );
 
+  // Clear screen on entry for a clean fullscreen look
+  process.stdout.write('\x1B[2J\x1B[H');
+
   await waitUntilExit();
+
+  // Restore screen on exit
+  process.stdout.write('\x1B[2J\x1B[H');
 }
