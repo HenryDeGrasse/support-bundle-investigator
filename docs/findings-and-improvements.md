@@ -513,7 +513,113 @@ Automated benchmark: for each scenario, log which chunks each seed retrieves, wh
 
 ---
 
+## Tier 7 — Pipeline Integrity & Confidence Calibration
+
+Gaps found in the diagnostic pipeline logic that affect correctness, not just performance.
+
+### 7.1 AI evidence paths are never grounding-verified
+**Files:** `src/investigators/ai-investigator.ts` (`convertAIFindings`), `src/ai/schemas.ts`
+
+When the LLM cites a path like `cluster-resources/pods/default/app-pod.json`, `matchChunkForEvidence` looks for it in the chunk index. If the path doesn't match any chunk (common because chunk IDs use fabricated paths — see 1.2), the evidence item is still included with `artifactType: undefined`. No confidence penalty, no filtering. A finding can have 100% confidence with evidence citing nonexistent files.
+
+Fix: after `convertAIFindings`, check each evidence item against the chunk index. If the path doesn't match any chunk's `artifactId`, either drop the evidence item or penalize the finding's confidence (-0.10 per ungrounded citation). If all evidence items are ungrounded, drop the entire finding.
+
+### 7.2 AI confidence is unscored — LLM value taken at face value
+**Files:** `src/investigators/ai-investigator.ts`, `src/investigators/orchestrator.ts`
+
+The LLM returns `confidence: 1.0` and it's used directly. No adjustment for evidence grounding strength, hallucinated paths, thin evidence, or cross-source diversity. The heuristic pipeline has a multi-factor confidence model (verifier + hypothesis ranker). The AI pipeline has none.
+
+Fix: apply a confidence scoring pass to AI findings after conversion. Factors: grounding ratio (how many evidence paths matched actual chunks), evidence count, cross-source diversity, specificity of reasoning. Reuse the same scoring constants from the hypothesis ranker where applicable.
+
+### 7.3 AI findings bypass verifier contradiction checks in practice
+**Files:** `src/investigators/verifier.ts`, `src/investigators/ai-investigator.ts`
+
+The verifier's `parsePodComponent` expects exactly `Pod/namespace/name`. LLM-generated `affectedComponents` may use variant formats (`"Pod app-pod"`, `"default/app-pod"`, `"pod/default/app-pod"` lowercase). When parsing fails, all contradiction checks silently skip the finding. The finding passes verification unchecked.
+
+Fix: normalize `affectedComponents` in AI findings before verification. Strip leading/trailing whitespace, handle lowercase `pod/`, handle missing `Pod/` prefix, split `namespace/name` patterns.
+
+### 7.4 Evidence collector hardcodes fake bundle file paths
+**Files:** `src/investigators/hypothesis-evidence-collector.ts`
+
+`podFilePath()`, `secretFilePath()`, `eventsFilePath()` generate paths like `cluster-resources/pods/default/app-pod.yaml` — the fake fixture format. On real bundles, these paths don't match any actual file. Evidence items produced by the collector cite nonexistent paths.
+
+Fix: align with real bundle paths (flat JSON lists) after fixture rewrite (1.1), or resolve paths against the actual manifest.
+
+### 7.5 No cross-symptom hypothesis correlation
+**Files:** `src/investigators/hypothesis-generator.ts`
+
+Each symptom group generates hypotheses independently. If 3 pods in the same namespace all have DNS failures, they produce 3 independent hypothesis sets. No mechanism to detect "cluster-wide DNS outage" as a shared root cause with higher aggregate confidence.
+
+Fix: after per-symptom hypothesis generation, run a cross-symptom correlation pass. Group hypothesis sets that share the same top-ranked category (e.g. all `dns-failure`). If N symptom groups converge on the same root cause in the same namespace, create a meta-finding: "Cluster-wide DNS failure affecting N pods in namespace X" with confidence boosted by convergence.
+
+### 7.6 No active falsification of hypotheses
+**Files:** `src/investigators/hypothesis-evidence-collector.ts`
+
+Contradicting evidence search is passive — checks for success patterns in logs and healthy pod status. Never actively seeks evidence that would disprove a hypothesis. For "DNS failure" hypothesis, doesn't check whether there are successful DNS lookups for the same hostname in any log. For "missing Secret" hypothesis, doesn't check whether the Secret is actually present (it checks for absence but doesn't look for presence as contradicting signal when the hypothesis is something else).
+
+Fix: for each hypothesis, define what evidence would falsify it and actively search for that. "DNS failure" → search for `"successfully resolved"` or `"connected to <hostname>"` for the same hostname. "Registry auth failure" → search for successful pulls of other images from the same registry.
+
+### 7.7 Confidence scores not calibrated against ground truth
+**Files:** `src/investigators/hypothesis-ranker.ts`, `scripts/benchmark-hypotheses.mjs`
+
+Scoring constants (`SUPPORTING_PER_ITEM = 0.15`, etc.) are hand-tuned. The benchmark checks "is the top-1 category correct?" but doesn't check whether `0.81` confidence actually means 81% correct. A confidence of 0.80 could be right 50% or 99% of the time.
+
+Fix: extend the benchmark to track actual correctness per confidence band across a larger test corpus. Use the data to adjust scoring constants. At minimum, verify monotonicity: findings at 0.90 confidence should be correct more often than findings at 0.70.
+
+### 7.8 Five dedup/merge layers with overlapping logic
+**Files:** `src/investigators/orchestrator.ts`
+
+The orchestrator runs: (a) hypothesis category dedup, (b) AI-primary promotion, (c) `mergeHypothesisFindings`, (d) title-based dedup, (e) symptom suppression. Each layer has its own normalization, component matching, and title comparison. Layers partially overlap — (a) and (d) both deduplicate by normalized title; (b) and (c) both merge by component overlap. No clear contract between layers.
+
+Fix: consolidate into two passes: (1) component-based merge (structural, using graph relationships when available), (2) title-based dedup (cosmetic, catching LLM wording variants). Each pass has one normalization strategy and one merge strategy. Currently the multiple layers were added incrementally to fix specific bugs — they need a unified design.
+
+### 7.9 Spec recommender ignores AI findings
+**Files:** `src/reporters/spec-recommender.ts`
+
+`suggestFromHypothesisGaps` only processes `finding:hypothesis:*` findings. AI findings (`finding:ai:*`) may have `missingEvidence` entries pointing to useful spec gaps but they're ignored.
+
+Fix: process all findings in the hypothesis gap recommender, not just hypothesis-prefixed ones.
+
+### 7.10 No node resource investigation
+**Files:** `src/investigators/kubernetes-investigator.ts`, `src/investigators/seed-generator.ts`
+
+No investigator examines node conditions (NotReady, MemoryPressure, DiskPressure, PIDPressure, tainted). No seeds are generated for node-level problems. A node in NotReady state explains why pods can't schedule — but this is invisible to the current pipeline.
+
+Fix: add node-health seeds (scan Node resources for unhealthy conditions) and a node investigator that correlates node conditions with pod scheduling failures.
+
+### 7.11 Hypothesis templates are procedural, not declarative
+**Files:** `src/investigators/hypothesis-generator.ts`
+
+Five symptom types, each with a hardcoded generator function. Adding a new failure pattern requires new TypeScript code. This should be a declarative template registry:
+
+```yaml
+- symptom: oom-kill
+  hypotheses:
+    - category: oom-kill
+      rootCause: "Container memory limit is too low for the application's working set"
+    - category: config-error  
+      rootCause: "Application has a memory leak triggered by misconfigured caching"
+    - category: generic-crash
+      rootCause: "Application allocates unbounded memory based on input size"
+  evidence_rules:
+    supporting: [{ source: events, pattern: "OOMKilled" }, { source: pod_status, field: "terminated.reason", value: "OOMKilled" }]
+    contradicting: [{ source: pod_status, field: "resources.limits.memory", absent: true }]
+```
+
+Fix: extract hypothesis templates into a data format. The generator reads templates and instantiates hypotheses. New failure patterns are added by editing data, not code. Evidence collection rules are co-located with the template.
+
+### 7.12 No uncertainty communication beyond a single number
+**Files:** `src/types/finding.ts`, `src/reporters/`
+
+The user sees `80%` confidence as a point estimate. No indication of whether the system is certain about that 80% (5 evidence items, all specific, cross-source) or uncertain (1 generic evidence item, 2 missing decisive). The `confidenceRationale` text exists but is buried in reasoning, not surfaced as a first-class UI element.
+
+Fix: add `confidenceQuality: 'strong' | 'moderate' | 'weak'` to `Finding` based on evidence count + specificity + missing decisive count. Display in TUI and reports alongside the percentage: `80% (strong)` vs `80% (weak)`. "Strong" means the number is well-supported. "Weak" means the number could shift significantly with more evidence.
+
+---
+
 ## Implementation Priority
+
+**Phase 0 — Pipeline integrity (1-2 days):** 7.1-7.4 (grounding verification, AI confidence scoring, verifier normalization, evidence path alignment). These are correctness bugs — AI findings can cite nonexistent files at 100% confidence with zero verification. Fix before anything else.
 
 **Phase 1 — Foundations (1-2 days):** 1.1-1.7. Fix fixtures, fix broken identifiers, wire up unused code. No architecture changes. All existing tests updated.
 
@@ -535,8 +641,9 @@ Automated benchmark: for each scenario, log which chunks each seed retrieves, wh
 ### Dependency graph
 
 ```
-Phase 1 (foundations)
-  └─► Phase 2 (BM25 + RRF)
+Phase 0 (pipeline integrity — AI grounding, confidence scoring, verifier fixes)
+  └─► Phase 1 (foundations — fixtures, identifiers, dead code)
+        └─► Phase 2 (BM25 + RRF)
         ├─► Phase 3 (hybrid chunking + local embedding)
         │     └─► Phase 4 (contextual retrieval, HyDE)
         └─► Phase 5a (unified graph + traversal engine)
@@ -547,4 +654,4 @@ Phase 1 (foundations)
                     └─► Phase 6 (new investigators, create causal edges)
 ```
 
-Phase 2 and Phase 3 can run in parallel once Phase 1 is done. Phase 4 depends on Phase 3 (needs local embedding backend). Phase 5a can start after Phase 1 (doesn't need retrieval changes). Phase 5b depends on 5a. Phase 6 depends on 5b (investigators need to create causal edges in the unified graph). Phase 5d depends on Phase 3 (needs local LLM for triple extraction) and 5c.
+Phase 0 first (correctness). Phase 1 next (fixtures, dead code). Phase 2 and Phase 3 can run in parallel after Phase 1. Phase 4 depends on Phase 3 (needs local embedding backend). Phase 5a can start after Phase 1 (doesn't need retrieval changes). Phase 5b depends on 5a. Phase 6 depends on 5b (investigators need to create causal edges in the unified graph). Phase 5d depends on Phase 3 (needs local LLM for triple extraction) and 5c. Tier 7 items 7.5-7.12 (cross-symptom correlation, active falsification, declarative templates, confidence calibration, dedup consolidation, uncertainty communication) are threaded into their respective phases — 7.5/7.6 into Phase 5b (causal edges enable cross-symptom correlation), 7.8 into Phase 5a (graph unification replaces multi-layer dedup), 7.7 into Phase 6 (needs larger test corpus), 7.11/7.12 can be done anytime.
