@@ -8,6 +8,12 @@ import {
   evidenceIcon,
   extractDifferentialContext,
 } from '../helpers.js';
+import {
+  humanizeTitle,
+  humanizeReasoning,
+  cleanEvidencePath,
+  collapseEvidence,
+} from '../../reporters/display-helpers.js';
 import { Pane } from './Pane.js';
 
 // ---------------------------------------------------------------------------
@@ -82,7 +88,7 @@ export function DetailPane({
   // ── (a) Title + severity badge + confidence ──────────────────────────────
   lines.push(
     <Box key="title" marginBottom={1}>
-      <Text bold>{finding.title}</Text>
+      <Text bold>{humanizeTitle(finding.title)}</Text>
     </Box>,
   );
   lines.push(
@@ -145,25 +151,27 @@ export function DetailPane({
   );
   lines.push(
     <Box key="reasoning" marginLeft={2} marginBottom={1}>
-      <Text wrap="wrap">{finding.reasoningSummary}</Text>
+      <Text wrap="wrap">{humanizeReasoning(finding.reasoningSummary)}</Text>
     </Box>,
   );
 
   // ── (d) Evidence items ────────────────────────────────────────────────────
-  if (finding.evidence.length > 0) {
+  const collapsed = collapseEvidence(finding.evidence);
+  if (collapsed.length > 0) {
     lines.push(
       <Box key="evidence-header" marginBottom={0}>
         <Text bold color="cyan">
-          ── Evidence ({finding.evidence.length}) ──
+          ── Evidence ({collapsed.length}) ──
         </Text>
       </Box>,
     );
-    for (let i = 0; i < finding.evidence.length; i++) {
-      const ev = finding.evidence[i]!;
+    for (let i = 0; i < collapsed.length; i++) {
+      const ev = collapsed[i]!;
+      const cleanPath = cleanEvidencePath(ev.path);
       lines.push(
         <Box key={`ev-${i}`} marginLeft={2} marginBottom={0}>
           <Text>{evidenceIcon(ev.artifactType)} </Text>
-          <Text color="green">{ev.path}</Text>
+          <Text color="green">{cleanPath}</Text>
           <Text color="gray"> — {ev.note}</Text>
         </Box>,
       );

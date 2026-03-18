@@ -8,6 +8,7 @@ import {
   sourceTag,
   truncateTitle,
 } from '../helpers.js';
+import { humanizeTitle } from '../../reporters/display-helpers.js';
 import { Pane } from './Pane.js';
 
 // ---------------------------------------------------------------------------
@@ -53,7 +54,7 @@ export function FindingsPane({
       <Box marginBottom={1}>
         <Text bold>
           {'  '}
-          {'SEV    CONF  TAG  TITLE'}
+          {'SEV       CONF  TAG  TITLE'}
         </Text>
       </Box>
 
@@ -66,10 +67,10 @@ export function FindingsPane({
         findings.map((finding, index) => {
           const isSelected = index === selectedIndex;
           const color = severityColor(finding.severity);
-          const label = formatSeverityLabel(finding.severity).padEnd(8);
-          const conf = confidenceBar(finding.confidence).padEnd(6);
-          const tag = sourceTag(finding.id).padEnd(5);
-          const title = truncateTitle(finding.title, 40);
+          const label = formatSeverityLabel(finding.severity).padEnd(9);
+          const conf = confidenceBar(finding.confidence).padEnd(5);
+          const tag = sourceTag(finding.id).padEnd(4);
+          const title = truncateTitle(humanizeTitle(finding.title), 40);
 
           return (
             <Box key={finding.id}>
@@ -77,9 +78,9 @@ export function FindingsPane({
               <Text color={color} bold={isSelected}>
                 {label}
               </Text>
-              <Text bold={isSelected}>{conf}</Text>
+              <Text bold={isSelected}>{conf} </Text>
               <Text color="gray" bold={isSelected}>
-                {tag}
+                {tag}{' '}
               </Text>
               <Text bold={isSelected}>{title}</Text>
             </Box>
