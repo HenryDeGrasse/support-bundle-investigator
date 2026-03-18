@@ -99,6 +99,15 @@ export interface AIInvestigatorDeps {
    * `[AIInvestigator] Seed: {hypothesis} → {N} graph, {M} lexical, {K} semantic chunks across {T} artifact types`
    */
   verbose?: boolean;
+  /**
+   * Optional callback invoked before each seed investigation begins.
+   * Used by the TUI to show per-seed progress during the AI phase.
+   */
+  onSeedProgress?: (
+    seedIndex: number,
+    seedTotal: number,
+    seedLabel: string,
+  ) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -334,7 +343,7 @@ export async function investigateWithAI(
   deps: AIInvestigatorDeps,
   maxSeeds = DEFAULT_MAX_SEEDS,
 ): Promise<InvestigatorResult> {
-  const { llmClient, chunkIndex, resourceGraph, lexicalIndex, embeddingClient, vectorStore, verbose = false } = deps;
+  const { llmClient, chunkIndex, resourceGraph, lexicalIndex, embeddingClient, vectorStore, verbose = false, onSeedProgress } = deps;
 
   // Sort seeds by priority descending and cap at maxSeeds
   const prioritisedSeeds = [...seeds]
@@ -344,9 +353,13 @@ export async function investigateWithAI(
   const allFindings: Finding[] = [];
   const allEdges: GraphEdge[] = [];
   const counter: Counter = { value: 0 };
+  const seedTotal = prioritisedSeeds.length;
 
-  for (const seed of prioritisedSeeds) {
+  for (let seedIdx = 0; seedIdx < prioritisedSeeds.length; seedIdx++) {
+    const seed = prioritisedSeeds[seedIdx]!;
     try {
+      // Emit per-seed progress for TUI
+      onSeedProgress?.(seedIdx + 1, seedTotal, seed.hypothesis);
       // ── Step 1: Graph retrieval (deterministic precision floor) ───────────
       const graphChunks = getRelatedChunks(resourceGraph, seed, chunkIndex);
 

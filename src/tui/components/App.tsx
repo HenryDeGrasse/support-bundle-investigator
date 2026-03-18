@@ -86,6 +86,9 @@ export function App({
   // Error state
   const [error, setError] = useState<string | null>(null);
 
+  // Rolling detail messages for progress sub-steps (e.g. per-seed AI progress)
+  const [recentDetails, setRecentDetails] = useState<string[]>([]);
+
   // Export status overlay
   const [exportVisible, setExportVisible] = useState(false);
   const [exportMessage, setExportMessage] = useState('');
@@ -113,6 +116,10 @@ export function App({
             return s;
           }),
         );
+        // Capture detail messages for the rolling progress window
+        if (event.detail) {
+          setRecentDetails((prev) => [...prev, event.detail!]);
+        }
       },
     };
 
@@ -253,7 +260,7 @@ export function App({
               Support Bundle Investigator
             </Text>
           </Box>
-          <ProgressView steps={steps} />
+          <ProgressView steps={steps} recentDetails={recentDetails} />
           <Box flexGrow={1} />
           <Box>
             <Text color="gray" dimColor>

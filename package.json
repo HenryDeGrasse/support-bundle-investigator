@@ -6,7 +6,8 @@
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
   "bin": {
-    "sbi": "dist/cli/run.mjs"
+    "sbi": "dist/cli/run.mjs",
+    "rat": "dist/cli/rat.mjs"
   },
   "scripts": {
     "lint": "eslint \"src/**/*.ts\" \"src/**/*.tsx\" \"test/**/*.ts\" --max-warnings 0",

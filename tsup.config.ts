@@ -4,6 +4,7 @@ export default defineConfig({
   entry: {
     index: "src/index.ts",
     "cli/run": "src/cli/run.ts",
+    "cli/rat": "src/cli/rat.ts",
     "tui/index": "src/tui/index.tsx",
   },
   format: ["cjs", "esm"],

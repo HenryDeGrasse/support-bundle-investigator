@@ -143,9 +143,20 @@ function filterEdgesForRetainedFindings(
  * @returns A {@link InvestigationResult} ready for graph integration and
  *          report generation.
  */
+/**
+ * Optional callback invoked before each AI seed investigation begins.
+ * Used by the TUI to show per-seed progress during the AI phase.
+ */
+export type SeedProgressCallback = (
+  seedIndex: number,
+  seedTotal: number,
+  seedLabel: string,
+) => void;
+
 export async function runInvestigation(
   context: InvestigatorContext,
   aiDeps?: AIInvestigatorDeps,
+  onSeedProgress?: SeedProgressCallback,
 ): Promise<InvestigationResult> {
   // ── 1. Generate seeds ─────────────────────────────────────────────────────
   const seeds = generateSeeds(context);
@@ -230,7 +241,10 @@ export async function runInvestigation(
 
   if (aiDeps !== undefined) {
     try {
-      const aiResult = await investigateWithAI(context, seeds, aiDeps);
+      const aiResult = await investigateWithAI(context, seeds, {
+        ...aiDeps,
+        onSeedProgress,
+      });
       rawFindings.push(...aiResult.findings);
       allEdges.push(...aiResult.edges);
       aiEnabled = true;
@@ -247,10 +261,71 @@ export async function runInvestigation(
   // ── 5. Verify: contradiction checks, confidence adjustment, dedup ─────────
   const verifiedHeuristic = verifyFindings(rawFindings, context);
 
-  // ── 6. Combine verified heuristic + filtered hypothesis findings ───────────
+  // ── 5a. AI-primary promotion ──────────────────────────────────────────────
+  //
+  // When AI findings are present, promote them to primary status. Heuristic
+  // and hypothesis findings that overlap with AI findings on the same
+  // component are folded into the AI finding's evidence as corroborating
+  // context rather than appearing as separate top-level findings. This
+  // produces a cleaner report where the AI's synthesized root-cause diagnosis
+  // is the main finding rather than competing with 5+ symptom-level entries.
+  //
+  // Heuristic/hypothesis findings with no AI equivalent are preserved.
+  const aiFindingsInPool = verifiedHeuristic.filter((f) => f.id.startsWith('finding:ai:'));
+
+  let promotedFindings: Finding[];
+  if (aiFindingsInPool.length > 0) {
+    const nonAiFindings = verifiedHeuristic.filter((f) => !f.id.startsWith('finding:ai:'));
+
+    // For each AI finding, absorb corroborating heuristic evidence
+    const absorbedIds = new Set<string>();
+    const enrichedAiFindings = aiFindingsInPool.map((aiFinding) => {
+      const corroborating = nonAiFindings.filter((hf) => {
+        if (absorbedIds.has(hf.id)) return false;
+        return hf.affectedComponents.some((comp) =>
+          aiFinding.affectedComponents.some(
+            (aiComp) => comp === aiComp || comp.includes(aiComp) || aiComp.includes(comp),
+          ),
+        );
+      });
+
+      for (const hf of corroborating) {
+        absorbedIds.add(hf.id);
+      }
+
+      // Merge corroborating evidence into the AI finding
+      if (corroborating.length > 0) {
+        const additionalEvidence = corroborating.flatMap((hf) =>
+          hf.evidence.filter(
+            (ev) => !aiFinding.evidence.some((existing) => existing.path === ev.path && existing.note === ev.note),
+          ),
+        );
+        const additionalContradictions = corroborating.flatMap((hf) =>
+          hf.contradictionsChecked.filter(
+            (c) => !aiFinding.contradictionsChecked.includes(c),
+          ),
+        );
+
+        return {
+          ...aiFinding,
+          evidence: [...aiFinding.evidence, ...additionalEvidence],
+          contradictionsChecked: [...aiFinding.contradictionsChecked, ...additionalContradictions],
+        };
+      }
+      return aiFinding;
+    });
+
+    // Keep heuristic findings that weren't absorbed by any AI finding
+    const survivingHeuristic = nonAiFindings.filter((hf) => !absorbedIds.has(hf.id));
+    promotedFindings = [...enrichedAiFindings, ...survivingHeuristic];
+  } else {
+    promotedFindings = verifiedHeuristic;
+  }
+
+  // ── 6. Combine promoted + filtered hypothesis findings ─────────────────────
   const combinedFindings = mergeHypothesisFindings(
     filteredHypothesisFindings,
-    verifiedHeuristic,
+    promotedFindings,
   );
   const retainedEdges = filterEdgesForRetainedFindings(allEdges, combinedFindings);
   const hypothesisEdges = buildHypothesisSupportEdges(filteredHypothesisFindings);

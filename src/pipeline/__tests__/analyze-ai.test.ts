@@ -227,10 +227,8 @@ describe('analyzeBundlePipeline — AI conditional path', () => {
     await analyzeBundlePipeline('/fake/bundle.tar.gz');
 
     // runInvestigation should have been called without aiDeps (second arg undefined)
-    expect(runInvestigation).toHaveBeenCalledWith(
-      expect.any(Object),
-      undefined,
-    );
+    expect(runInvestigation).toHaveBeenCalled();
+    expect(vi.mocked(runInvestigation).mock.calls[0]?.[1]).toBeUndefined();
   });
 
   // ── AI disabled via --no-ai ──────────────────────────────────────────────
@@ -282,8 +280,8 @@ describe('analyzeBundlePipeline — AI conditional path', () => {
     expect(LLMClient).toHaveBeenCalledOnce();
 
     // runInvestigation should have received aiDeps (not undefined)
-    expect(runInvestigation).toHaveBeenCalledWith(
-      expect.any(Object),
+    expect(runInvestigation).toHaveBeenCalled();
+    expect(vi.mocked(runInvestigation).mock.calls[0]?.[1]).toEqual(
       expect.objectContaining({
         chunkIndex: fakeChunks,
         resourceGraph: expect.any(Object),
@@ -332,8 +330,8 @@ describe('analyzeBundlePipeline — AI conditional path', () => {
     expect(mockEmbeddingInstance.embed).toHaveBeenCalledWith(['chunk summary']);
     expect(VectorStore).toHaveBeenCalledOnce();
     expect(mockVectorStoreInstance.addAll).toHaveBeenCalledWith(fakeChunks, [[0.1, 0.2, 0.3]]);
-    expect(runInvestigation).toHaveBeenCalledWith(
-      expect.any(Object),
+    expect(runInvestigation).toHaveBeenCalled();
+    expect(vi.mocked(runInvestigation).mock.calls[0]?.[1]).toEqual(
       expect.objectContaining({
         embeddingClient: expect.any(Object),
         vectorStore: expect.any(Object),
@@ -380,10 +378,8 @@ describe('analyzeBundlePipeline — AI conditional path', () => {
     const result = await analyzeBundlePipeline('/fake/bundle.tar.gz');
 
     // runInvestigation should still be called, but without aiDeps
-    expect(runInvestigation).toHaveBeenCalledWith(
-      expect.any(Object),
-      undefined,
-    );
+    expect(runInvestigation).toHaveBeenCalled();
+    expect(vi.mocked(runInvestigation).mock.calls[0]?.[1]).toBeUndefined();
 
     // Warning should have been logged
     expect(warnSpy).toHaveBeenCalledWith(
@@ -422,10 +418,8 @@ describe('analyzeBundlePipeline — AI conditional path', () => {
     ).resolves.not.toThrow();
 
     // AI setup failed → no aiDeps passed
-    expect(runInvestigation).toHaveBeenCalledWith(
-      expect.any(Object),
-      undefined,
-    );
+    expect(runInvestigation).toHaveBeenCalled();
+    expect(vi.mocked(runInvestigation).mock.calls[0]?.[1]).toBeUndefined();
 
     warnSpy.mockRestore();
   });

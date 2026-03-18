@@ -44,6 +44,8 @@ export interface PipelineProgressEvent {
   status: PipelineStepStatus;
   /** Number of artifacts processed (only set when status is 'completed'). */
   artifactsProcessed?: number;
+  /** Optional detail message for sub-step progress (e.g. per-seed AI investigation). */
+  detail?: string;
 }
 
 export interface PipelineOptions {
@@ -421,6 +423,17 @@ export async function analyzeBundlePipeline(
   emitProgress(options, { step: 'investigate', status: 'started' });
   log('Running investigation pipeline…', verbose);
 
+  // Build a seed-level progress reporter so the TUI can show per-seed updates
+  const seedProgress = options.onProgress
+    ? (seedIndex: number, seedTotal: number, seedLabel: string) => {
+        emitProgress(options, {
+          step: 'investigate',
+          status: 'started',
+          detail: `Seed ${seedIndex}/${seedTotal}: ${seedLabel}`,
+        });
+      }
+    : undefined;
+
   const investigationResult = await runInvestigation(
     {
       analyzerResults,
@@ -430,6 +443,7 @@ export async function analyzeBundlePipeline(
       profile,
     },
     aiDeps,
+    seedProgress,
   );
 
   const evidenceNodeCount = addInvestigationEvidenceNodes(
