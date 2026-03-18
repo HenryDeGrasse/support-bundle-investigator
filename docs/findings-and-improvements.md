@@ -107,36 +107,123 @@ With small bundles, every seed gets identical chunks — 6 LLM calls with same c
 
 ---
 
-## Tier 3 — Chunking Upgrade
+## Tier 3 — Hybrid Chunking + Local Embedding
 
-### 3.1 Semantic chunking for logs (error-aware)
+The chunking and embedding layers are refactored together as a hybrid: error-aware chunking produces **better chunks** (meaningful diagnostic units), late chunking produces **better embeddings** (each chunk vector encodes full-document context). They operate at different pipeline stages and compound.
+
+```
+Log file (5000 lines)
+  │
+  ├─ Stage 1: Error-aware chunker (deterministic, zero cost)
+  │   → Chunk 1: lines 1-20 (startup/config preamble — always included)
+  │   → Chunk 2: lines 145-195 (DNS error cluster, 12 errors)
+  │   → Chunk 3: lines 290-340 (timeout cluster, 8 errors)
+  │   → Chunk 4: lines 800-830 (OOM warning cluster)
+  │   → Summary chunk: "lines 21-144, 196-289, 341-799, 831-5000: healthy, no errors"
+  │   Result: 5 chunks instead of 100 fixed-window chunks
+  │
+  ├─ Stage 2: Late chunking embedder (local GPU, ~200ms)
+  │   → Embed full 5000-line log through local model (131K context)
+  │   → Slice token-level embeddings at chunk boundaries [0-20, 145-195, ...]
+  │   → Each chunk embedding encodes the full log context
+  │   Result: each error chunk "knows" about config/setup from line 1-20
+  │
+  └─ Final: 5 chunks, each meaningful, each embedding context-aware
+     20x fewer chunks, 20x better token budget usage, better retrieval
+```
+
+Why hybrid beats either alone:
+- Error-aware alone: great chunks, but embeddings are isolated. Timeout chunk at line 3000 doesn't "know" about `DB_HOST=db.internal` at line 12.
+- Late chunking alone with fixed windows: embeddings have context, but the LLM receives messy 50-line slices — half an error here, noise there.
+- Hybrid: LLM receives clean error-centered chunks (good for comprehension) AND retrieval finds them via context-aware embeddings (good for search).
+
+### 3.1 Error-aware log chunking
 **Files:** `src/graph/chunker.ts` (`chunkLogFile`), `src/parsers/log-parser.ts` (`extractErrorWindows`)
 
-Replace fixed 50-line window with error-centered chunking. `extractErrorWindows()` already identifies error clusters — build chunks centered on those. Non-error regions chunked at coarser granularity (200 lines) or collapsed into single-line summaries: "lines 100-300: 200 INFO lines, no errors, application healthy."
+Replace fixed 50-line window with error-centered chunking. `extractErrorWindows()` already identifies error clusters — build chunks centered on those. Three chunk types:
 
-This dramatically improves chunk relevance. Most log chunks currently sent to the LLM are pure INFO noise consuming token budget.
+1. **Preamble chunk:** First 20-30 lines of every log (startup, config, env var logging). Always included — this is where connection strings, hostnames, and versions are logged.
+2. **Error cluster chunks:** Centered on error windows with 10-line padding. Deduplicate repeated lines within each cluster (`[repeated x47]`).
+3. **Summary chunk:** Single-line description of healthy regions: "lines 100-300: 200 INFO lines, no errors." Preserves the signal that these regions are healthy without consuming token budget.
 
-### 3.2 Use structured summaries as chunk content for K8s resources
+This dramatically improves chunk relevance. Most log chunks currently sent to the LLM are pure INFO noise.
+
+### 3.2 Late chunking with local embedding model
+**Files:** `src/graph/chunker.ts`, `src/ai/embeddings.ts`, new `src/ai/local-embeddings.ts`
+
+After error-aware chunking produces chunk boundaries, embed the full log document through a long-context local model, then slice the token-level embedding tensor at those boundaries. Average-pool each slice to get the chunk embedding.
+
+Each chunk embedding retains full-document context. The error chunk about a timeout at line 3000 implicitly encodes `DB_HOST=db.internal` from line 12 because the transformer's attention saw it during the forward pass.
+
+Implementation requires token-position mapping between the full-document embedding output and chunk line ranges. Use HuggingFace Text Embeddings Inference (TEI) server which exposes token-level outputs, or MLX directly on Apple Silicon. See 3.6 for local model details.
+
+For K8s resources and events (single-chunk artifacts), late chunking adds nothing — standard single-document embedding is fine. Late chunking applies only to multi-chunk log files.
+
+### 3.3 Use structured summaries as chunk content for K8s resources
 **Files:** `src/graph/chunker.ts` (`chunkResource`), `src/ai/summarizer.ts`
 
 `chunkResource()` sends full `JSON.stringify` (50-200 lines) as content. `summarizeResource()` produces 5-15 line summaries with all diagnostic signals. Use summaries as LLM-facing content, keep raw JSON in metadata for full-fidelity lookups. 5-10x effective context window usage.
 
-### 3.3 Token budget awareness in chunk merge
+### 3.4 Token budget awareness in chunk merge
 **Files:** `src/investigators/ai-investigator.ts`
 
 No token counting or context window awareness. 20 chunks of raw JSON could exceed model limits. Estimate tokens per chunk (`content.length / 4`), track running total during merge, switch from raw content to summaries for lower-priority chunks when approaching budget (e.g. 80% of model context window).
 
-### 3.4 Enable log deduplication for AI context
+### 3.5 Enable log deduplication for AI context
 **Files:** `src/parsers/log-parser.ts`, `src/pipeline/analyze.ts`
 
-`parseLogFile` has `dedup` option but it's never enabled. 47 identical DNS failure lines bloat chunks. Enable dedup at parse time or at minimum when building AI chunks. The `[repeated x47]` suffix preserves signal.
+`parseLogFile` has `dedup` option but it's never enabled. 47 identical DNS failure lines bloat chunks. Enable dedup at parse time or at minimum when building AI chunks. The `[repeated x47]` suffix preserves signal. With error-aware chunking (3.1), dedup happens per-cluster naturally.
 
-### 3.5 Late chunking (Jina AI approach)
-**Files:** `src/graph/chunker.ts`, `src/ai/embeddings.ts`
+### 3.6 Local embedding backend (fully offline, self-hosted)
+**Files:** new `src/ai/local-embeddings.ts`, `src/ai/config.ts`
 
-Embed the full document first using a long-context model, then extract chunk-level embeddings from the corresponding token positions. Each chunk embedding retains full-document context, solving the "orphan chunk" problem where `"it failed"` loses meaning without preceding context. Most impactful for log files where error messages reference variables defined earlier in the log.
+Replace OpenAI API dependency with a pluggable local embedding backend. Aligns with Replicated's local-first DNA — no data leaves the network, no API keys required for embeddings.
 
-Requires a long-context embedding model (Jina embeddings v3, or OpenAI's text-embedding-3-large with 8K context). Implementation: embed full log file → slice embedding tensor at chunk boundaries → store per-chunk embeddings.
+**Target model: gte-Qwen2-1.5B-instruct** (default) or gte-Qwen2-7B-instruct (high-quality).
+
+| Model | Params | VRAM (INT4) | VRAM (FP16) | Context | Speed (Apple Silicon) |
+|---|---|---|---|---|---|
+| gte-Qwen2-1.5B | 1.5B | 1.5 GB | 3 GB | 131,072 tokens | ~30-50ms/embed |
+| gte-Qwen2-7B | 7B | 5 GB | 14 GB | 131,072 tokens | ~100-200ms/embed |
+
+Both models: MIT license, available via Ollama and HuggingFace. 131K context covers any log file in a support bundle.
+
+**Hardware requirements for the default 1.5B model:**
+- Any Apple Silicon Mac with 8+ GB unified memory
+- Any Linux/Windows machine with a discrete GPU (even 4 GB VRAM)
+- CPU-only: ~2-5s per embedding — usable for small bundles, slow for large ones
+- Production cluster: runs as a sidecar or Job — most nodes have more than enough
+
+**Hardware for the 7B model (recommended for machines with 16+ GB):**
+- Apple Silicon with 16+ GB unified memory (M1 Pro and up) — FP16, no quantization needed
+- Any GPU with 8+ GB VRAM (RTX 3070+) at INT8, or 16+ GB (RTX 4080+) at FP16
+- A single RTX 4090 (24 GB) serves the 7B model for a whole team via HTTP endpoint
+
+**Runtime options (in order of preference for late chunking):**
+1. **HuggingFace Text Embeddings Inference (TEI):** Docker container, exposes token-level embeddings via REST API. Required for true late chunking (need token-position outputs). `docker run ghcr.io/huggingface/text-embeddings-inference --model-id Alibaba-NLP/gte-Qwen2-1.5B-instruct`
+2. **MLX (Apple Silicon native):** Direct Python/Swift integration via `mlx-lm`. Maximum performance on Mac. Supports token-level output with custom inference code.
+3. **Ollama:** Simplest setup (`ollama pull qwen2:1.5b`). But only returns pooled embeddings — no token-level output. Works for standard embedding, NOT for late chunking. Use as fallback when TEI isn't available.
+
+**Architecture:** Make `EmbeddingClient` an interface (it's already a class). Add `LocalEmbeddingClient` that calls a local HTTP endpoint. Config via environment:
+```
+SBI_EMBEDDING_BACKEND=local|openai     # default: local
+SBI_EMBEDDING_URL=http://localhost:8080 # TEI or Ollama endpoint
+SBI_EMBEDDING_MODEL=gte-Qwen2-1.5B     # model selection
+```
+
+When `SBI_EMBEDDING_BACKEND=local` and late chunking is enabled, use TEI's token-level endpoint. When TEI isn't available, fall back to Ollama pooled embeddings (standard embedding, no late chunking). When no local model is running, fall back to OpenAI API if `OPENAI_API_KEY` is set. When nothing is available, skip semantic retrieval entirely — graph + BM25 lexical still work.
+
+**Graceful degradation chain:**
+```
+TEI (token-level, late chunking) → Ollama (pooled, standard embedding)
+  → OpenAI API (pooled, standard embedding) → no semantic retrieval (graph + BM25 only)
+```
+
+**Self-hosting deployment for Replicated customers:**
+- Ship TEI as an optional Helm chart component alongside the SBI analyzer
+- Customer deploys TEI on a node with a GPU (or CPU-only for smaller bundles)
+- SBI connects to TEI via cluster-internal service URL
+- Zero external API calls, all data stays on-prem
 
 ---
 
@@ -241,10 +328,23 @@ Automated benchmark: for each scenario, log which chunks each seed retrieves, wh
 
 **Phase 2 — Retrieval core (2-3 days):** 2.1 (BM25), 2.2 (RRF), 2.5-2.7 (graph improvements), 2.9 (value indexing). The biggest quality jump. Write retrieval tests (6.1, 6.2) first as TDD targets.
 
-**Phase 3 — Chunking upgrade (1-2 days):** 3.1 (error-aware log chunking), 3.2 (summary content), 3.3 (token budget), 3.4 (dedup). Makes the context sent to the LLM dramatically more relevant.
+**Phase 3 — Hybrid chunking + local embedding (3-4 days):** 3.1 (error-aware log chunking), 3.3 (summary content for resources), 3.4 (token budget), 3.5 (dedup), 3.6 (local embedding backend with TEI/Ollama), 3.2 (late chunking over error-aware boundaries). This is the chunking + embedding refactor done together. Error-aware chunking is pure logic (day 1). Local embedding backend is infra (day 2). Late chunking wires them together (day 3). Token budget + resource summaries complete the picture (day 4).
 
-**Phase 4 — Advanced retrieval (2-3 days):** 2.3 (contextual retrieval), 2.4 (HyDE), 2.8 (embed content), 2.10 (seed dedup), 3.5 (late chunking). Each one independently measurable.
+**Phase 4 — Advanced retrieval (2-3 days):** 2.3 (contextual retrieval), 2.4 (HyDE), 2.8 (embed content not summaries), 2.10 (seed dedup). Each independently measurable. Contextual retrieval pairs naturally with the local embedding backend — the context prefix LLM call can use a local LLM too.
 
-**Phase 5 — Graph architecture (3-5 days):** 4.1 (causal edges), 4.2 (label selectors), 4.3 (GraphRAG), 4.4 (hierarchy), 4.5 (temporal edges). This is the deepest refactor — transforms the system from "structured search" to "knowledge-graph-driven diagnosis."
+**Phase 5 — Graph architecture (3-5 days):** 4.1 (causal edges), 4.2 (label selectors), 4.3 (GraphRAG), 4.4 (hierarchy), 4.5 (temporal edges). Deepest refactor — transforms the system from "structured search" to "knowledge-graph-driven diagnosis."
 
 **Phase 6 — New investigators + testing (2-3 days):** 5.1-5.3 (new investigators), 6.3 (benchmark). Extends coverage to new failure modes.
+
+### Dependency graph
+
+```
+Phase 1 (foundations)
+  └─► Phase 2 (BM25 + RRF)
+        ├─► Phase 3 (hybrid chunking + local embedding)
+        │     └─► Phase 4 (contextual retrieval, HyDE)
+        └─► Phase 5 (graph architecture)
+              └─► Phase 6 (new investigators)
+```
+
+Phase 2 and Phase 3 can run in parallel once Phase 1 is done. Phase 4 depends on Phase 3 (needs local embedding backend). Phase 5 is independent of Phase 3/4 but benefits from Phase 2's retrieval improvements. Phase 6 can start anytime after Phase 1 for the investigator logic, but retrieval quality testing (6.1-6.3) should wait for Phase 2.
