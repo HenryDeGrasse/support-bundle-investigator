@@ -2,7 +2,7 @@
 
 > CLI-first, local-first tool that takes a [Troubleshoot](https://troubleshoot.sh/) support bundle `.tar.gz` and produces evidence-backed diagnosis.
 
-**Status: Complete** — full investigation pipeline with **differential diagnosis**, AI-augmented analysis, and 4 seeded failure scenarios verified by **2039 tests across 56 files**.
+**Status: Complete** — full investigation pipeline with **differential diagnosis**, AI-augmented analysis, interactive TUI, and 4 seeded failure scenarios verified by **2305 tests across 66 files**.
 
 **Core pipeline:** bundle ingestion → artifact classification → structured parsing (analyzers, K8s resources, events, logs, Helm releases) → investigation graph → seed generation → targeted investigators (Kubernetes, Log, Configuration) → verifier (contradiction checks, confidence adjustment, missing-evidence detection).
 
@@ -36,6 +36,34 @@ npx sbi analyze bundle.tar.gz --format json --output-dir ./output --verbose --tr
 export OPENAI_API_KEY=sk-...
 npx sbi analyze bundle.tar.gz
 npx sbi analyze bundle.tar.gz --verbose   # shows per-seed retrieval stats
+
+# 6. Interactive TUI mode
+npx sbi analyze bundle.tar.gz --tui
+
+# 7. RAT — quick launcher (scans for bundles, opens TUI)
+npm link                         # one-time: registers 'rat' globally
+rat                              # scan current directory for .tar.gz files
+rat /path/to/dir                 # scan a specific directory
+rat /path/to/bundle.tar.gz       # analyze a bundle directly
+```
+
+### RAT — Replicated AI Troubleshooting
+
+`rat` is a shortcut command that scans a directory for support bundle archives, presents a numbered list, and launches the interactive TUI on the selected bundle. After `npm run build && npm link`, it's available as a bare command from anywhere:
+
+```
+$ rat /tmp/bundles
+
+  RAT - Replicated AI Troubleshooting
+  ====================================
+
+  Found support bundles:
+
+    1) bad-image-tag.tar.gz  (3.0KB)
+    2) missing-secret-crashloop.tar.gz  (3.2KB)
+    3) wrong-db-endpoint.tar.gz  (3.4KB)
+
+  Select bundle [1]:
 ```
 
 ---
