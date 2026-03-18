@@ -227,60 +227,251 @@ TEI (token-level, late chunking) → Ollama (pooled, standard embedding)
 
 ---
 
-## Tier 4 — Graph Architecture Upgrade
+## Tier 4 — Graph Architecture (unified diagnostic graph)
 
-### 4.1 Causal edges in the resource graph
-**Files:** `src/graph/resource-graph.ts`
+### Current state: two disconnected graphs, one never read
 
-Current graph has only structural edges (`references-secret`, `owner-reference`, `event-target`). Add **causal edges** encoding diagnostic direction:
+We have three graph structures, none of which work together:
 
+**ResourceRelationshipGraph** (`resource-graph.ts`): K8s structural edges (Pod→Secret, Pod→Deployment via ownerRef, Event→Pod). Queried only by `getRelatedChunks` in the AI investigator. Traversal is plain undirected BFS at depth=2 with no edge-type filtering, no scoring, no direction awareness.
+
+**InvestigationGraphImpl** (`investigation-graph.ts`): A write-only data structure. The pipeline adds nodes and edges (`supports`, `correlates`), serializes to trace JSON, and never reads from it. `getNeighbors`, `getSupportingEvidence`, `getContradictions`, `findPath`, `getSubgraph` — all zero callers outside tests.
+
+**FindingTree** (`finding-tree.ts`): Designed to organize findings into causal hierarchies using `causes` edges. But `causes` edges are never created (0 uses in the codebase). `buildFindingTree`, `getRootCauses`, `traverseDFS`, `getAncestors` — all dead code.
+
+Edge types declared vs. used: `supports` (14), `correlates` (3), `causes` (0), `contradicts` (0), `derived-from` (0).
+
+The actual diagnostic reasoning (hypothesis generation, evidence collection, ranking) is entirely procedural — flat array operations that don't touch the graph. The graph is decoration.
+
+### 4.1 Unify into a single diagnostic graph
+**Files:** merge `src/graph/resource-graph.ts` + `src/graph/investigation-graph.ts` → new `src/graph/diagnostic-graph.ts`
+
+One graph, all node types, all edge types. Built in three phases during the pipeline:
+
+**Phase A — Structural layer (deterministic, from K8s specs):**
+Nodes: every parsed resource, event, log chunk, analyzer result.
+Edges from K8s specs:
+- `owner-reference`: Pod → ReplicaSet → Deployment
+- `label-selector`: Deployment `spec.selector.matchLabels` → Pods with matching labels (see 4.3)
+- `references-secret`: Pod → Secret (volumes, envFrom, env.valueFrom)
+- `references-configmap`: Pod → ConfigMap
+- `references-pvc`: Pod → PVC
+- `event-target`: Event → involvedObject
+- `service-selector`: Service → Pods matching selector labels
+- `endpoint-backing`: Endpoints → Pod IPs → Pods
+
+**Phase B — Causal layer (deterministic, from investigator findings):**
+When investigators discover findings, they create `causes` edges encoding the diagnostic chain (see 4.2). These edges are what `FindingTree` was designed to consume but never got.
+
+**Phase C — Semantic layer (LLM-extracted, optional):**
+LLM triple extraction discovers relationships the schema can't encode (see 4.5). Community detection groups related entities. This layer is additive — the graph works without it.
+
+All three phases write to the same graph. Queries traverse across all layers. A single traversal from a CrashLoopBackOff symptom can follow a `causes` edge to a FailedMount event, then a `references-secret` edge to the missing Secret, then a `label-selector` edge up to the Deployment — all in one walk.
+
+### 4.2 Causal edges from investigators
+**Files:** `src/investigators/kubernetes-investigator.ts`, `src/investigators/log-investigator.ts`, `src/investigators/orchestrator.ts`
+
+When an investigator creates a finding, it also creates `causes` edges encoding the diagnostic chain it discovered. These replace the procedural hypothesis generator for known patterns.
+
+**Causal template library:**
 ```
-Missing Secret →(causes)→ FailedMount →(causes)→ CrashLoopBackOff →(causes)→ Deployment Unhealthy
-Missing StorageClass →(causes)→ ProvisioningFailed →(causes)→ FailedMount →(causes)→ Pod Pending
-Bad Image Tag →(causes)→ ErrImagePull →(causes)→ ImagePullBackOff →(causes)→ Pod Pending
-DNS Failure →(causes)→ Connection Timeout →(causes)→ Readiness Probe Fail →(causes)→ Pod Not Ready
+MissingSecret ─causes─► FailedMount ─causes─► CrashLoopBackOff ─causes─► DeploymentUnhealthy
+MissingStorageClass ─causes─► ProvisioningFailed ─causes─► FailedMount ─causes─► PodPending
+BadImageTag ─causes─► ErrImagePull ─causes─► ImagePullBackOff ─causes─► PodPending
+DNSFailure ─causes─► ConnectionTimeout ─causes─► ReadinessProbeFailure ─causes─► PodNotReady
+OOMKill ─causes─► ContainerRestart ─causes─► CrashLoopBackOff
+ConfigMapTypo ─causes─► AuthFailure ─causes─► PodNotReady
 ```
 
-Encode these as a causal template library. When evidence matches a template, instantiate the causal chain in the graph. Enables root-cause traversal: start from symptom node, walk backward along causal edges to find root cause. This replaces the procedural hypothesis generator with a structural, extensible mechanism.
+When the K8s investigator detects CrashLoopBackOff with FailedMount events mentioning a Secret, it creates:
+```
+node: finding:missing-secret:app-credentials
+edge: finding:missing-secret:app-credentials ─causes─► event:FailedMount:app-pod
+edge: event:FailedMount:app-pod ─causes─► finding:crashloop:app-pod
+edge: finding:crashloop:app-pod ─causes─► finding:workload-unhealthy:app-deployment
+```
 
-### 4.2 Label-selector edges (Deployment → Pod)
+Now `buildFindingTree` produces a real tree. `getRootCauses` returns `missing-secret:app-credentials`. The TUI shows:
+```
+Missing Secret 'app-credentials' [ROOT CAUSE]
+  └─► FailedMount on Pod 'app-pod'
+        └─► CrashLoopBackOff: Pod 'app-pod'
+              └─► Unhealthy Workload: Deployment 'app-deployment'
+```
+
+This replaces the hypothesis generator's procedural grouping with structural graph traversal. The hypothesis layer becomes a fallback for cases where no causal template matches.
+
+### 4.3 Label-selector and service-selector edges
 **Files:** `src/graph/resource-graph.ts` (`buildResourceGraph`)
 
-Graph relies on `ownerReferences` which go Pod→ReplicaSet→Deployment. If ReplicaSet isn't in the bundle, Deployment and Pod are disconnected. Add label-selector matching: Deployment `spec.selector.matchLabels` → Pods with matching `metadata.labels`. This is how Kubernetes actually associates them.
+Two new edge types that encode how Kubernetes actually associates resources:
 
-### 4.3 LLM-extracted knowledge graph (GraphRAG approach)
-**Files:** new `src/graph/knowledge-graph.ts`
+**Label-selector edges:** Deployment/StatefulSet/DaemonSet `spec.selector.matchLabels` → Pods with matching `metadata.labels`. This is how K8s associates workloads with Pods. Works even when the intermediate ReplicaSet isn't in the bundle (which happens with some collectors).
 
-Microsoft GraphRAG (2024): feed chunks to an LLM to extract `(entity, relationship, entity)` triples. Discovers relationships schema-based extraction misses:
+**Service-selector edges:** Service `spec.selector` → Pods with matching labels. Enables the connectivity investigator (5.1) to traverse from "this Service" to "these are the Pods backing it" to "they're all in CrashLoopBackOff, that's why the Service has no endpoints."
 
-- "ConfigMap value `db.internal` is a hostname used to connect to the database"
-- "Pod `app-pod` cannot start because Secret `app-credentials` does not exist"
-- "Error at line 47 is caused by DNS failure for hostname referenced in env var DB_HOST"
+Implementation: after adding all resource nodes, iterate Services and Deployments. For each selector, scan all Pods for label matches. O(services × pods) — fine for bundle scale (~100 services × ~200 pods = 20K comparisons).
 
-Then run community detection (Leiden algorithm) to cluster related entities. Generate per-community summaries. At query time, retrieve both graph neighbors AND community summaries.
+### 4.4 Typed, weighted, directional traversal
+**Files:** new `src/graph/traversal.ts`, replaces `getNeighborhood` BFS
 
-Implementation approach:
-1. After chunking, send chunks to LLM with extraction prompt: "Extract all entities and relationships from this Kubernetes support bundle evidence"
-2. Build entity graph from triples
-3. Run community detection (use a JS implementation of Leiden or Louvain)
-4. Generate community summaries via LLM
-5. Store community summaries as retrievable chunks
-6. At query time: graph neighborhood + BM25 + vector search + community summaries → RRF merge
+Replace the current undirected BFS with a query-pattern traversal engine. Key capabilities:
 
-### 4.4 Hierarchical graph abstraction
-**Files:** `src/graph/resource-graph.ts`
+**Edge-type filtering:** "Follow only `causes` edges" or "follow `references-secret` then `event-target`."
 
-Current graph is flat — all resources at the same level. Add hierarchy:
-- **Bottom:** individual resources, events, log lines
-- **Middle:** workload groups (Deployment + ReplicaSet + Pods + Secrets + ConfigMaps)
-- **Top:** application components (frontend stack, database stack, ingress layer)
+**Direction awareness:** `causes` edges are directional. Backward traversal = root-cause search (symptom → cause). Forward traversal = impact analysis (cause → all affected symptoms).
 
-Middle layer is derivable from owner-references and label selectors. Top layer requires either LLM inference or user-provided application topology. Queries route to the appropriate level — "why is the app broken?" starts at top, "why is this pod crashing?" starts at bottom.
+**Weighted scoring:** Edges carry weights. `references-secret` (high diagnostic value) > `owner-reference` (structural) > `event-target` (noisy). Traversal scores decay with distance: `score = edge_weight × decay^depth`.
 
-### 4.5 Temporal correlation edges
-**Files:** `src/graph/resource-graph.ts`, `src/parsers/timeline.ts`
+**Traversal patterns (replacing BFS):**
+```typescript
+// Root-cause search: from symptom, walk backward along causes edges
+const rootCause = graph.traverse({
+  start: 'finding:crashloop:app-pod',
+  direction: 'backward',
+  edgeTypes: ['causes'],
+  maxDepth: 5,
+});
+// Returns: [missing-secret:app-credentials] with full path
 
-Wire the unused timeline module into graph construction. When a log error at timestamp T correlates with an event within ±60 seconds targeting the same pod, add a `temporal-correlation` edge. Enables evidence chains: "DNS failure at 10:00:16Z in app-pod.log → Unhealthy event at 10:05:30Z → ReadinessProbe failure."
+// Impact analysis: from root cause, walk forward along causes edges
+const impact = graph.traverse({
+  start: 'finding:missing-secret:app-credentials',
+  direction: 'forward', 
+  edgeTypes: ['causes'],
+  maxDepth: 5,
+});
+// Returns: [FailedMount, CrashLoopBackOff, DeploymentUnhealthy]
+
+// Evidence gathering: from a finding, walk all structural edges
+const evidence = graph.traverse({
+  start: 'finding:crashloop:app-pod',
+  direction: 'both',
+  edgeTypes: ['supports', 'references-secret', 'event-target'],
+  maxDepth: 2,
+  minWeight: 0.5,
+});
+// Returns: [Secret:app-credentials, Event:FailedMount, Event:BackOff, Pod:app-pod]
+
+// Chunk retrieval (replaces getRelatedChunks): walk graph, collect chunks for matched nodes
+const chunks = graph.traverseForChunks({
+  start: seedNodeId,
+  direction: 'both',
+  edgeTypes: ['causes', 'references-secret', 'references-configmap', 'event-target', 'label-selector'],
+  maxDepth: 3,
+  scoreDecay: 0.7,  // depth-0=1.0, depth-1=0.7, depth-2=0.49, depth-3=0.34
+  chunkIndex: chunks,
+});
+// Returns: scored chunks, feed directly into RRF merge
+```
+
+This replaces both `getNeighborhood` (resource graph BFS) and the flat chunk-matching loop in `getRelatedChunks` with a single, configurable traversal engine.
+
+### 4.5 LLM-extracted knowledge graph (GraphRAG)
+**Files:** new `src/graph/knowledge-extractor.ts`, new `src/graph/community.ts`
+
+After deterministic edges are built from K8s specs and investigator findings, feed chunks to an LLM to extract relationships the schema can't encode:
+
+**Extraction prompt per chunk:**
+```
+Extract all entities and relationships from this Kubernetes support bundle evidence.
+Return JSON: { "triples": [{"source": "...", "relationship": "...", "target": "..."}, ...] }
+
+Entity types: Pod, Deployment, Service, Secret, ConfigMap, PVC, Hostname, Image, Error, LogEntry
+Relationship types: connects-to, configured-with, fails-because, authenticates-with, resolves-to, exposes
+```
+
+**Examples of what this discovers that schema extraction misses:**
+- `ConfigMap:app-config ─configured-with─► Hostname:db.internal` (from data value, not spec)
+- `Pod:app-pod ─connects-to─► Hostname:db.internal` (from log content, not spec)
+- `LogEntry:line-47 ─fails-because─► Hostname:db.internal` (causal link from log error to config)
+- `Secret:registry-creds ─authenticates-with─► Image:myapp:v999` (from dockerconfigjson type)
+
+These triples create edges in the unified graph. Now a traversal from the DNS failure log entry can reach the ConfigMap value that defines the hostname, which no deterministic parser could connect.
+
+**Community detection:**
+After all edges (structural + causal + LLM-extracted) are in the graph, run Leiden community detection to find clusters:
+- "Database stack": db-Pod, db-Service, db-Secret, db-ConfigMap, db-events, db-logs
+- "Frontend stack": app-Pod, app-Deployment, app-Service, app-ConfigMap, app-logs
+- "Ingress layer": ingress-controller, ingress-rules, TLS-secrets
+
+Generate a summary per community via LLM. Store summaries as retrievable chunks. At query time, community summaries give the LLM the "big picture" of each application component without needing to see every individual artifact.
+
+**Cost:** One LLM call per chunk for extraction (~3500 chunks at ~$0.01/call = ~$35 with GPT-4o-mini, or free with local LLM). Community detection is CPU-only (Leiden runs in <1s on graphs with <10K nodes). Summary generation is one LLM call per community (~5-20 communities).
+
+**Local execution:** Triple extraction and community summaries can use a local LLM (Llama 3, Qwen2, Mistral via Ollama). Quality is lower than GPT-4o but sufficient for entity extraction. Pairs with the local embedding backend (3.6) for fully offline operation.
+
+### 4.6 Temporal correlation edges
+**Files:** `src/graph/diagnostic-graph.ts`, `src/parsers/timeline.ts`
+
+Wire the unused timeline module into graph construction. Two sources of temporal edges:
+
+**Log↔Event correlation:** When a log error at timestamp T matches an event within ±60 seconds targeting the same pod, add a `temporal-correlation` edge with the time delta as weight (closer = stronger).
+```
+LogEntry:dns-failure:10:00:16Z ─temporal(+5m14s)─► Event:Unhealthy:app-pod:10:05:30Z
+```
+
+**Event sequencing:** Sort events chronologically. When sequential events target the same pod and have causal affinity (e.g. FailedMount followed by BackOff), add a `temporal-sequence` edge.
+```
+Event:FailedMount:app-pod:10:05:15Z ─temporal-sequence─► Event:BackOff:app-pod:10:05:30Z
+```
+
+These edges let the traversal engine discover timing-based evidence chains that structural edges alone can't provide.
+
+### 4.7 Hierarchical graph abstraction
+**Files:** `src/graph/diagnostic-graph.ts`
+
+Add hierarchy to the unified graph. Three levels:
+
+**Bottom:** individual resources, events, log chunks, findings. This is what we have now.
+
+**Middle (workload groups):** virtual nodes that aggregate a workload and its dependencies. One per Deployment/StatefulSet:
+```
+WorkloadGroup:app-deployment
+  contains: Pod:app-pod, Secret:app-credentials, ConfigMap:app-config
+  connected-to: Service:app-service
+```
+Derived automatically from `owner-reference` + `label-selector` + `references-*` edges. Traversal at this level answers "what's wrong with the app-deployment workload?" without enumerating individual Pods.
+
+**Top (application components):** virtual nodes derived from community detection (4.5) or user-provided topology:
+```
+AppComponent:database-stack
+  contains: WorkloadGroup:db-deployment, Service:db-service, PVC:db-data
+AppComponent:frontend-stack
+  contains: WorkloadGroup:app-deployment, Service:app-service, Ingress:app-ingress
+```
+
+Query routing: "why is the app broken?" starts at top level, finds the unhealthy component, drills into workload groups, then into individual resources. "why is this pod crashing?" starts at bottom, walks up to the workload group for context.
+
+**TUI integration:** The hierarchical view maps directly to the TUI's pane layout. Findings pane shows the causal tree. Detail pane shows the workload group context. Specs pane shows the component-level topology.
+
+### 4.8 Graph-driven investigation (replaces procedural orchestrator)
+
+The end state: the orchestrator becomes a graph query engine instead of a procedural pipeline.
+
+**Current flow (procedural):**
+```
+seeds → [k8s-investigator, log-investigator, config-investigator] → flat findings[]
+  → hypothesis-generator (groups by component) → hypothesis-evidence-collector (scans arrays)
+  → hypothesis-ranker (scores) → hypothesis-converter (to findings) → dedup → sort
+```
+
+**Target flow (graph-driven):**
+```
+1. Build structural graph (Phase A: K8s specs, label selectors, service selectors)
+2. Run investigators → create finding nodes + causes edges in the graph
+3. Run causal template matching → instantiate causal chains in the graph
+4. (Optional) Run LLM triple extraction → add semantic edges
+5. (Optional) Run community detection → add hierarchy
+6. Root-cause query: from each symptom finding, traverse backward along causes edges
+7. If no causal path found → fall back to hypothesis generator (current behavior)
+8. Rank root causes by: causal path length, edge weights, evidence count
+9. Build finding tree from causes edges → present to user
+```
+
+The hypothesis generator becomes the fallback for novel failures that don't match a known causal template. As more templates are added (and as the LLM extraction layer discovers new patterns), the fallback is needed less often.
+
+**What this achieves:** The graph IS the diagnosis. Every finding has a structural explanation — a path through typed edges from symptom to root cause. Evidence is not just "this file supports this finding" but "this Secret is missing (causes) this FailedMount (causes) this CrashLoopBackOff (causes) this Deployment unhealthy." The user sees the causal chain, not a ranked list of disconnected findings.
 
 ---
 
@@ -332,9 +523,14 @@ Automated benchmark: for each scenario, log which chunks each seed retrieves, wh
 
 **Phase 4 — Advanced retrieval (2-3 days):** 2.3 (contextual retrieval), 2.4 (HyDE), 2.8 (embed content not summaries), 2.10 (seed dedup). Each independently measurable. Contextual retrieval pairs naturally with the local embedding backend — the context prefix LLM call can use a local LLM too.
 
-**Phase 5 — Graph architecture (3-5 days):** 4.1 (causal edges), 4.2 (label selectors), 4.3 (GraphRAG), 4.4 (hierarchy), 4.5 (temporal edges). Deepest refactor — transforms the system from "structured search" to "knowledge-graph-driven diagnosis."
+**Phase 5 — Graph architecture (5-7 days).** The deepest refactor. Done in sub-phases:
+- **5a (2 days):** Unify graphs (4.1), add label-selector + service-selector edges (4.3), typed weighted traversal engine (4.4). This gives us one graph, better structural edges, and a real query engine. Replaces `getRelatedChunks` BFS.
+- **5b (1-2 days):** Causal edges from investigators (4.2), wire `FindingTree` + `getRootCauses` to the TUI. The finding tree works for the first time. Users see causal chains.
+- **5c (1 day):** Temporal correlation edges (4.6), hierarchy middle layer (4.7 — workload groups from label selectors).
+- **5d (2 days):** LLM triple extraction (4.5), community detection + summaries, hierarchy top layer. This is GraphRAG. Requires local or API LLM. Most impactful for large bundles with many components.
+- **5e (ongoing):** Graph-driven investigation (4.8) — incrementally replace procedural hypothesis logic with graph traversal queries. Hypothesis generator becomes fallback for novel failures.
 
-**Phase 6 — New investigators + testing (2-3 days):** 5.1-5.3 (new investigators), 6.3 (benchmark). Extends coverage to new failure modes.
+**Phase 6 — New investigators + testing (2-3 days):** 5.1-5.3 (new investigators), 6.3 (benchmark). New investigators create causal edges in the unified graph from day one.
 
 ### Dependency graph
 
@@ -343,8 +539,12 @@ Phase 1 (foundations)
   └─► Phase 2 (BM25 + RRF)
         ├─► Phase 3 (hybrid chunking + local embedding)
         │     └─► Phase 4 (contextual retrieval, HyDE)
-        └─► Phase 5 (graph architecture)
-              └─► Phase 6 (new investigators)
+        └─► Phase 5a (unified graph + traversal engine)
+              └─► Phase 5b (causal edges + finding tree)
+                    ├─► Phase 5c (temporal + hierarchy)
+                    │     └─► Phase 5d (GraphRAG)
+                    │           └─► Phase 5e (graph-driven investigation)
+                    └─► Phase 6 (new investigators, create causal edges)
 ```
 
-Phase 2 and Phase 3 can run in parallel once Phase 1 is done. Phase 4 depends on Phase 3 (needs local embedding backend). Phase 5 is independent of Phase 3/4 but benefits from Phase 2's retrieval improvements. Phase 6 can start anytime after Phase 1 for the investigator logic, but retrieval quality testing (6.1-6.3) should wait for Phase 2.
+Phase 2 and Phase 3 can run in parallel once Phase 1 is done. Phase 4 depends on Phase 3 (needs local embedding backend). Phase 5a can start after Phase 1 (doesn't need retrieval changes). Phase 5b depends on 5a. Phase 6 depends on 5b (investigators need to create causal edges in the unified graph). Phase 5d depends on Phase 3 (needs local LLM for triple extraction) and 5c.
