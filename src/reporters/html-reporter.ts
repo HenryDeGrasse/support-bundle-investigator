@@ -696,7 +696,7 @@ function buildFindings(findings: Finding[]): string {
       (finding, idx) => {
         const aiClass = isAIFinding(finding) ? ' ai-assisted' : '';
         const aiBadge = isAIFinding(finding)
-          ? '<span class="ai-badge">🤖 AI-assisted</span>'
+          ? '<span class="ai-badge">[AI] AI-assisted</span>'
           : '';
         return `
           <div class="finding-card${aiClass}">

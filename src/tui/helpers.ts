@@ -95,13 +95,13 @@ export function confidenceBar(confidence: number): string {
  *
  * | Artifact type          | Icon |
  * |------------------------|------|
- * | `'log'`                | 📄   |
- * | `'kubernetes-resource'`| ⎈   |
- * | `'event'`              | ⚡   |
- * | `'analyzer'`           | 🔍   |
- * | `'config'`             | ⚙   |
- * | `'helm-release'`       | ⎈   |
- * | default / undefined    | 📎   |
+ * | `'log'`                | LOG  |
+ * | `'kubernetes-resource'`| K8S  |
+ * | `'event'`              | EVT  |
+ * | `'analyzer'`           | ANL  |
+ * | `'config'`             | CFG  |
+ * | `'helm-release'`       | HLM  |
+ * | default / undefined    | ---  |
  *
  * @param artifactType - The artifact category string (may be undefined).
  * @returns A Unicode icon character.
@@ -109,19 +109,19 @@ export function confidenceBar(confidence: number): string {
 export function evidenceIcon(artifactType?: string): string {
   switch (artifactType) {
     case 'log':
-      return '📄';
+      return 'LOG';
     case 'kubernetes-resource':
-      return '⎈';
+      return 'K8S';
     case 'event':
-      return '⚡';
+      return 'EVT';
     case 'analyzer':
-      return '🔍';
+      return 'ANL';
     case 'config':
-      return '⚙';
+      return 'CFG';
     case 'helm-release':
-      return '⎈';
+      return 'HLM';
     default:
-      return '📎';
+      return '---';
   }
 }
 

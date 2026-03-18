@@ -149,36 +149,36 @@ describe('confidenceBar()', () => {
 // ---------------------------------------------------------------------------
 
 describe('evidenceIcon()', () => {
-  it('returns 📄 for log', () => {
-    expect(evidenceIcon('log')).toBe('📄');
+  it('returns LOG for log', () => {
+    expect(evidenceIcon('log')).toBe('LOG');
   });
 
-  it('returns ⎈ for kubernetes-resource', () => {
-    expect(evidenceIcon('kubernetes-resource')).toBe('⎈');
+  it('returns K8S for kubernetes-resource', () => {
+    expect(evidenceIcon('kubernetes-resource')).toBe('K8S');
   });
 
-  it('returns ⚡ for event', () => {
-    expect(evidenceIcon('event')).toBe('⚡');
+  it('returns EVT for event', () => {
+    expect(evidenceIcon('event')).toBe('EVT');
   });
 
-  it('returns 🔍 for analyzer', () => {
-    expect(evidenceIcon('analyzer')).toBe('🔍');
+  it('returns ANL for analyzer', () => {
+    expect(evidenceIcon('analyzer')).toBe('ANL');
   });
 
-  it('returns ⚙ for config', () => {
-    expect(evidenceIcon('config')).toBe('⚙');
+  it('returns CFG for config', () => {
+    expect(evidenceIcon('config')).toBe('CFG');
   });
 
-  it('returns ⎈ for helm-release', () => {
-    expect(evidenceIcon('helm-release')).toBe('⎈');
+  it('returns HLM for helm-release', () => {
+    expect(evidenceIcon('helm-release')).toBe('HLM');
   });
 
-  it('returns 📎 for unrecognised artifact type', () => {
-    expect(evidenceIcon('cluster-info')).toBe('📎');
+  it('returns --- for unrecognised artifact type', () => {
+    expect(evidenceIcon('cluster-info')).toBe('---');
   });
 
-  it('returns 📎 when artifactType is undefined', () => {
-    expect(evidenceIcon(undefined)).toBe('📎');
+  it('returns --- when artifactType is undefined', () => {
+    expect(evidenceIcon(undefined)).toBe('---');
   });
 });
 

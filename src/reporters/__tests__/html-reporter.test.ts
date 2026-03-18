@@ -796,14 +796,14 @@ describe('generateHtmlReport — AI-assisted finding badge', () => {
     expect(result).toContain('ai-assisted');
   });
 
-  it('renders the 🤖 AI-assisted badge text on an AI finding card', () => {
+  it('renders the [AI] AI-assisted badge text on an AI finding card', () => {
     const aiFinding = makeFinding({
       id: 'finding:ai:kubernetes:0',
       title: 'AI Finding',
     });
     const report = makeReport({ findings: [aiFinding] });
     const result = generateHtmlReport(report);
-    expect(result).toContain('🤖');
+    expect(result).toContain('[AI]');
     expect(result).toContain('AI-assisted');
   });
 
@@ -827,7 +827,7 @@ describe('generateHtmlReport — AI-assisted finding badge', () => {
     const result = generateHtmlReport(report);
     // The ai-assisted class may appear in the stylesheet, but must not appear as a card class
     expect(result).not.toContain('class="finding-card ai-assisted"');
-    expect(result).not.toContain('🤖');
+    expect(result).not.toContain('[AI] AI-assisted');
   });
 
   it('renders ai-assisted only on AI finding in a mixed list', () => {
@@ -837,7 +837,7 @@ describe('generateHtmlReport — AI-assisted finding badge', () => {
     const result = generateHtmlReport(report);
     // The ai-assisted class and badge should appear exactly for the AI finding
     expect(result).toContain('ai-assisted');
-    expect(result).toContain('🤖');
+    expect(result).toContain('[AI]');
   });
 
   it('CSS stylesheet defines ai-badge class', () => {

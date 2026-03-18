@@ -3,6 +3,13 @@ import * as path from 'path';
 import type { Finding, FindingSeverity } from '../types/index.js';
 import type { InvestigationReport, SpecRecommendation } from './types.js';
 import { isAIFinding } from './report-builder.js';
+import {
+  cleanEvidencePath,
+  humanizeTitle,
+  humanizeReasoning,
+  collapseEvidence,
+  formatSummaryCard,
+} from './display-helpers.js';
 
 // ---------------------------------------------------------------------------
 // Severity helpers
@@ -10,15 +17,15 @@ import { isAIFinding } from './report-builder.js';
 
 /**
  * Maps a {@link FindingSeverity} to a Markdown-renderable badge string.
- * Uses bold text markers so the badge is visible in plain-text readers too.
+ * Uses text-only markers (no emoji) for maximum terminal compatibility.
  */
 function severityBadge(severity: FindingSeverity): string {
   const labels: Record<FindingSeverity, string> = {
-    critical: '🔴 CRITICAL',
-    high: '🟠 HIGH',
-    medium: '🟡 MEDIUM',
-    low: '🔵 LOW',
-    info: '⚪ INFO',
+    critical: '[!!] CRITICAL',
+    high: '[!] HIGH',
+    medium: '[~] MEDIUM',
+    low: '[-] LOW',
+    info: '[i] INFO',
   };
   return `**${labels[severity]}**`;
 }
@@ -43,13 +50,20 @@ function renderExecutiveSummary(report: InvestigationReport): string {
   const lines: string[] = [];
   lines.push('# Investigation Report');
   lines.push('');
+
+  // "Start here" card for the top finding
+  if (report.findings.length > 0) {
+    lines.push(formatSummaryCard(report.findings[0]!, report.findings.length));
+    lines.push('');
+  }
+
   lines.push('## Executive Summary');
   lines.push('');
   lines.push(report.executiveSummary);
   lines.push('');
 
   if (report.rootCause !== null) {
-    lines.push(`**Root Cause:** ${report.rootCause}`);
+    lines.push(`**Root Cause:** ${humanizeReasoning(report.rootCause)}`);
     lines.push('');
   }
 
@@ -68,8 +82,10 @@ function renderEvidenceTable(finding: Finding): string {
     return '_No evidence recorded._\n';
   }
 
-  const rows = finding.evidence.map((ev) => {
-    const escapedPath = ev.path.replace(/\|/g, '\\|');
+  const collapsed = collapseEvidence(finding.evidence);
+  const rows = collapsed.map((ev) => {
+    const cleanedPath = cleanEvidencePath(ev.path);
+    const escapedPath = cleanedPath.replace(/\|/g, '\\|');
     const escapedNote = ev.note.replace(/\|/g, '\\|');
     return `| \`${escapedPath}\` | ${escapedNote} |`;
   });
@@ -92,7 +108,8 @@ function renderFindings(findings: Finding[]): string {
 
   findings.forEach((finding, idx) => {
     const aiTag = isAIFinding(finding) ? ' [AI-assisted]' : '';
-    lines.push(`### ${idx + 1}. ${finding.title}${aiTag}`);
+    const displayTitle = humanizeTitle(finding.title);
+    lines.push(`### ${idx + 1}. ${displayTitle}${aiTag}`);
     lines.push('');
 
     // Severity badge + confidence on the same line for scannability
@@ -101,10 +118,10 @@ function renderFindings(findings: Finding[]): string {
     );
     lines.push('');
 
-    // Affected components
+    // Affected components (clean temp paths)
     if (finding.affectedComponents.length > 0) {
       lines.push(
-        `**Affected Components:** ${finding.affectedComponents.map((c) => `\`${c}\``).join(', ')}`,
+        `**Affected Components:** ${finding.affectedComponents.map((c) => `\`${cleanEvidencePath(c)}\``).join(', ')}`,
       );
       lines.push('');
     }
@@ -112,7 +129,7 @@ function renderFindings(findings: Finding[]): string {
     // Reasoning
     lines.push('**Reasoning**');
     lines.push('');
-    lines.push(finding.reasoningSummary);
+    lines.push(humanizeReasoning(finding.reasoningSummary));
     lines.push('');
 
     // Evidence table
@@ -179,10 +196,10 @@ function renderSpecRecommendations(recommendations: SpecRecommendation[]): strin
   recommendations.forEach((rec, idx) => {
     const typeLabel =
       rec.type === 'collector'
-        ? '📦 Collector'
+        ? '[+] Collector'
         : rec.type === 'analyzer'
-          ? '🔍 Analyzer'
-          : '🔒 Redaction';
+          ? '[?] Analyzer'
+          : '[x] Redaction';
 
     lines.push(`### ${idx + 1}. ${typeLabel}`);
     lines.push('');
