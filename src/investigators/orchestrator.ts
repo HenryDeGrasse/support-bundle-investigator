@@ -230,9 +230,33 @@ export async function runInvestigation(
   // Convert hypothesis sets to findings, keeping only those with positive
   // confidence (at least one supporting evidence item contributed to the score).
   const allHypothesisFindings = convertHypothesisSetsToFindings(hypothesisSets);
-  const filteredHypothesisFindings = allHypothesisFindings.filter(
+  const nonZeroHypothesisFindings = allHypothesisFindings.filter(
     (hf) => hf.confidence > 0,
   );
+
+  // Deduplicate hypothesis findings that describe the same root cause for the
+  // same category. This happens when the same pod appears in multiple symptom
+  // groups (e.g. once from k8s findings and once from log findings with an
+  // absolute path as component). Keep only the highest-confidence entry per
+  // unique (category, rootCauseKey) pair.
+  const hypothesisDedupMap = new Map<string, Finding>();
+  for (const hf of nonZeroHypothesisFindings) {
+    // Extract category from id: "finding:hypothesis:image-pull-failure:N"
+    const category = hf.id.split(':')[2] ?? '';
+    // Use category + a normalized title as the dedup key
+    const titleKey = hf.title
+      .replace(/\[Hypothesis\]\s*/i, '')
+      .replace(/\(symptom:.*\)$/, '')
+      .trim()
+      .toLowerCase();
+    const dedupKey = `${category}::${titleKey}`;
+
+    const existing = hypothesisDedupMap.get(dedupKey);
+    if (existing == null || hf.confidence > existing.confidence) {
+      hypothesisDedupMap.set(dedupKey, hf);
+    }
+  }
+  const filteredHypothesisFindings = Array.from(hypothesisDedupMap.values());
 
   // ── 4. AI investigation (additive, with graceful degradation) ─────────────
   const rawFindings: Finding[] = [...heuristicFindings];
@@ -331,8 +355,49 @@ export async function runInvestigation(
   const hypothesisEdges = buildHypothesisSupportEdges(filteredHypothesisFindings);
   const combinedEdges = [...retainedEdges, ...hypothesisEdges];
 
-  // ── 7. Sort by severity desc, then confidence desc ────────────────────────
-  const sortedFindings = [...combinedFindings].sort((a, b) => {
+  // ── 7a. Final deduplication — remove near-duplicate findings ──────────────
+  // Multiple hypothesis sets can produce findings with identical root-cause
+  // descriptions (e.g. same hypothesis generated for two symptom groups
+  // pointing to the same pod). Deduplicate by normalised title within
+  // finding type groups (AI findings compete with AI, heuristic with heuristic).
+  // When an AI finding and a heuristic finding have similar titles, prefer
+  // the AI finding.
+  const dedupedFindings: Finding[] = [];
+  const seenTitles = new Map<string, Finding>();
+
+  // Sort AI findings first so they win title collisions
+  const aiFirst = [...combinedFindings].sort((a, b) => {
+    const aIsAi = a.id.startsWith('finding:ai:') ? 0 : 1;
+    const bIsAi = b.id.startsWith('finding:ai:') ? 0 : 1;
+    return aIsAi - bIsAi;
+  });
+
+  for (const f of aiFirst) {
+    const normTitle = f.title
+      .replace(/\[Hypothesis\]\s*/i, '')
+      .replace(/\(symptom:.*\)$/i, '')
+      .replace(/['']/g, "'")
+      .trim()
+      .toLowerCase()
+      .slice(0, 80);
+
+    const existing = seenTitles.get(normTitle);
+    if (existing == null) {
+      seenTitles.set(normTitle, f);
+      dedupedFindings.push(f);
+    } else if (f.confidence > existing.confidence) {
+      // Replace the lower-confidence duplicate
+      const idx = dedupedFindings.indexOf(existing);
+      if (idx !== -1) {
+        dedupedFindings[idx] = f;
+      }
+      seenTitles.set(normTitle, f);
+    }
+    // else: skip the lower-confidence duplicate
+  }
+
+  // ── 7b. Sort by severity desc, then confidence desc ───────────────────────
+  const sortedFindings = [...dedupedFindings].sort((a, b) => {
     const severityDiff =
       (SEVERITY_ORDER[b.severity] ?? 0) - (SEVERITY_ORDER[a.severity] ?? 0);
     if (severityDiff !== 0) return severityDiff;
