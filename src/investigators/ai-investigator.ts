@@ -50,6 +50,58 @@ const MAX_CHUNKS_PER_SEED = 20;
 /** Number of lexical search results to retrieve per seed. */
 const LEXICAL_TOP_K = 10;
 
+// ---------------------------------------------------------------------------
+// Seed-specific graph traversal parameters
+// ---------------------------------------------------------------------------
+
+/**
+ * Hard cap on the number of graph nodes returned from traversal, regardless
+ * of depth. Prevents breadth explosion in large, well-connected graphs.
+ *
+ * 30 nodes covers:
+ * - 1 starting pod
+ * - 5-8 direct deps (secrets, configmaps, events, deployment)
+ * - 10-15 depth-2 nodes (sibling pods, remote services)
+ * - 5-10 depth-3/4 nodes (remote pod deps)
+ */
+export const MAX_GRAPH_NODES = 30;
+
+/**
+ * Minimum edge weight for graph traversal. Edges below this threshold are
+ * not followed. Prunes near-zero temporal-correlation edges (those at the
+ * extreme end of the 60-second window) while preserving all structural edges
+ * (which default to weight 1.0).
+ *
+ * At 0.1, a temporal-correlation edge is pruned only when the time delta
+ * exceeds ~54 seconds (weight = 1 - 54/60 = 0.1). Everything closer passes.
+ */
+export const GRAPH_MIN_WEIGHT = 0.1;
+
+/**
+ * Returns the optimal graph traversal depth for a seed based on its category.
+ *
+ * Depth is tuned per category based on the typical K8s graph path length
+ * from the seed's starting node to the evidence that explains the failure:
+ *
+ * | Category | Depth | Reasoning |
+ * |---|---|---|
+ * | kubernetes | 3 | Pod → deps(1) → Deployment/sibling-pods(2) → sibling-events(3) |
+ * | connectivity | 4 | Pod → ConfigMap(1) → remote-Service(2) → remote-Pod(3) → remote-deps(4) |
+ * | configuration | 2 | Pod → Secret/ConfigMap(1) → ExternalSecret(2). Direct refs only. |
+ * | log | 2 | Pod → deps(1) → owner(2). BM25 handles log-to-evidence correlation. |
+ *
+ * Returns 3 as a safe default for any unrecognised category.
+ */
+export function maxDepthForSeed(seed: InvestigationSeed): number {
+  switch (seed.category) {
+    case 'kubernetes':     return 3;
+    case 'connectivity':   return 4;
+    case 'configuration':  return 2;
+    case 'log':            return 2;
+    default:               return 3;
+  }
+}
+
 /**
  * Number of semantic (vector) search results to retrieve per seed.
  *
@@ -686,6 +738,7 @@ export async function investigateWithAI(
       if (diagnosticGraph !== undefined && isDiagnosticGraph(diagnosticGraph)) {
         // Derive starting node IDs from the seed's affected identifiers
         const startNodeIds = resolveSeedStartNodes(seed, diagnosticGraph);
+        const seedDepth = maxDepthForSeed(seed);
         const traversalResults: GraphScoredChunk[] = startNodeIds.flatMap((startId) =>
           traverseForChunks(
             diagnosticGraph,
@@ -693,8 +746,9 @@ export async function investigateWithAI(
               start: startId,
               direction: 'both',
               edgeTypes: RETRIEVAL_EDGE_TYPES,
-              maxDepth: 3,
+              maxDepth: seedDepth,
               scoreDecay: 0.7,
+              minWeight: GRAPH_MIN_WEIGHT,
             },
             chunkIndex,
           ).map((r) => ({ chunk: r.chunk, score: r.score })),
@@ -705,7 +759,10 @@ export async function investigateWithAI(
           const existing = bestByChunk.get(r.chunk.id);
           if (!existing || r.score > existing.score) bestByChunk.set(r.chunk.id, r);
         }
-        const sorted = [...bestByChunk.values()].sort((a, b) => b.score - a.score);
+        // Sort by score and cap at MAX_GRAPH_NODES to prevent breadth explosion
+        const sorted = [...bestByChunk.values()]
+          .sort((a, b) => b.score - a.score)
+          .slice(0, MAX_GRAPH_NODES);
         graphChunks = sorted.map((r) => r.chunk);
         graphScores = sorted.map((r) => r.score);
       } else {
