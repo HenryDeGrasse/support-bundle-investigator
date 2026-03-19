@@ -669,9 +669,15 @@ describe('mergeHypothesisFindings — keeps originals that have no hypothesis eq
 // ---------------------------------------------------------------------------
 
 describe('orchestrator integration — CrashLoopBackOff produces hypothesis findings', () => {
-  it('produces at least one hypothesis finding in the final output', async () => {
-    // Include a dummy Secret so the missing-secret hypothesis collector can
-    // detect the absent 'app-credentials' reference and generate evidence.
+  it('produces a root-cause finding in the final output (hypothesis or graph-driven)', async () => {
+    // Include a dummy Secret and a FailedMount event so the orchestrator can
+    // detect the absent 'app-credentials' reference.
+    //
+    // NOTE: With the graph-driven investigation phase (4.8), the FailedMount
+    // event triggers the missing-secret-crashloop causal template, skipping
+    // hypothesis generation for the crashloop symptom and producing a
+    // synthetic graph root-cause finding instead.  The behavioral outcome
+    // (missing secret correctly identified) is identical.
     const context = makeContext({
       resources: [crashLoopPod, dummySecret],
       events: [backOffEvent, failedMountEvent],
@@ -679,14 +685,21 @@ describe('orchestrator integration — CrashLoopBackOff produces hypothesis find
 
     const result = await runInvestigation(context);
 
-    // Hypothesis findings have ids matching "finding:hypothesis:*"
-    const hypothesisFindings = result.findings.filter((f) =>
-      f.id.startsWith('finding:hypothesis:'),
+    // The system should produce at least one missing-secret root-cause finding,
+    // either from the hypothesis layer or the graph-driven layer.
+    const rootCauseFinding = result.findings.find(
+      (f) =>
+        (f.id.startsWith('finding:hypothesis:') || f.id.includes('missing-secret')) &&
+        /missing secret|app-credentials/i.test(f.title),
     );
-    expect(hypothesisFindings.length).toBeGreaterThan(0);
+    expect(rootCauseFinding).toBeDefined();
   });
 
-  it('prefers a hypothesis missing-secret finding over the equivalent heuristic missing-secret finding', async () => {
+  it('root-cause finding wins over the raw heuristic missing-secret finding', async () => {
+    // The raw heuristic finding (finding:config:env-secret-ref:*) should be
+    // displaced by either a hypothesis finding (finding:hypothesis:missing-secret:*)
+    // or a graph root-cause finding (finding:missing-secret:app-credentials:default)
+    // via Pass 1 of the component-based merge.
     const context = makeContext({
       resources: [crashLoopPod, dummySecret],
       events: [backOffEvent, failedMountEvent],
@@ -694,52 +707,50 @@ describe('orchestrator integration — CrashLoopBackOff produces hypothesis find
 
     const result = await runInvestigation(context);
 
-    const hypothesisMissingSecret = result.findings.find(
-      (f) =>
-        f.id.startsWith('finding:hypothesis:missing-secret:') &&
-        f.affectedComponents.includes('Pod/default/app-pod'),
-    );
+    // Heuristic finding (finding:config:env-secret-ref:*) must not survive
+    // Pass 1 when a higher-priority root-cause finding exists.
     const heuristicMissingSecret = result.findings.find(
       (f) =>
-        !f.id.startsWith('finding:hypothesis:') &&
-        /missing secret/i.test(f.title) &&
+        f.id.startsWith('finding:config:env-secret-ref:') &&
         f.affectedComponents.includes('Pod/default/app-pod'),
     );
+    expect(heuristicMissingSecret).toBeUndefined();
+
+    // The crashloop symptom finding must still be present.
     const crashLoopSymptom = result.findings.find(
       (f) =>
-        !f.id.startsWith('finding:hypothesis:') &&
-        /crashloop/i.test(f.title) &&
+        f.id.startsWith('finding:k8s:crashloop:') &&
         f.affectedComponents.includes('Pod/default/app-pod'),
     );
-
-    expect(hypothesisMissingSecret).toBeDefined();
-    expect(heuristicMissingSecret).toBeUndefined();
     expect(crashLoopSymptom).toBeDefined();
   });
 
-  it('produces multiple hypothesis findings (differential diagnosis transparency)', async () => {
-    // Include a dummy Secret AND a FailedMount event to generate enough
-    // evidence for multiple hypotheses to pass the confidence > 0 filter.
+  it('produces multiple hypothesis findings (differential diagnosis transparency) when no causal template matches', async () => {
+    // Use backOffEvent ONLY (no FailedMount) so the causal template does NOT
+    // match.  The hypothesis generator runs for the crashloop symptom and
+    // produces competing root-cause candidates.
     const context = makeContext({
       resources: [crashLoopPod, dummySecret],
-      events: [backOffEvent, failedMountEvent],
+      events: [backOffEvent],
     });
 
     const result = await runInvestigation(context);
 
-    // At least one hypothesis finding should be present (missing-secret gets evidence).
-    // With FailedMount events + missing secret reference, we expect at least
-    // the missing-secret hypothesis to have confidence > 0.
+    // With no causal template match, the hypothesis generator produces
+    // multiple findings for differential diagnosis.  The missing-secret
+    // hypothesis gets evidence from dummySecret + pod spec reference.
     const hypothesisFindings = result.findings.filter((f) =>
       f.id.startsWith('finding:hypothesis:'),
     );
     expect(hypothesisFindings.length).toBeGreaterThan(0);
   });
 
-  it('hypothesis findings have differential diagnosis context in reasoningSummary', async () => {
+  it('hypothesis findings have differential diagnosis context in reasoningSummary when fallback path is active', async () => {
+    // Use backOffEvent only so causal template does NOT match and hypothesis
+    // generator runs as the fallback path.
     const context = makeContext({
       resources: [crashLoopPod, dummySecret],
-      events: [backOffEvent, failedMountEvent],
+      events: [backOffEvent],
     });
 
     const result = await runInvestigation(context);
@@ -801,11 +812,12 @@ describe('orchestrator integration — metadata includes hypothesis counts', () 
 
 describe('orchestrator integration — no-AI mode still produces hypothesis findings', () => {
   it('hypothesis layer is active without aiDeps (heuristic-only mode)', async () => {
-    // Include dummy Secret and FailedMount event so the missing-secret hypothesis
-    // collects evidence and passes the confidence > 0 filter.
+    // Use backOffEvent only (no FailedMount with secret name) so the causal
+    // template does NOT match, ensuring the hypothesis generator runs as the
+    // primary path for diagnosis.
     const context = makeContext({
       resources: [crashLoopPod, dummySecret],
-      events: [backOffEvent, failedMountEvent],
+      events: [backOffEvent],
     });
 
     // No aiDeps passed → AI investigation is inactive
@@ -813,7 +825,7 @@ describe('orchestrator integration — no-AI mode still produces hypothesis find
 
     expect(result.metadata.aiEnabled).toBe(false);
 
-    // Hypothesis layer should still have run
+    // Hypothesis layer should still have run (no causal template match)
     const hypothesisFindings = result.findings.filter((f) =>
       f.id.startsWith('finding:hypothesis:'),
     );

@@ -58,6 +58,7 @@ function makePipelineResult(): PipelineResult {
     events: [],
     logs: [],
     findings: [],
+    findingTree: [],
     graph: { nodes: new Map(), edges: [] } as unknown as PipelineResult['graph'],
     trace: {
       bundlePath: '/tmp/bundle.tar.gz',

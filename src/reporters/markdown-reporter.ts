@@ -31,12 +31,15 @@ function severityBadge(severity: FindingSeverity): string {
 }
 
 /**
- * Returns a confidence percentage string, e.g. `0.87` → `"87%"`.
+ * Returns a confidence percentage string with an optional quality indicator.
+ * e.g. `0.87` with quality `'strong'` → `"87% (strong)"`.
  * Clamps the value to [0, 1] before formatting.
  */
-function formatConfidence(confidence: number): string {
+function formatConfidence(confidence: number, quality?: Finding['confidenceQuality']): string {
   const clamped = Math.min(1, Math.max(0, confidence));
-  return `${Math.round(clamped * 100)}%`;
+  const pct = `${Math.round(clamped * 100)}%`;
+  if (quality === undefined) return pct;
+  return `${pct} (${quality})`;
 }
 
 // ---------------------------------------------------------------------------
@@ -114,7 +117,7 @@ function renderFindings(findings: Finding[]): string {
 
     // Severity badge + confidence on the same line for scannability
     lines.push(
-      `${severityBadge(finding.severity)} · Confidence: **${formatConfidence(finding.confidence)}**`,
+      `${severityBadge(finding.severity)} · Confidence: **${formatConfidence(finding.confidence, finding.confidenceQuality)}**`,
     );
     lines.push('');
 

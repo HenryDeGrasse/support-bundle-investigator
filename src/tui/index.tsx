@@ -29,6 +29,7 @@ export {
   confidenceBar,
   evidenceIcon,
   extractDifferentialContext,
+  formatCausalChain,
 } from './helpers.js';
 
 /**

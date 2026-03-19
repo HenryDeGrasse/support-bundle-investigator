@@ -1,6 +1,8 @@
 import type { K8sResource, K8sEvent } from '../types/index.js';
 import type { IndexedChunk } from '../ai/chunk-indexer.js';
 import type { InvestigationSeed } from '../investigators/types.js';
+import { DiagnosticGraph } from './diagnostic-graph.js';
+import { traverseForChunks, RETRIEVAL_EDGE_TYPES } from './traversal.js';
 
 // ---------------------------------------------------------------------------
 // Entity name extraction (mirrors extractQueryIdentifiers in lexical-search.ts)
@@ -586,14 +588,21 @@ export function parseSeedSource(source: string): { kind: string; namespace: stri
  * {@link GraphScoredChunk}s that are relevant to the seed's target resource
  * and its graph neighborhood, scored by hop distance.
  *
- * Scoring:
+ * **Overloaded:** accepts either a {@link DiagnosticGraph} (new traversal
+ * engine, follows typed/weighted/directional edges) or a
+ * {@link ResourceRelationshipGraph} (legacy undirected BFS, backward-compat).
+ *
+ * Scoring with {@link ResourceRelationshipGraph}:
  * - Log / Analyzer / exact-event chunks: `1.0` (direct seed match)
  * - K8s resource chunks at depth 0 (the seed resource itself): `1.0`
  * - K8s resource chunks at depth 1 (direct graph neighbors): `0.7`
  * - K8s resource chunks at depth 2 (two-hop graph neighbors): `0.4`
  *
- * When a chunk qualifies via multiple matching paths (e.g. both node-id match
- * and name match), the highest score (lowest depth) wins.
+ * Scoring with {@link DiagnosticGraph}:
+ * - Uses the traversal engine: `score = edge_weight × decay^depth`
+ * - Follows additional edge types: `label-selector`, `service-selector`, etc.
+ *
+ * When a chunk qualifies via multiple matching paths, the highest score wins.
  *
  * Strategy:
  * 1. Parse the seed source into (kind, namespace, name).
@@ -604,6 +613,205 @@ export function parseSeedSource(source: string): { kind: string; namespace: stri
  * 4. Log and Analyzer seeds use direct path/name matching → score 1.0.
  */
 export function getRelatedChunks(
+  graph: DiagnosticGraph,
+  seed: InvestigationSeed,
+  chunkIndex: IndexedChunk[],
+): GraphScoredChunk[];
+export function getRelatedChunks(
+  graph: ResourceRelationshipGraph,
+  seed: InvestigationSeed,
+  chunkIndex: IndexedChunk[],
+): GraphScoredChunk[];
+export function getRelatedChunks(
+  graph: DiagnosticGraph | ResourceRelationshipGraph,
+  seed: InvestigationSeed,
+  chunkIndex: IndexedChunk[],
+): GraphScoredChunk[] {
+  // Dispatch to the traversal-engine backend when a DiagnosticGraph is provided
+  if (graph instanceof DiagnosticGraph) {
+    return getRelatedChunksViaDiagnosticGraph(graph, seed, chunkIndex);
+  }
+  return getRelatedChunksViaRRG(graph, seed, chunkIndex);
+}
+
+// ---------------------------------------------------------------------------
+// DiagnosticGraph backend (uses typed weighted traversal engine)
+// ---------------------------------------------------------------------------
+
+function getRelatedChunksViaDiagnosticGraph(
+  graph: DiagnosticGraph,
+  seed: InvestigationSeed,
+  chunkIndex: IndexedChunk[],
+): GraphScoredChunk[] {
+  const parsed = parseSeedSource(seed.source);
+  if (!parsed) return [];
+
+  const { kind, namespace, name } = parsed;
+  const seen = new Set<string>();
+  const bestScores = new Map<string, number>();
+
+  const addTraversalChunks = (startNodeId: string): void => {
+    const results = traverseForChunks(graph, {
+      start: startNodeId,
+      direction: 'both',
+      edgeTypes: RETRIEVAL_EDGE_TYPES,
+      maxDepth: 2,
+      scoreDecay: 0.7,
+    }, chunkIndex);
+    for (const { chunk, score } of results) {
+      const existing = bestScores.get(chunk.id);
+      if (existing === undefined || score > existing) {
+        bestScores.set(chunk.id, score);
+      }
+      seen.add(chunk.id);
+    }
+  };
+
+  const addDirectChunk = (chunk: IndexedChunk, score = 1.0): void => {
+    const existing = bestScores.get(chunk.id);
+    if (existing === undefined || score > existing) {
+      bestScores.set(chunk.id, score);
+    }
+    seen.add(chunk.id);
+  };
+
+  // ── Pod seed ──────────────────────────────────────────────────────────────
+  if (kind === 'Pod') {
+    const startId = `Pod:${namespace || 'default'}/${name}`;
+    addTraversalChunks(startId);
+  }
+
+  // ── Analyzer seed: extract entities → traverse from matching graph nodes ─
+  if (kind === 'Analyzer') {
+    const analyzerChunks = chunkIndex.filter(
+      (chunk) =>
+        chunk.artifactCategory === 'analyzer' &&
+        (chunk.artifactId === name ||
+          (isRecord(chunk.metadata) && getString(chunk.metadata['name']) === name) ||
+          chunk.identifiers.some((id) => id === name)),
+    );
+
+    // Direct match at score 1.0
+    for (const chunk of analyzerChunks) {
+      addDirectChunk(chunk, 1.0);
+    }
+
+    // Extract entity names and traverse from matching nodes
+    const textParts: string[] = [seed.hypothesis];
+    for (const ac of analyzerChunks) textParts.push(ac.content);
+    const entityNames = extractEntityNamesFromText(textParts.join(' '));
+
+    let foundAnyNodes = false;
+    for (const entityName of entityNames) {
+      for (const [nodeId_, node] of graph.nodes) {
+        const data = node.data as Record<string, unknown>;
+        const nodeName = typeof data['name'] === 'string' ? data['name'] : '';
+        if (nodeName === entityName) {
+          addTraversalChunks(nodeId_);
+          foundAnyNodes = true;
+        }
+      }
+    }
+
+    // Fallback: find unhealthy pods
+    if (!foundAnyNodes) {
+      const unhealthyPodNames = new Set<string>();
+      for (const chunk of chunkIndex) {
+        if (
+          chunk.artifactCategory === 'kubernetes-resource' &&
+          (chunk.identifiers.includes('CrashLoopBackOff') ||
+            chunk.identifiers.includes('ImagePullBackOff'))
+        ) {
+          for (const id of chunk.identifiers) unhealthyPodNames.add(id);
+        }
+      }
+      for (const [nodeId_, node] of graph.nodes) {
+        const data = node.data as Record<string, unknown>;
+        const nodeKind = typeof data['kind'] === 'string' ? data['kind'] : '';
+        const nodeName = typeof data['name'] === 'string' ? data['name'] : '';
+        if (nodeKind === 'Pod' && unhealthyPodNames.has(nodeName)) {
+          addTraversalChunks(nodeId_);
+        }
+      }
+    }
+  }
+
+  // ── Log seed ──────────────────────────────────────────────────────────────
+  if (kind === 'Log') {
+    // Direct log chunk match
+    for (const chunk of chunkIndex) {
+      if (chunk.artifactId === name) addDirectChunk(chunk, 1.0);
+    }
+
+    // Resolve pod from log path and traverse
+    const logPathSegments = name.split('/');
+    const logFilename = logPathSegments[logPathSegments.length - 1] ?? '';
+    const dotIdx = logFilename.lastIndexOf('.');
+    const logBasename = dotIdx !== -1 ? logFilename.slice(0, dotIdx) : logFilename;
+    const logParentDir = logPathSegments[logPathSegments.length - 2];
+    const podNamesToCheck = new Set<string>();
+    if (logBasename) podNamesToCheck.add(logBasename);
+    if (logParentDir) podNamesToCheck.add(logParentDir);
+
+    for (const [nodeId_, node] of graph.nodes) {
+      const data = node.data as Record<string, unknown>;
+      const nodeKind = typeof data['kind'] === 'string' ? data['kind'] : '';
+      const nodeName = typeof data['name'] === 'string' ? data['name'] : '';
+      if (nodeKind === 'Pod' && podNamesToCheck.has(nodeName)) {
+        addTraversalChunks(nodeId_);
+      }
+    }
+  }
+
+  // ── Event seed ────────────────────────────────────────────────────────────
+  if (kind === 'Event') {
+    const eventParts = name.split(':');
+    const eventObjectName = eventParts.pop() ?? name;
+    const eventReason = eventParts.join(':');
+
+    // Direct event chunk match
+    for (const chunk of chunkIndex) {
+      if (chunk.artifactCategory !== 'event' || !isRecord(chunk.metadata)) continue;
+      const metaReason = getString(chunk.metadata['reason']).toLowerCase();
+      const metaName = getString(chunk.metadata['name']).toLowerCase();
+      if (metaReason === eventReason.toLowerCase() && metaName === eventObjectName.toLowerCase()) {
+        addDirectChunk(chunk, 1.0);
+        // Also traverse from the event's involved object
+        const eventNamespace =
+          getString(chunk.metadata['namespace']) || chunk.namespace || 'default';
+        const eventKind = getString(chunk.metadata['kind']) || 'Pod';
+        const startId = `${eventKind}:${eventNamespace}/${eventObjectName}`;
+        addTraversalChunks(startId);
+      }
+    }
+
+    // Fallback traverse from pod with matching name
+    if (!seen.size) {
+      for (const [nodeId_, node] of graph.nodes) {
+        const data = node.data as Record<string, unknown>;
+        const nodeKind = typeof data['kind'] === 'string' ? data['kind'] : '';
+        const nodeName = typeof data['name'] === 'string' ? data['name'] : '';
+        if (nodeKind === 'Pod' && nodeName === eventObjectName) {
+          addTraversalChunks(nodeId_);
+        }
+      }
+    }
+  }
+
+  // Build and return the result array
+  const matched: GraphScoredChunk[] = [];
+  for (const [chunkId, score] of bestScores) {
+    const chunk = chunkIndex.find((c) => c.id === chunkId);
+    if (chunk) matched.push({ chunk, score });
+  }
+  return matched;
+}
+
+// ---------------------------------------------------------------------------
+// ResourceRelationshipGraph backend (legacy undirected BFS)
+// ---------------------------------------------------------------------------
+
+function getRelatedChunksViaRRG(
   graph: ResourceRelationshipGraph,
   seed: InvestigationSeed,
   chunkIndex: IndexedChunk[],

@@ -64,6 +64,9 @@ export function generateJsonReport(report: InvestigationReport): string {
         contradictionsChecked: finding.contradictionsChecked,
         recommendedAction: finding.recommendedAction,
         missingEvidence: finding.missingEvidence,
+        ...(finding.confidenceQuality !== undefined
+          ? { confidenceQuality: finding.confidenceQuality }
+          : {}),
       };
       return base;
     }),

@@ -255,16 +255,37 @@ function summarizeWorkload(resource: K8sResource): string {
 // ConfigMap summary
 // ---------------------------------------------------------------------------
 
+/**
+ * Maximum character length for a single ConfigMap data value included in the
+ * summary.  Values longer than this are truncated with `"..."` to avoid
+ * bloating the summary with multi-line configuration blobs (e.g. embedded
+ * nginx.conf or application.yaml).
+ */
+const CONFIG_MAP_VALUE_LIMIT = 100;
+
 function summarizeConfigMap(resource: K8sResource): string {
   const name = resource.metadata.name;
   const ns = resource.metadata.namespace ?? 'default';
   const lines: string[] = [`ConfigMap: ${name} (namespace: ${ns})`];
 
-  if (isRecord(resource as unknown as Record<string, unknown>)) {
-    const raw = resource as unknown as Record<string, unknown>;
-    if (isRecord(raw['data'])) {
-      const keys = Object.keys(raw['data'] as Record<string, unknown>);
-      lines.push(`Keys: ${keys.join(', ')}`);
+  const raw = resource as unknown as Record<string, unknown>;
+  if (isRecord(raw['data'])) {
+    const data = raw['data'] as Record<string, unknown>;
+    const keys = Object.keys(data);
+    lines.push(`Keys: ${keys.join(', ')}`);
+
+    // Include data values so that network endpoints and connection strings
+    // remain searchable after the summary-as-content migration (step 3.3).
+    // Without this, a ConfigMap with `DB_HOST: wrong-host.internal` would
+    // lose the hostname from the embedded content, breaking retrieval.
+    for (const [key, value] of Object.entries(data)) {
+      if (typeof value === 'string' && value.trim()) {
+        const truncated =
+          value.length > CONFIG_MAP_VALUE_LIMIT
+            ? value.slice(0, CONFIG_MAP_VALUE_LIMIT) + '...'
+            : value;
+        lines.push(`  ${key}: ${truncated}`);
+      }
     }
   }
 

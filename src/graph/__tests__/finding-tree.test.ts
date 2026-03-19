@@ -288,3 +288,114 @@ describe('findingTreeToJSON', () => {
     expect(toJSON(tree)).toEqual(findingTreeToJSON(tree));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Investigator-pattern causes edges (real investigator output simulation)
+// ---------------------------------------------------------------------------
+
+describe('buildFindingTree — investigator-pattern causes edges', () => {
+  // Simulate the finding IDs and edge patterns that real investigators produce.
+  // Investigators emit edges with type 'causes' where source = root-cause
+  // finding id and target = symptom finding id.
+
+  it('builds the canonical causal chain: Missing Secret → FailedMount → CrashLoopBackOff → Unhealthy Workload', () => {
+    const missingSecret = makeFinding(
+      'finding:hypothesis:missing-secret:1',
+      'Missing Secret: app-secret not found',
+    );
+    const failedMount = makeFinding(
+      'finding:k8s:failedmount:pod/default/api-6f8d',
+      'FailedMount: volume failed to mount',
+    );
+    const crashLoop = makeFinding(
+      'finding:k8s:crashloop:pod/default/api-6f8d',
+      'CrashLoopBackOff: container restarting',
+    );
+    const unhealthyWorkload = makeFinding(
+      'finding:k8s:workload:deployment/default/api',
+      'Unhealthy Workload: deployment has unavailable replicas',
+    );
+
+    const findings = [missingSecret, failedMount, crashLoop, unhealthyWorkload];
+    const edges: GraphEdge[] = [
+      makeCausesEdge(missingSecret.id, failedMount.id),
+      makeCausesEdge(failedMount.id, crashLoop.id),
+      makeCausesEdge(crashLoop.id, unhealthyWorkload.id),
+    ];
+
+    const tree = buildFindingTree(findings, edges);
+
+    // getRootCauses identifies the top of the chain — Missing Secret has no parent
+    const roots = getRootCauses(tree);
+    expect(roots).toHaveLength(1);
+    expect(roots[0]!.finding.id).toBe(missingSecret.id);
+
+    // The root has exactly one child: FailedMount
+    const root = roots[0]!;
+    expect(root.children).toHaveLength(1);
+    expect(root.children[0]!.finding.id).toBe(failedMount.id);
+
+    // FailedMount → CrashLoopBackOff
+    expect(root.children[0]!.children[0]!.finding.id).toBe(crashLoop.id);
+
+    // CrashLoopBackOff → Unhealthy Workload (leaf)
+    expect(root.children[0]!.children[0]!.children[0]!.finding.id).toBe(unhealthyWorkload.id);
+    expect(root.children[0]!.children[0]!.children[0]!.children).toHaveLength(0);
+  });
+
+  it('getRootCauses returns only the root-cause node (no parent) from a causal chain', () => {
+    const root = makeFinding('finding:hypothesis:missing-secret:1', 'Missing Secret');
+    const mid = makeFinding('finding:k8s:crashloop:pod/ns/p', 'CrashLoopBackOff');
+    const leaf = makeFinding('finding:k8s:workload:dep/ns/d', 'Unhealthy Workload');
+
+    const tree = buildFindingTree([root, mid, leaf], [
+      makeCausesEdge(root.id, mid.id),
+      makeCausesEdge(mid.id, leaf.id),
+    ]);
+
+    const roots = getRootCauses(tree);
+    expect(roots).toHaveLength(1);
+    expect(roots[0]!.finding.id).toBe(root.id);
+    // The root has no parent set
+    expect(roots[0]!.parent).toBeUndefined();
+  });
+
+  it('supports multiple independent causal chains in the same finding set', () => {
+    // Chain A: dns-failure → crashloop-a
+    // Chain B: missing-secret → crashloop-b
+    const dnsFailure = makeFinding('finding:hypothesis:dns-failure:1', 'DNS Failure');
+    const crashA = makeFinding('finding:k8s:crashloop:pod/ns/a', 'CrashLoopBackOff pod A');
+    const missingSecret = makeFinding('finding:hypothesis:missing-secret:1', 'Missing Secret');
+    const crashB = makeFinding('finding:k8s:crashloop:pod/ns/b', 'CrashLoopBackOff pod B');
+
+    const tree = buildFindingTree([dnsFailure, crashA, missingSecret, crashB], [
+      makeCausesEdge(dnsFailure.id, crashA.id),
+      makeCausesEdge(missingSecret.id, crashB.id),
+    ]);
+
+    const roots = getRootCauses(tree);
+    expect(roots).toHaveLength(2);
+    const rootIds = roots.map((r) => r.finding.id);
+    expect(rootIds).toContain(dnsFailure.id);
+    expect(rootIds).toContain(missingSecret.id);
+  });
+
+  it('DFS pre-order traversal of the causal chain visits most-fundamental cause first', () => {
+    const missingSecret = makeFinding('finding:hypothesis:missing-secret:1', 'Missing Secret');
+    const failedMount = makeFinding('finding:k8s:failedmount:pod/ns/p', 'FailedMount');
+    const crashLoop = makeFinding('finding:k8s:crashloop:pod/ns/p', 'CrashLoopBackOff');
+
+    const tree = buildFindingTree([missingSecret, failedMount, crashLoop], [
+      makeCausesEdge(missingSecret.id, failedMount.id),
+      makeCausesEdge(failedMount.id, crashLoop.id),
+    ]);
+
+    const roots = getRootCauses(tree);
+    const visited: string[] = [];
+    for (const root of roots) {
+      traverseDFS(root, (n) => visited.push(n.finding.title));
+    }
+
+    expect(visited).toEqual(['Missing Secret', 'FailedMount', 'CrashLoopBackOff']);
+  });
+});

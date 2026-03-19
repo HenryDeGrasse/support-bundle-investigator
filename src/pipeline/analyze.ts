@@ -13,19 +13,28 @@ import {
   sortEventsByTime,
 } from '../parsers/index.js';
 import type { HelmRelease } from '../parsers/index.js';
-import { InvestigationGraphImpl, buildResourceGraph } from '../graph/index.js';
+import {
+  InvestigationGraphImpl,
+  buildDiagnosticGraph,
+  buildWorkloadGroups,
+  addTemporalCorrelationEdges,
+  addTemporalSequenceEdges,
+  asResourceRelationshipGraph,
+} from '../graph/index.js';
 import type {
   AnalyzerResult,
   BundleProfile,
   Evidence,
   Finding,
+  FindingTreeNode,
   K8sEvent,
   K8sResource,
 } from '../types/index.js';
 import type { LogFile } from '../parsers/index.js';
 import { runInvestigation } from '../investigators/index.js';
 import type { AIInvestigatorDeps } from '../investigators/index.js';
-import { loadAIConfig, isAIEnabled, buildChunkIndex, LexicalSearchIndex, LLMClient, EmbeddingClient, VectorStore } from '../ai/index.js';
+import { loadAIConfig, isAIEnabled, buildChunkIndex, LexicalSearchIndex, LLMClient, createEmbeddingClient, VectorStore, lateChunkEmbed } from '../ai/index.js';
+import type { EmbeddingClientInterface, LateChunkEmbeddingClient } from '../ai/index.js';
 import {
   createTrace,
   startTraceStep,
@@ -70,6 +79,8 @@ export interface PipelineResult {
   logs: LogFile[];
   /** Verified, deduplicated findings produced by the investigation pipeline. */
   findings: Finding[];
+  /** Causal tree built from findings and 'causes' graph edges. */
+  findingTree: FindingTreeNode[];
   graph: InvestigationGraphImpl;
   trace: InvestigationTrace;
 }
@@ -321,32 +332,111 @@ export async function analyzeBundlePipeline(
 
     try {
       const chunks = buildChunkIndex({ analyzerResults, resources, events, logs, profile, resourceSourceFiles, helmReleases });
-      const resourceGraph = buildResourceGraph(resources, events);
+
+      // ── Build unified DiagnosticGraph ─────────────────────────────────────
+      // Replaces buildResourceGraph: adds label-selector, service-selector,
+      // temporal-correlation, and temporal-sequence edges in addition to the
+      // structural edges the old ResourceRelationshipGraph had.
+      const diagnosticGraph = buildDiagnosticGraph(resources, events);
+      buildWorkloadGroups(diagnosticGraph);
+      const logChunks = chunks.filter((c) => c.artifactCategory === 'log');
+      addTemporalCorrelationEdges(diagnosticGraph, logChunks, events);
+      addTemporalSequenceEdges(diagnosticGraph, events);
+      // Backward-compatible adapter for components still typed against ResourceRelationshipGraph
+      const resourceGraph = asResourceRelationshipGraph(diagnosticGraph);
+
       const lexicalIndex = new LexicalSearchIndex();
       lexicalIndex.build(chunks);
       const llmClient = new LLMClient(aiConfig);
 
       // ── Semantic index (optional expansion layer) ──────────────────────────
-      // Attempt to embed all chunk summaries and build a vector store.
-      // If embedding fails, aiDeps is still set (without embeddingClient/
-      // vectorStore) so graph + lexical retrieval remains available.
-      let embeddingClient: EmbeddingClient | undefined;
+      // Uses createEmbeddingClient to select the right backend (local TEI/Ollama
+      // or OpenAI) based on SBI_EMBEDDING_BACKEND env var.
+      // Late chunking: when the client supports token-level output (TEI), each
+      // log chunk gets a context-aware embedding via lateChunkEmbed rather than
+      // independent per-chunk embedding.
+      let embeddingClient: EmbeddingClientInterface | undefined;
       let vectorStore: VectorStore | undefined;
 
       try {
-        embeddingClient = new EmbeddingClient(aiConfig);
-        const summaries = chunks.map((c) => c.summary);
-        const embeddings = await embeddingClient.embed(summaries);
+        embeddingClient = createEmbeddingClient(aiConfig);
+        if (embeddingClient !== undefined) {
+          // Determine whether the client supports late chunking (TEI token-level)
+          const supportsLateChunking =
+            typeof (embeddingClient as Partial<LateChunkEmbeddingClient>).embedTokenLevel === 'function';
 
-        // Only build the store when at least one embedding succeeded
-        const hasValidEmbeddings = embeddings.some((e) => e.length > 0);
-        if (hasValidEmbeddings) {
-          vectorStore = new VectorStore();
-          vectorStore.addAll(chunks, embeddings);
-          log(`Semantic index built: ${vectorStore.size} embedded chunks`, verbose);
+          // Separate log chunks from non-log chunks.
+          // Late chunking applies only to multi-line log artifacts.
+          const nonLogChunks = chunks.filter((c) => c.artifactCategory !== 'log');
+
+          // Build embeddings array in chunk index order
+          const allEmbeddings: number[][] = new Array(chunks.length).fill([]) as number[][];
+
+          // Non-log chunks: standard batch embedding using contextualizedContent
+          if (nonLogChunks.length > 0) {
+            const nonLogTexts = nonLogChunks.map((c) => c.contextualizedContent ?? c.summary);
+            const nonLogEmbeddings = await embeddingClient.embed(nonLogTexts);
+            for (let i = 0; i < nonLogChunks.length; i++) {
+              const globalIdx = chunks.indexOf(nonLogChunks[i]!);
+              if (globalIdx >= 0) allEmbeddings[globalIdx] = nonLogEmbeddings[i] ?? [];
+            }
+          }
+
+          // Log chunks: attempt late chunking per unique source file
+          if (logChunks.length > 0) {
+            if (supportsLateChunking) {
+              // Group log chunks by artifactId (one late-chunk call per source file)
+              const byArtifact = new Map<string, typeof logChunks>();
+              for (const c of logChunks) {
+                const group = byArtifact.get(c.artifactId) ?? [];
+                group.push(c);
+                byArtifact.set(c.artifactId, group);
+              }
+
+              for (const [, fileChunks] of byArtifact) {
+                // Reconstruct the full document text from chunk content
+                const fullDocument = fileChunks.map((c) => c.content).join('\n');
+                const documentLines = fullDocument.split('\n');
+                const boundaries = fileChunks.map((c) => ({
+                  startLine: c.startLine,
+                  endLine: c.endLine,
+                }));
+
+                const lateEmbeddings = await lateChunkEmbed(
+                  embeddingClient as LateChunkEmbeddingClient,
+                  fullDocument,
+                  documentLines,
+                  boundaries,
+                );
+
+                for (let i = 0; i < fileChunks.length; i++) {
+                  const globalIdx = chunks.indexOf(fileChunks[i]!);
+                  if (globalIdx >= 0) allEmbeddings[globalIdx] = lateEmbeddings[i] ?? [];
+                }
+              }
+              log(`Late chunking: embedded ${logChunks.length} log chunks with token-level context`, verbose);
+            } else {
+              // Standard per-chunk embedding for log chunks (no late chunking)
+              const logTexts = logChunks.map((c) => c.contextualizedContent ?? c.summary);
+              const logEmbeddings = await embeddingClient.embed(logTexts);
+              for (let i = 0; i < logChunks.length; i++) {
+                const globalIdx = chunks.indexOf(logChunks[i]!);
+                if (globalIdx >= 0) allEmbeddings[globalIdx] = logEmbeddings[i] ?? [];
+              }
+            }
+          }
+
+          const hasValidEmbeddings = allEmbeddings.some((e) => e.length > 0);
+          if (hasValidEmbeddings) {
+            vectorStore = new VectorStore();
+            vectorStore.addAll(chunks, allEmbeddings);
+            log(`Semantic index built: ${vectorStore.size} embedded chunks`, verbose);
+          } else {
+            log('Semantic index skipped: no valid embeddings returned', verbose);
+            embeddingClient = undefined;
+          }
         } else {
-          log('Semantic index skipped: no valid embeddings returned', verbose);
-          embeddingClient = undefined;
+          log('Semantic index skipped: no embedding backend configured', verbose);
         }
       } catch (embeddingError) {
         const embeddingMessage =
@@ -362,6 +452,7 @@ export async function analyzeBundlePipeline(
       aiDeps = {
         chunkIndex: chunks,
         resourceGraph,
+        diagnosticGraph,
         lexicalIndex,
         llmClient,
         verbose,
@@ -529,6 +620,7 @@ export async function analyzeBundlePipeline(
     events,
     logs,
     findings: investigationResult.findings,
+    findingTree: investigationResult.findingTree,
     graph,
     trace,
   };

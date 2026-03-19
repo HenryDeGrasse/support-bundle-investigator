@@ -230,11 +230,14 @@ describe('summarizeResource (ConfigMap)', () => {
     expect(summary).toContain('DB_USER');
   });
 
-  it('does not include actual data values', () => {
+  it('includes data values so that network endpoints are searchable (step 3.3)', () => {
     const summary = summarizeResource(makeConfigMap());
+    // After step 3.3, ConfigMap data values (hostnames, connection strings, etc.)
+    // are included in the summary so that semantic/lexical search can correlate
+    // misconfigured endpoints with log errors.
     // values are postgres.svc.cluster.local, amdin, 5432
-    expect(summary).not.toContain('amdin');
-    expect(summary).not.toContain('postgres.svc.cluster.local');
+    expect(summary).toContain('postgres.svc.cluster.local');
+    expect(summary).toContain('amdin');
   });
 });
 

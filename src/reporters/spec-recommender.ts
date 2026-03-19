@@ -269,11 +269,20 @@ function suggestCoverageImprovements(profile: BundleProfile): SpecRecommendation
 // ---------------------------------------------------------------------------
 
 /**
- * Returns `true` when the finding was produced by the hypothesis layer.
- * Hypothesis findings carry IDs prefixed with `finding:hypothesis:`.
+ * Returns `true` when the finding was produced by the hypothesis or AI
+ * analysis layers.  Both of these finding types may carry `missingEvidence`
+ * entries that describe decisive data gaps — unlike lower-level heuristic
+ * findings whose missing-evidence entries are already handled by
+ * `suggestMissingCollectors`.
+ *
+ * Eligible prefixes:
+ * - `finding:hypothesis:` — findings from the hypothesis/differential-diagnosis layer
+ * - `finding:ai:` — findings from the LLM / AI investigation layer
  */
-function isHypothesisFinding(finding: Finding): boolean {
-  return finding.id.startsWith('finding:hypothesis:');
+function isEligibleForGapAnalysis(finding: Finding): boolean {
+  return (
+    finding.id.startsWith('finding:hypothesis:') || finding.id.startsWith('finding:ai:')
+  );
 }
 
 /**
@@ -337,34 +346,38 @@ function chooseDistinguishingEvidence(top: Finding, second: Finding): string | n
 
 /**
  * Generates spec recommendations from evidence gaps surfaced by the
- * hypothesis layer.
+ * hypothesis and AI analysis layers.
  *
- * The hypothesis layer embeds `missingEvidence` entries that describe decisive
- * data not present in the bundle.  This function maps those descriptions to
- * concrete collector recommendations:
+ * Both layers embed `missingEvidence` entries that describe decisive data not
+ * present in the bundle.  This function maps those descriptions to concrete
+ * collector recommendations:
  *
  * - CoreDNS / kube-dns references → suggest a CoreDNS log collector targeting
  *   the `kube-system` namespace.
  * - NetworkPolicy references → suggest expanding the `clusterResources`
  *   collector to include `networkpolicies`.
- * - When the top two hypothesis findings for the same symptom have confidence
- *   within 0.15 of each other, a recommendation is generated for evidence that
- *   would distinguish between them, preferring missing evidence unique to one
- *   of the competing hypotheses.
+ * - When the top two eligible findings for the same symptom/group have
+ *   confidence within 0.15 of each other, a recommendation is generated for
+ *   evidence that would distinguish between them, preferring missing evidence
+ *   unique to one of the competing findings.
  *
- * Only hypothesis findings (id prefix `finding:hypothesis:`) are considered.
- * Non-hypothesis findings are ignored by this helper — they are handled by
- * the sibling `suggestMissingCollectors` function.
+ * Eligible finding types (see `isEligibleForGapAnalysis`):
+ * - `finding:hypothesis:*` — hypothesis/differential-diagnosis layer findings
+ * - `finding:ai:*`         — LLM / AI investigation layer findings
  *
- * @param findings - All findings from the investigation (may include both
- *                   hypothesis and heuristic findings).
- * @returns Collector recommendations derived from hypothesis-layer evidence gaps.
+ * Lower-level heuristic findings (`finding:k8s:*`, `finding:log:*`, etc.) are
+ * not processed here — they are handled by the sibling `suggestMissingCollectors`
+ * function.
+ *
+ * @param findings - All findings from the investigation (may include hypothesis,
+ *                   AI, and heuristic findings).
+ * @returns Collector recommendations derived from hypothesis/AI-layer evidence gaps.
  */
 function suggestFromHypothesisGaps(findings: Finding[]): SpecRecommendation[] {
   const recommendations: SpecRecommendation[] = [];
   const seen = new Set<string>();
 
-  const hypothesisFindings = findings.filter(isHypothesisFinding);
+  const hypothesisFindings = findings.filter(isEligibleForGapAnalysis);
 
   // Map missingEvidence entries to specific collector types.
   for (const finding of hypothesisFindings) {

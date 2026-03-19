@@ -23,6 +23,12 @@ export interface FindingsPaneProps {
   selectedIndex: number;
   /** When true the pane border and title render in their focused style. */
   focused: boolean;
+  /**
+   * Optional set of finding IDs that are causal effects (i.e. they have a
+   * parent in the finding tree). When provided, findings in this set are
+   * rendered with a `→` causal chain indicator.
+   */
+  causalChildIds?: ReadonlySet<string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -47,6 +53,7 @@ export function FindingsPane({
   findings,
   selectedIndex,
   focused,
+  causalChildIds,
 }: FindingsPaneProps): React.ReactElement {
   return (
     <Pane title="Findings" focused={focused}>
@@ -70,7 +77,9 @@ export function FindingsPane({
           const label = formatSeverityLabel(finding.severity).padEnd(9);
           const conf = confidenceBar(finding.confidence).padEnd(5);
           const tag = sourceTag(finding.id).padEnd(4);
-          const title = truncateTitle(humanizeTitle(finding.title), 40);
+          // Reserve 2 chars for chain indicator; reduce title space by 2 to compensate
+          const isCausalEffect = causalChildIds?.has(finding.id) ?? false;
+          const title = truncateTitle(humanizeTitle(finding.title), isCausalEffect ? 38 : 40);
 
           return (
             <Box key={finding.id}>
@@ -82,6 +91,11 @@ export function FindingsPane({
               <Text color="gray" bold={isSelected}>
                 {tag}{' '}
               </Text>
+              {isCausalEffect && (
+                <Text color="gray" dimColor>
+                  {'→ '}
+                </Text>
+              )}
               <Text bold={isSelected}>{title}</Text>
             </Box>
           );

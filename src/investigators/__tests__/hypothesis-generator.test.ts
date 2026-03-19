@@ -3,10 +3,12 @@ import type { Finding, FindingSeverity } from '../../types/index.js';
 import type { BundleProfile } from '../../types/index.js';
 import type { InvestigatorContext } from '../types.js';
 import type { LogFile } from '../../parsers/index.js';
+import type { HypothesisSet, Hypothesis, HypothesisCategory } from '../hypothesis-types.js';
 import {
   groupFindingsBySymptom,
   generateHypothesesForSymptom,
   generateAllHypotheses,
+  correlateAcrossSymptoms,
 } from '../hypothesis-generator.js';
 
 // ---------------------------------------------------------------------------
@@ -694,5 +696,317 @@ describe('generateAllHypotheses — structural invariants', () => {
         expect(h.sourceFindings.length).toBeGreaterThan(0);
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// correlateAcrossSymptoms — cross-symptom hypothesis correlation (7.5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds a fully scored HypothesisSet with a single top hypothesis.
+ *
+ * Used to simulate post-ranking output fed to {@link correlateAcrossSymptoms}.
+ */
+function makeHypothesisSetForCorrelation(
+  namespace: string,
+  podName: string,
+  category: HypothesisCategory,
+  confidence: number,
+): HypothesisSet {
+  const symptomKey = `pod-not-ready:${namespace}/${podName}`;
+  const hypothesis: Hypothesis = {
+    id: `${symptomKey}:${category}`,
+    symptom: `Pod '${podName}' is not ready in namespace '${namespace}'`,
+    rootCause: `Root cause: ${category}`,
+    category,
+    evidenceAssessment: { supporting: [], contradicting: [], missingDecisive: [] },
+    confidence,
+    confidenceRationale: 'Test confidence',
+    specGapRecommendations: [],
+    sourceFindings: [],
+  };
+  return {
+    symptomKey,
+    symptomDescription: `Pod '${podName}' is not ready in namespace '${namespace}'`,
+    hypotheses: [hypothesis],
+    topHypothesis: hypothesis,
+  };
+}
+
+describe('correlateAcrossSymptoms — empty / trivial inputs', () => {
+  it('returns an empty array when given no hypothesis sets', () => {
+    expect(correlateAcrossSymptoms([])).toHaveLength(0);
+  });
+
+  it('returns an empty array when only one set is provided (no convergence)', () => {
+    const sets = [makeHypothesisSetForCorrelation('default', 'pod-1', 'dns-failure', 0.75)];
+    expect(correlateAcrossSymptoms(sets)).toHaveLength(0);
+  });
+
+  it('returns an empty array when sets have null topHypothesis', () => {
+    const nullSet: HypothesisSet = {
+      symptomKey: 'pod-not-ready:default/pod-1',
+      symptomDescription: 'Pod pod-1 not ready',
+      hypotheses: [],
+      topHypothesis: null,
+    };
+    expect(correlateAcrossSymptoms([nullSet, nullSet])).toHaveLength(0);
+  });
+
+  it('returns an empty array when sets have zero-confidence topHypothesis', () => {
+    const set1 = makeHypothesisSetForCorrelation('default', 'pod-1', 'dns-failure', 0.0);
+    const set2 = makeHypothesisSetForCorrelation('default', 'pod-2', 'dns-failure', 0.0);
+    expect(correlateAcrossSymptoms([set1, set2])).toHaveLength(0);
+  });
+});
+
+describe('correlateAcrossSymptoms — 3 DNS failure pods → cluster-wide meta-finding', () => {
+  const sets = [
+    makeHypothesisSetForCorrelation('default', 'pod-1', 'dns-failure', 0.72),
+    makeHypothesisSetForCorrelation('default', 'pod-2', 'dns-failure', 0.68),
+    makeHypothesisSetForCorrelation('default', 'pod-3', 'dns-failure', 0.74),
+  ];
+  const metaFindings = correlateAcrossSymptoms(sets);
+
+  it('produces exactly one meta-finding for 3 convergent DNS failure pods', () => {
+    expect(metaFindings).toHaveLength(1);
+  });
+
+  it('meta-finding title mentions the convergence count (3)', () => {
+    expect(metaFindings[0]!.title).toContain('3');
+  });
+
+  it('meta-finding title references DNS failure', () => {
+    expect(metaFindings[0]!.title.toLowerCase()).toMatch(/dns/);
+  });
+
+  it('meta-finding title references the namespace', () => {
+    expect(metaFindings[0]!.title).toContain('default');
+  });
+
+  it('meta-finding title matches the pattern "Cluster-wide ... affecting N pods in namespace X"', () => {
+    const title = metaFindings[0]!.title;
+    expect(title).toMatch(/cluster-wide/i);
+    expect(title).toMatch(/affecting 3 pods/i);
+    expect(title).toContain("namespace 'default'");
+  });
+
+  it('meta-finding confidence is boosted above the individual base confidence', () => {
+    const baseAvg = (0.72 + 0.68 + 0.74) / 3; // ≈ 0.713
+    expect(metaFindings[0]!.confidence).toBeGreaterThan(baseAvg);
+  });
+
+  it('meta-finding confidence is capped at 1.0', () => {
+    expect(metaFindings[0]!.confidence).toBeLessThanOrEqual(1.0);
+  });
+
+  it('meta-finding has a valid severity', () => {
+    const validSeverities = ['critical', 'high', 'medium', 'low', 'info'];
+    expect(validSeverities).toContain(metaFindings[0]!.severity);
+  });
+
+  it('meta-finding severity reflects the dns-failure category (high)', () => {
+    expect(metaFindings[0]!.severity).toBe('high');
+  });
+
+  it('meta-finding id starts with "finding:meta:"', () => {
+    expect(metaFindings[0]!.id).toMatch(/^finding:meta:/);
+  });
+
+  it('meta-finding affectedComponents contains all 3 pod components', () => {
+    const comps = metaFindings[0]!.affectedComponents;
+    expect(comps).toContain('Pod/default/pod-1');
+    expect(comps).toContain('Pod/default/pod-2');
+    expect(comps).toContain('Pod/default/pod-3');
+  });
+
+  it('meta-finding has non-empty evidence', () => {
+    expect(metaFindings[0]!.evidence.length).toBeGreaterThan(0);
+  });
+
+  it('meta-finding has non-empty reasoningSummary', () => {
+    expect(metaFindings[0]!.reasoningSummary).toBeTruthy();
+  });
+
+  it('meta-finding has non-empty recommendedAction', () => {
+    expect(metaFindings[0]!.recommendedAction).toBeTruthy();
+  });
+});
+
+describe('correlateAcrossSymptoms — confidence is boosted by convergence count', () => {
+  const baseConfidence = 0.70;
+
+  it('3 convergent sets produce higher confidence than 2 convergent sets', () => {
+    const sets2 = [
+      makeHypothesisSetForCorrelation('default', 'pod-1', 'dns-failure', baseConfidence),
+      makeHypothesisSetForCorrelation('default', 'pod-2', 'dns-failure', baseConfidence),
+    ];
+    const sets3 = [
+      makeHypothesisSetForCorrelation('default', 'pod-1', 'dns-failure', baseConfidence),
+      makeHypothesisSetForCorrelation('default', 'pod-2', 'dns-failure', baseConfidence),
+      makeHypothesisSetForCorrelation('default', 'pod-3', 'dns-failure', baseConfidence),
+    ];
+    const result2 = correlateAcrossSymptoms(sets2);
+    const result3 = correlateAcrossSymptoms(sets3);
+    expect(result2).toHaveLength(1);
+    expect(result3).toHaveLength(1);
+    expect(result3[0]!.confidence).toBeGreaterThan(result2[0]!.confidence);
+  });
+
+  it('4 convergent sets produce higher confidence than 3 convergent sets', () => {
+    const sets3 = [
+      makeHypothesisSetForCorrelation('default', 'pod-1', 'missing-secret', baseConfidence),
+      makeHypothesisSetForCorrelation('default', 'pod-2', 'missing-secret', baseConfidence),
+      makeHypothesisSetForCorrelation('default', 'pod-3', 'missing-secret', baseConfidence),
+    ];
+    const sets4 = [
+      makeHypothesisSetForCorrelation('default', 'pod-1', 'missing-secret', baseConfidence),
+      makeHypothesisSetForCorrelation('default', 'pod-2', 'missing-secret', baseConfidence),
+      makeHypothesisSetForCorrelation('default', 'pod-3', 'missing-secret', baseConfidence),
+      makeHypothesisSetForCorrelation('default', 'pod-4', 'missing-secret', baseConfidence),
+    ];
+    const result3 = correlateAcrossSymptoms(sets3);
+    const result4 = correlateAcrossSymptoms(sets4);
+    expect(result4[0]!.confidence).toBeGreaterThan(result3[0]!.confidence);
+  });
+});
+
+describe('correlateAcrossSymptoms — namespace isolation', () => {
+  it('pods in different namespaces are NOT correlated', () => {
+    const sets = [
+      makeHypothesisSetForCorrelation('default', 'pod-1', 'dns-failure', 0.70),
+      makeHypothesisSetForCorrelation('production', 'pod-2', 'dns-failure', 0.70),
+    ];
+    // Each namespace has only 1 pod — no convergence in any single namespace
+    expect(correlateAcrossSymptoms(sets)).toHaveLength(0);
+  });
+
+  it('pods in the same namespace and different namespaces produce separate meta-findings', () => {
+    const sets = [
+      makeHypothesisSetForCorrelation('default', 'pod-1', 'dns-failure', 0.70),
+      makeHypothesisSetForCorrelation('default', 'pod-2', 'dns-failure', 0.70),
+      makeHypothesisSetForCorrelation('production', 'pod-3', 'dns-failure', 0.70),
+      makeHypothesisSetForCorrelation('production', 'pod-4', 'dns-failure', 0.70),
+    ];
+    const results = correlateAcrossSymptoms(sets);
+    expect(results).toHaveLength(2);
+    const namespaces = results.map((f) => f.affectedComponents[0]?.split('/')[1]);
+    expect(namespaces).toContain('default');
+    expect(namespaces).toContain('production');
+  });
+
+  it('each namespace meta-finding references only its own pods', () => {
+    const sets = [
+      makeHypothesisSetForCorrelation('default', 'pod-1', 'dns-failure', 0.70),
+      makeHypothesisSetForCorrelation('default', 'pod-2', 'dns-failure', 0.70),
+      makeHypothesisSetForCorrelation('production', 'pod-3', 'dns-failure', 0.70),
+      makeHypothesisSetForCorrelation('production', 'pod-4', 'dns-failure', 0.70),
+    ];
+    const results = correlateAcrossSymptoms(sets);
+
+    const defaultResult = results.find((f) => f.title.includes("'default'"));
+    const prodResult = results.find((f) => f.title.includes("'production'"));
+
+    expect(defaultResult?.affectedComponents).toContain('Pod/default/pod-1');
+    expect(defaultResult?.affectedComponents).toContain('Pod/default/pod-2');
+    expect(defaultResult?.affectedComponents).not.toContain('Pod/production/pod-3');
+
+    expect(prodResult?.affectedComponents).toContain('Pod/production/pod-3');
+    expect(prodResult?.affectedComponents).toContain('Pod/production/pod-4');
+    expect(prodResult?.affectedComponents).not.toContain('Pod/default/pod-1');
+  });
+});
+
+describe('correlateAcrossSymptoms — category isolation', () => {
+  it('pods with different top categories are NOT correlated', () => {
+    const sets = [
+      makeHypothesisSetForCorrelation('default', 'pod-1', 'dns-failure', 0.70),
+      makeHypothesisSetForCorrelation('default', 'pod-2', 'oom-kill', 0.70),
+    ];
+    expect(correlateAcrossSymptoms(sets)).toHaveLength(0);
+  });
+
+  it('different categories in the same namespace produce separate meta-findings when each has >= 2 pods', () => {
+    const sets = [
+      makeHypothesisSetForCorrelation('default', 'pod-1', 'dns-failure', 0.70),
+      makeHypothesisSetForCorrelation('default', 'pod-2', 'dns-failure', 0.70),
+      makeHypothesisSetForCorrelation('default', 'pod-3', 'oom-kill', 0.70),
+      makeHypothesisSetForCorrelation('default', 'pod-4', 'oom-kill', 0.70),
+    ];
+    const results = correlateAcrossSymptoms(sets);
+    expect(results).toHaveLength(2);
+    const hasDns = results.some((f) => f.title.toLowerCase().includes('dns'));
+    const hasOom = results.some((f) => f.title.toLowerCase().match(/oom|memory/));
+    expect(hasDns).toBe(true);
+    expect(hasOom).toBe(true);
+  });
+});
+
+describe('correlateAcrossSymptoms — partial null topHypothesis handling', () => {
+  it('ignores sets with null topHypothesis and still correlates the non-null sets', () => {
+    const nullSet: HypothesisSet = {
+      symptomKey: 'pod-not-ready:default/pod-null',
+      symptomDescription: 'Pod pod-null not ready',
+      hypotheses: [],
+      topHypothesis: null,
+    };
+    const sets = [
+      makeHypothesisSetForCorrelation('default', 'pod-1', 'dns-failure', 0.70),
+      nullSet,
+      makeHypothesisSetForCorrelation('default', 'pod-2', 'dns-failure', 0.70),
+    ];
+    // The null set is ignored; pod-1 and pod-2 both have dns-failure → meta-finding
+    const results = correlateAcrossSymptoms(sets);
+    expect(results).toHaveLength(1);
+    expect(results[0]!.title).toContain('2');
+  });
+
+  it('returns empty when only one non-null set survives after ignoring nulls', () => {
+    const nullSet: HypothesisSet = {
+      symptomKey: 'pod-not-ready:default/pod-null',
+      symptomDescription: 'Pod pod-null not ready',
+      hypotheses: [],
+      topHypothesis: null,
+    };
+    const sets = [
+      makeHypothesisSetForCorrelation('default', 'pod-1', 'dns-failure', 0.70),
+      nullSet,
+    ];
+    expect(correlateAcrossSymptoms(sets)).toHaveLength(0);
+  });
+});
+
+describe('correlateAcrossSymptoms — meta-finding structural invariants', () => {
+  const sets = [
+    makeHypothesisSetForCorrelation('staging', 'web-1', 'config-error', 0.65),
+    makeHypothesisSetForCorrelation('staging', 'web-2', 'config-error', 0.70),
+    makeHypothesisSetForCorrelation('staging', 'web-3', 'config-error', 0.60),
+  ];
+  const results = correlateAcrossSymptoms(sets);
+
+  it('produces exactly one meta-finding for the staging namespace', () => {
+    expect(results).toHaveLength(1);
+  });
+
+  it('meta-finding confidence is between 0 and 1 (inclusive)', () => {
+    expect(results[0]!.confidence).toBeGreaterThan(0);
+    expect(results[0]!.confidence).toBeLessThanOrEqual(1.0);
+  });
+
+  it('meta-finding affectedComponents lists all 3 pods', () => {
+    expect(results[0]!.affectedComponents).toHaveLength(3);
+  });
+
+  it('meta-finding has the correct number of evidence items (one per pod)', () => {
+    expect(results[0]!.evidence).toHaveLength(3);
+  });
+
+  it('meta-finding has non-empty contradictionsChecked', () => {
+    expect(results[0]!.contradictionsChecked.length).toBeGreaterThan(0);
+  });
+
+  it('meta-finding missingEvidence is an array (may be empty)', () => {
+    expect(Array.isArray(results[0]!.missingEvidence)).toBe(true);
   });
 });

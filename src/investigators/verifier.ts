@@ -1,4 +1,4 @@
-import type { Finding, Evidence, FindingSeverity } from '../types/index.js';
+import type { Finding, Evidence, FindingSeverity, ConfidenceQuality } from '../types/index.js';
 import type { InvestigatorContext } from './types.js';
 import { extractPodStatus, isWorkloadReady } from '../parsers/index.js';
 
@@ -316,6 +316,55 @@ function detectMissingEvidence(
 }
 
 // ---------------------------------------------------------------------------
+// Confidence quality
+// ---------------------------------------------------------------------------
+
+/**
+ * Computes a qualitative confidence indicator for a finding based on the
+ * evidence it carries and the missing decisive evidence it declares.
+ *
+ * Rules (evaluated in priority order):
+ *
+ * 1. **`'strong'`** — ≥3 evidence items, from ≥2 distinct source types
+ *    (`artifactType`), and 0 missing decisive items.
+ *
+ * 2. **`'weak'`** — ≤1 evidence item OR ≥2 missing decisive items.
+ *    A finding with only one data point, or that declares two or more pieces
+ *    of critical missing evidence, cannot reliably claim its confidence number.
+ *
+ * 3. **`'moderate'`** — everything else (2 evidence items, or 3+ items but
+ *    all from a single source type, or exactly 1 missing decisive item).
+ *
+ * @param finding - The finding to evaluate (may be pre- or post-verification).
+ * @returns `'strong'`, `'moderate'`, or `'weak'`.
+ */
+export function computeConfidenceQuality(finding: Finding): ConfidenceQuality {
+  const evidenceCount = finding.evidence.length;
+  const missingDecisiveCount = finding.missingEvidence.length;
+
+  // Count distinct source types present in the evidence
+  const sourceTypes = new Set(
+    finding.evidence
+      .map((ev) => ev.artifactType)
+      .filter((t): t is NonNullable<typeof t> => t !== undefined),
+  );
+  const distinctSources = sourceTypes.size;
+
+  // Priority 1: strong
+  if (evidenceCount >= 3 && distinctSources >= 2 && missingDecisiveCount === 0) {
+    return 'strong';
+  }
+
+  // Priority 2: weak
+  if (evidenceCount <= 1 || missingDecisiveCount >= 2) {
+    return 'weak';
+  }
+
+  // Priority 3: moderate (all remaining cases)
+  return 'moderate';
+}
+
+// ---------------------------------------------------------------------------
 // Deduplication: canonical key
 // ---------------------------------------------------------------------------
 
@@ -593,11 +642,17 @@ export function verifyFindings(
       Math.min(1.0, Math.max(0.0, finding.confidence + delta)),
     );
 
-    return {
+    // Build the updated finding so we can compute quality against final state
+    const updatedFinding: Finding = {
       ...finding,
       confidence: newConfidence,
       contradictionsChecked: allContradictions,
       missingEvidence: allMissing,
+    };
+
+    return {
+      ...updatedFinding,
+      confidenceQuality: computeConfidenceQuality(updatedFinding),
     };
   });
 

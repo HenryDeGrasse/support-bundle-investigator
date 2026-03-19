@@ -4,7 +4,7 @@ import type { InvestigatorContext } from '../types.js';
 import type { BundleProfile, K8sResource, K8sEvent } from '../../types/index.js';
 import type { LogFile, LogLine } from '../../parsers/index.js';
 import { classifyLogLevel } from '../../parsers/index.js';
-import { verifyFindings } from '../verifier.js';
+import { verifyFindings, computeConfidenceQuality } from '../verifier.js';
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -1030,5 +1030,174 @@ describe('verifyFindings — integration with realistic kubernetes finding', () 
 
   it('recommendedAction is preserved', () => {
     expect(result[0]!.recommendedAction).toBe('Check logs.');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeConfidenceQuality — unit tests
+// ---------------------------------------------------------------------------
+
+describe('computeConfidenceQuality — strong quality', () => {
+  it('returns "strong" for ≥3 evidence items from ≥2 distinct source types with 0 missing decisive', () => {
+    const finding = makeFinding({
+      evidence: [
+        { path: 'pods/default/app.yaml', note: 'n1', artifactType: 'kubernetes-resource' },
+        { path: 'events/default.json', note: 'n2', artifactType: 'event' },
+        { path: 'pods/logs/app.log', note: 'n3', artifactType: 'log' },
+      ],
+      missingEvidence: [],
+    });
+    expect(computeConfidenceQuality(finding)).toBe('strong');
+  });
+
+  it('returns "strong" for exactly 3 evidence items from exactly 2 distinct sources with 0 missing', () => {
+    const finding = makeFinding({
+      evidence: [
+        { path: 'pods/default/app.yaml', note: 'n1', artifactType: 'kubernetes-resource' },
+        { path: 'pods/default/app2.yaml', note: 'n2', artifactType: 'kubernetes-resource' },
+        { path: 'events/default.json', note: 'n3', artifactType: 'event' },
+      ],
+      missingEvidence: [],
+    });
+    expect(computeConfidenceQuality(finding)).toBe('strong');
+  });
+
+  it('returns "strong" for 4+ evidence items from ≥2 sources with 0 missing', () => {
+    const finding = makeFinding({
+      evidence: [
+        { path: 'p1', note: 'n1', artifactType: 'kubernetes-resource' },
+        { path: 'p2', note: 'n2', artifactType: 'event' },
+        { path: 'p3', note: 'n3', artifactType: 'log' },
+        { path: 'p4', note: 'n4', artifactType: 'analyzer' },
+      ],
+      missingEvidence: [],
+    });
+    expect(computeConfidenceQuality(finding)).toBe('strong');
+  });
+});
+
+describe('computeConfidenceQuality — weak quality', () => {
+  it('returns "weak" for a single evidence item', () => {
+    const finding = makeFinding({
+      evidence: [
+        { path: 'pods/default/app.yaml', note: 'n1', artifactType: 'kubernetes-resource' },
+      ],
+      missingEvidence: [],
+    });
+    expect(computeConfidenceQuality(finding)).toBe('weak');
+  });
+
+  it('returns "weak" for ≥2 missing decisive items regardless of evidence count', () => {
+    const finding = makeFinding({
+      evidence: [
+        { path: 'p1', note: 'n1', artifactType: 'kubernetes-resource' },
+        { path: 'p2', note: 'n2', artifactType: 'event' },
+        { path: 'p3', note: 'n3', artifactType: 'log' },
+      ],
+      missingEvidence: ['Missing log files for pod x', 'Missing events for pod x'],
+    });
+    expect(computeConfidenceQuality(finding)).toBe('weak');
+  });
+
+  it('returns "weak" for zero evidence items', () => {
+    const finding = makeFinding({
+      evidence: [],
+      missingEvidence: [],
+    });
+    expect(computeConfidenceQuality(finding)).toBe('weak');
+  });
+});
+
+describe('computeConfidenceQuality — moderate quality', () => {
+  it('returns "moderate" for exactly 2 evidence items from ≥2 sources with 0 missing', () => {
+    const finding = makeFinding({
+      evidence: [
+        { path: 'pods/default/app.yaml', note: 'n1', artifactType: 'kubernetes-resource' },
+        { path: 'events/default.json', note: 'n2', artifactType: 'event' },
+      ],
+      missingEvidence: [],
+    });
+    expect(computeConfidenceQuality(finding)).toBe('moderate');
+  });
+
+  it('returns "moderate" for 3+ evidence items from only 1 source type with 0 missing', () => {
+    const finding = makeFinding({
+      evidence: [
+        { path: 'p1', note: 'n1', artifactType: 'kubernetes-resource' },
+        { path: 'p2', note: 'n2', artifactType: 'kubernetes-resource' },
+        { path: 'p3', note: 'n3', artifactType: 'kubernetes-resource' },
+      ],
+      missingEvidence: [],
+    });
+    expect(computeConfidenceQuality(finding)).toBe('moderate');
+  });
+
+  it('returns "moderate" for ≥3 evidence items from ≥2 sources with exactly 1 missing', () => {
+    const finding = makeFinding({
+      evidence: [
+        { path: 'p1', note: 'n1', artifactType: 'kubernetes-resource' },
+        { path: 'p2', note: 'n2', artifactType: 'event' },
+        { path: 'p3', note: 'n3', artifactType: 'log' },
+      ],
+      missingEvidence: ['Missing container logs for pod app-pod'],
+    });
+    expect(computeConfidenceQuality(finding)).toBe('moderate');
+  });
+
+  it('returns "moderate" for exactly 2 evidence items with 1 missing decisive', () => {
+    const finding = makeFinding({
+      evidence: [
+        { path: 'p1', note: 'n1', artifactType: 'kubernetes-resource' },
+        { path: 'p2', note: 'n2', artifactType: 'event' },
+      ],
+      missingEvidence: ['Missing container logs'],
+    });
+    expect(computeConfidenceQuality(finding)).toBe('moderate');
+  });
+});
+
+describe('computeConfidenceQuality — applied during verifyFindings', () => {
+  it('sets confidenceQuality on each verified finding', () => {
+    const finding = makeFinding({
+      evidence: [
+        { path: 'p1', note: 'n1', artifactType: 'kubernetes-resource' },
+        { path: 'p2', note: 'n2', artifactType: 'event' },
+        { path: 'p3', note: 'n3', artifactType: 'log' },
+      ],
+      missingEvidence: [],
+      contradictionsChecked: [],
+    });
+    const result = verifyFindings([finding], makeContext());
+    expect(result[0]!.confidenceQuality).toBeDefined();
+    expect(['strong', 'moderate', 'weak']).toContain(result[0]!.confidenceQuality);
+  });
+
+  it('strong-quality finding has confidenceQuality = "strong"', () => {
+    const finding = makeFinding({
+      evidence: [
+        { path: 'p1', note: 'n1', artifactType: 'kubernetes-resource' },
+        { path: 'p2', note: 'n2', artifactType: 'event' },
+        { path: 'p3', note: 'n3', artifactType: 'log' },
+      ],
+      missingEvidence: [],
+      contradictionsChecked: [],
+    });
+    const result = verifyFindings([finding], makeContext());
+    // After verification: still 3 items from 3 sources, no missing evidence added (no pod refs)
+    expect(result[0]!.confidenceQuality).toBe('strong');
+  });
+
+  it('thin-evidence finding has confidenceQuality = "weak"', () => {
+    const finding = makeFinding({
+      title: 'Test Finding',
+      affectedComponents: [],
+      evidence: [
+        { path: 'p1', note: 'n1', artifactType: 'kubernetes-resource' },
+      ],
+      missingEvidence: [],
+      contradictionsChecked: [],
+    });
+    const result = verifyFindings([finding], makeContext());
+    expect(result[0]!.confidenceQuality).toBe('weak');
   });
 });

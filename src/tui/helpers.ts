@@ -1,4 +1,4 @@
-import type { FindingSeverity } from '../types/index.js';
+import type { ConfidenceQuality, FindingSeverity, FindingTreeNode } from '../types/index.js';
 
 // ---------------------------------------------------------------------------
 // Severity helpers
@@ -91,6 +91,27 @@ export function confidenceBar(confidence: number): string {
 }
 
 /**
+ * Renders a confidence score with an optional qualitative quality indicator.
+ *
+ * When `quality` is provided the format is `"80% (strong)"`, giving the user
+ * both the numeric estimate and a signal of how well-supported it is.
+ * When `quality` is `undefined` (finding not yet verified), falls back to a
+ * plain percentage string identical to {@link confidenceBar}.
+ *
+ * @param confidence - A confidence value in the range `[0, 1]`.
+ * @param quality    - Optional qualitative quality indicator.
+ * @returns A formatted string, e.g. `'80% (strong)'` or `'75%'`.
+ */
+export function formatConfidenceWithQuality(
+  confidence: number,
+  quality: ConfidenceQuality | undefined,
+): string {
+  const pct = `${Math.round(confidence * 100)}%`;
+  if (quality === undefined) return pct;
+  return `${pct} (${quality})`;
+}
+
+/**
  * Maps an artifact type string to a representative Unicode icon.
  *
  * | Artifact type          | Icon |
@@ -120,6 +141,45 @@ export function evidenceIcon(artifactType?: string): string {
     default:
       return '---';
   }
+}
+
+// ---------------------------------------------------------------------------
+// Causal chain helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Formats a {@link FindingTreeNode} into a human-readable causal chain string.
+ *
+ * Walks the node and its children depth-first (first child at each level),
+ * collecting finding titles along the path from the given node to the deepest
+ * effect, and joins them with the Unicode arrow `'→'`.
+ *
+ * For example, given a chain:
+ *   `Missing Secret → FailedMount → CrashLoopBackOff → Unhealthy Workload`
+ *
+ * Calling `formatCausalChain(missingSecretNode)` produces:
+ *   `'Missing Secret → FailedMount → CrashLoopBackOff → Unhealthy Workload'`
+ *
+ * When the node has no children (it is a leaf), only the node's own title is
+ * returned.
+ *
+ * @param node      - The root of the causal sub-tree to format.
+ * @param maxDepth  - Maximum depth to traverse (default: 10). Prevents
+ *                    runaway output for pathologically deep trees.
+ * @returns A `'→'`-joined causal chain string.
+ */
+export function formatCausalChain(node: FindingTreeNode, maxDepth = 10): string {
+  const titles: string[] = [];
+  let current: FindingTreeNode | undefined = node;
+  let depth = 0;
+
+  while (current !== undefined && depth < maxDepth) {
+    titles.push(current.finding.title);
+    current = current.children[0];
+    depth++;
+  }
+
+  return titles.join(' → ');
 }
 
 // ---------------------------------------------------------------------------

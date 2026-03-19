@@ -17,6 +17,157 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * Returns the memory limit string for the named container from the pod spec.
+ * Returns `undefined` when no limits are configured or the spec is absent.
+ */
+function getContainerMemoryLimit(resource: K8sResource, containerName: string): string | undefined {
+  if (!isRecord(resource.spec)) return undefined;
+  const containers = resource.spec['containers'];
+  if (!Array.isArray(containers)) return undefined;
+  for (const c of containers) {
+    if (!isRecord(c)) continue;
+    if (c['name'] !== containerName) continue;
+    const resources = c['resources'];
+    if (!isRecord(resources)) return undefined;
+    const limits = resources['limits'];
+    if (!isRecord(limits)) return undefined;
+    const memory = limits['memory'];
+    return typeof memory === 'string' ? memory : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Returns the memory request string for the named container from the pod spec.
+ * Returns `undefined` when no requests are configured or the spec is absent.
+ */
+function getContainerMemoryRequest(
+  resource: K8sResource,
+  containerName: string,
+): string | undefined {
+  if (!isRecord(resource.spec)) return undefined;
+  const containers = resource.spec['containers'];
+  if (!Array.isArray(containers)) return undefined;
+  for (const c of containers) {
+    if (!isRecord(c)) continue;
+    if (c['name'] !== containerName) continue;
+    const resources = c['resources'];
+    if (!isRecord(resources)) return undefined;
+    const requests = resources['requests'];
+    if (!isRecord(requests)) return undefined;
+    const memory = requests['memory'];
+    return typeof memory === 'string' ? memory : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Scans the raw container statuses for containers that were terminated with
+ * reason `OOMKilled`.  Checks both the current `state` and the previous
+ * `lastState` so that pods currently restarting (CrashLoopBackOff after OOM)
+ * are also detected.
+ *
+ * Returns a descriptor per affected container.
+ */
+function getOOMKilledContainers(
+  resource: K8sResource,
+): Array<{ containerName: string; fromLastState: boolean }> {
+  if (!isRecord(resource.status)) return [];
+  const rawContainerStatuses = resource.status['containerStatuses'];
+  if (!Array.isArray(rawContainerStatuses)) return [];
+
+  const result: Array<{ containerName: string; fromLastState: boolean }> = [];
+
+  for (const rawCs of rawContainerStatuses) {
+    if (!isRecord(rawCs)) continue;
+    const name = typeof rawCs['name'] === 'string' ? rawCs['name'] : '';
+    if (!name) continue;
+
+    // 1. Check current state (terminated)
+    const currentState = rawCs['state'];
+    if (isRecord(currentState)) {
+      const terminated = currentState['terminated'];
+      if (isRecord(terminated) && terminated['reason'] === 'OOMKilled') {
+        result.push({ containerName: name, fromLastState: false });
+        continue; // Don't also inspect lastState for the same container
+      }
+    }
+
+    // 2. Check last state (previous termination — most common OOM-loop pattern)
+    const lastState = rawCs['lastState'];
+    if (isRecord(lastState)) {
+      const terminated = lastState['terminated'];
+      if (isRecord(terminated) && terminated['reason'] === 'OOMKilled') {
+        result.push({ containerName: name, fromLastState: true });
+      }
+    }
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Node-condition helpers
+// ---------------------------------------------------------------------------
+
+/** Canonical path of a node resource file within a support bundle. */
+function nodeFilePath(name: string): string {
+  return `cluster-resources/nodes/${name}.yaml`;
+}
+
+interface RawNodeCondition {
+  type: string;
+  status: string;
+  reason: string;
+  message: string;
+}
+
+/**
+ * Reads `status.conditions` from a Node resource.
+ *
+ * Returns an empty array for non-Node resources or nodes whose status lacks a
+ * conditions array.
+ */
+function getNodeConditions(resource: K8sResource): RawNodeCondition[] {
+  if (resource.kind !== 'Node') return [];
+  if (!isRecord(resource.status)) return [];
+
+  const rawConditions = resource.status['conditions'];
+  if (!Array.isArray(rawConditions)) return [];
+
+  const conditions: RawNodeCondition[] = [];
+  for (const rawCond of rawConditions) {
+    if (!isRecord(rawCond)) continue;
+    conditions.push({
+      type: typeof rawCond['type'] === 'string' ? rawCond['type'] : '',
+      status: typeof rawCond['status'] === 'string' ? rawCond['status'] : '',
+      reason: typeof rawCond['reason'] === 'string' ? rawCond['reason'] : '',
+      message: typeof rawCond['message'] === 'string' ? rawCond['message'] : '',
+    });
+  }
+  return conditions;
+}
+
+/**
+ * Attempts to extract a Kubernetes Secret name from a FailedMount event message.
+ *
+ * Handles patterns such as:
+ * - `secret "app-credentials" not found`
+ * - `secret 'app-credentials' not found`
+ * - `secret app-credentials not found`
+ * - `for volume "vol": secret "app-credentials" not found`
+ */
+function extractSecretNameFromFailedMount(message: string): string | undefined {
+  const dq = message.match(/secret\s+"([^"]+)"\s+not\s+found/i);
+  if (dq?.[1]) return dq[1];
+  const sq = message.match(/secret\s+'([^']+)'\s+not\s+found/i);
+  if (sq?.[1]) return sq[1];
+  const bare = message.match(/secret\s+([a-z0-9][a-z0-9-]*)\s+not\s+found/i);
+  if (bare?.[1]) return bare[1];
+  return undefined;
+}
+
+/**
  * Extracts the container image string from a Pod spec for the named container.
  *
  * Returns `undefined` if the spec is absent or the container is not found.
@@ -87,6 +238,15 @@ const CONF_PENDING_PROVISIONING = 0.90;
 const CONF_PENDING_EVENTS = 0.80;
 /** Pending pod with no corroborating events. */
 const CONF_PENDING_BASE = 0.65;
+
+/** Container terminated with OOMKilled in the current state — highest certainty. */
+const CONF_OOM_CURRENT_STATE = 0.95;
+/** Container OOMKilled in the previous (last) terminated state — high certainty. */
+const CONF_OOM_LAST_STATE = 0.85;
+
+/** Node condition is unhealthy — e.g. NotReady, MemoryPressure, DiskPressure. */
+const CONF_NODE_NOT_READY = 0.90;
+const CONF_NODE_PRESSURE = 0.80;
 
 // ---------------------------------------------------------------------------
 // Workload kinds handled by isWorkloadReady
@@ -263,6 +423,36 @@ function investigateCrashLoopPods(
         note: 'BackOff events correlate with FailedMount events, suggesting a missing resource causes container exits',
       });
     }
+
+    // Causal chain: MissingSecret → FailedMount → CrashLoopBackOff
+    // When FailedMount events mention a specific Secret, encode the root-cause chain.
+    if (failedMountEvents.length > 0) {
+      let secretAdded = false;
+      for (const evt of failedMountEvents) {
+        const secretName = extractSecretNameFromFailedMount(evt.message);
+        if (secretName && !secretAdded) {
+          const missingSecretNodeId = `finding:missing-secret:${secretName}:${namespace}`;
+          const failedMountNodeId = `event:FailedMount:${podName}:${namespace}`;
+          edges.push({
+            id: nextEdgeId(counter),
+            source: missingSecretNodeId,
+            target: failedMountNodeId,
+            type: 'causes',
+            weight: 0.9,
+            note: `Missing Secret '${secretName}' causes FailedMount on Pod '${podName}'`,
+          });
+          edges.push({
+            id: nextEdgeId(counter),
+            source: failedMountNodeId,
+            target: findingId,
+            type: 'causes',
+            weight: 0.9,
+            note: `FailedMount causes CrashLoopBackOff on Pod '${podName}'`,
+          });
+          secretAdded = true;
+        }
+      }
+    }
   }
 
   return { findings, edges };
@@ -396,6 +586,29 @@ function investigateImagePullPods(
         target: `evidence:${evPath}:Failed`,
         type: 'correlates',
         note: 'ErrImagePull correlates with Failed pull events, indicating the image tag does not exist in the registry',
+      });
+    }
+
+    // Causal chain: BadImageTag → ErrImagePull → ImagePullBackOff
+    if (errImagePullEvents.length > 0 && imageTag) {
+      const safeTag = imageTag.replace(/[^a-zA-Z0-9._:-]/g, '-');
+      const badImageNodeId = `finding:bad-image-tag:${safeTag}:${namespace}`;
+      const errImagePullNodeId = `event:ErrImagePull:${podName}:${namespace}`;
+      edges.push({
+        id: nextEdgeId(counter),
+        source: badImageNodeId,
+        target: errImagePullNodeId,
+        type: 'causes',
+        weight: 0.9,
+        note: `Bad image tag '${imageTag}' causes ErrImagePull on Pod '${podName}'`,
+      });
+      edges.push({
+        id: nextEdgeId(counter),
+        source: errImagePullNodeId,
+        target: findingId,
+        type: 'causes',
+        weight: 0.9,
+        note: `ErrImagePull causes ImagePullBackOff on Pod '${podName}'`,
       });
     }
   }
@@ -777,6 +990,37 @@ function investigatePendingPods(
         note: 'FailedMount events correlate with ProvisioningFailed events, indicating PVC cannot be provisioned',
       });
     }
+
+    // Causal chain: MissingStorageClass → ProvisioningFailed → FailedMount → PodPending
+    if (provisioningFailedEvents.length > 0 && storageClassHint != null && failedPvcName != null) {
+      const missingScNodeId = `finding:missing-storage-class:${storageClassHint}:${namespace}`;
+      const provisioningFailedNodeId = `event:ProvisioningFailed:${failedPvcName}:${namespace}`;
+      const failedMountNodeId = `event:FailedMount:${podName}:${namespace}`;
+      edges.push({
+        id: nextEdgeId(counter),
+        source: missingScNodeId,
+        target: provisioningFailedNodeId,
+        type: 'causes',
+        weight: 0.9,
+        note: `Missing StorageClass '${storageClassHint}' causes ProvisioningFailed for PVC '${failedPvcName}'`,
+      });
+      edges.push({
+        id: nextEdgeId(counter),
+        source: provisioningFailedNodeId,
+        target: failedMountNodeId,
+        type: 'causes',
+        weight: 0.9,
+        note: `ProvisioningFailed causes FailedMount on Pod '${podName}'`,
+      });
+      edges.push({
+        id: nextEdgeId(counter),
+        source: failedMountNodeId,
+        target: findingId,
+        type: 'causes',
+        weight: 0.9,
+        note: `FailedMount causes Pod '${podName}' to be stuck in Pending`,
+      });
+    }
   }
 
   return { findings, edges };
@@ -851,13 +1095,312 @@ function investigateWorkloads(
 }
 
 // ---------------------------------------------------------------------------
+// 6. OOM investigation
+// ---------------------------------------------------------------------------
+
+/**
+ * Produces a `high` {@link Finding} for every container that was terminated
+ * with reason `OOMKilled` — either in the current state or the previous
+ * (last) terminated state.
+ *
+ * Evidence includes:
+ * - The pod resource file with configured memory limit and request
+ *
+ * Causal edges created when the pod is also in `CrashLoopBackOff`:
+ * - OOM finding → `event:ContainerRestart` → CrashLoopBackOff finding
+ *
+ * @param crashloopFindingByPod Maps `"namespace/podName"` to the CrashLoopBackOff
+ *   finding ID so causal edges can be linked across detectors.
+ */
+function investigateOOMPods(
+  context: InvestigatorContext,
+  counter: Counter,
+  crashloopFindingByPod: Map<string, string>,
+): { findings: Finding[]; edges: GraphEdge[] } {
+  const findings: Finding[] = [];
+  const edges: GraphEdge[] = [];
+
+  for (const resource of context.resources) {
+    if (resource.kind !== 'Pod') continue;
+
+    const oomContainers = getOOMKilledContainers(resource);
+    if (oomContainers.length === 0) continue;
+
+    const podName = resource.metadata.name;
+    const namespace = resource.metadata.namespace ?? 'default';
+    const podPath = podFilePath(podName, namespace);
+
+    for (const { containerName, fromLastState } of oomContainers) {
+      const memoryLimit = getContainerMemoryLimit(resource, containerName);
+      const memoryRequest = getContainerMemoryRequest(resource, containerName);
+      const confidence = fromLastState ? CONF_OOM_LAST_STATE : CONF_OOM_CURRENT_STATE;
+
+      const limitSuffix = memoryLimit ? ` (limit: ${memoryLimit})` : '';
+      const title = `Container '${containerName}' in Pod '${podName}' was OOMKilled${limitSuffix}`;
+
+      const evidence: Evidence[] = [
+        {
+          path: podPath,
+          note:
+            `Container '${containerName}' was terminated with OOMKilled` +
+            (memoryLimit ? ` — memory limit: ${memoryLimit}` : ' — no memory limit configured'),
+          artifactType: 'kubernetes-resource',
+        },
+      ];
+
+      // If both request and limit are known, include a comparison note
+      if (memoryRequest && memoryLimit) {
+        evidence.push({
+          path: podPath,
+          note: `Memory request: ${memoryRequest}, limit: ${memoryLimit} — container exceeded its limit; consider increasing or profiling usage`,
+          artifactType: 'kubernetes-resource',
+        });
+      }
+
+      const findingId = nextFindingId('oom', counter);
+
+      findings.push({
+        id: findingId,
+        title,
+        severity: 'high' as FindingSeverity,
+        confidence,
+        affectedComponents: [`Pod/${namespace}/${podName}`, `Container/${containerName}`],
+        reasoningSummary:
+          `Container '${containerName}' in pod '${podName}' (namespace '${namespace}') was OOMKilled.` +
+          (memoryLimit ? ` Memory limit is ${memoryLimit}.` : ' No memory limit is configured.') +
+          (fromLastState
+            ? ` The container is currently restarting (OOMKilled detected in last terminated state).`
+            : ` The container is in a terminated OOMKilled state.`),
+        evidence,
+        contradictionsChecked: [
+          `OOMKilled exit reason confirmed in container ${fromLastState ? 'last state' : 'current state'}`,
+          memoryLimit
+            ? `Memory limit ${memoryLimit} was insufficient for the container's working set`
+            : 'No memory limit configured — container consumed unbounded memory until killed',
+        ],
+        recommendedAction:
+          `Container '${containerName}' ran out of memory` +
+          (memoryLimit ? ` (limit: ${memoryLimit})` : '') +
+          `. ` +
+          `Inspect application memory usage and increase the container memory limit. ` +
+          `Check for memory leaks or unbounded caching in the application. ` +
+          `Consider setting both requests and limits to prevent resource contention.`,
+        missingEvidence: [],
+      });
+
+      // Graph edge: evidence supports finding
+      edges.push({
+        id: nextEdgeId(counter),
+        source: `evidence:${podPath}`,
+        target: findingId,
+        type: 'supports',
+        weight: confidence,
+      });
+
+      // Causal chain when OOMKill caused a CrashLoopBackOff restart cycle:
+      // OOM finding → event:ContainerRestart → CrashLoopBackOff finding
+      if (fromLastState) {
+        const containerRestartNodeId = `event:ContainerRestart:${containerName}:${podName}:${namespace}`;
+
+        // OOM finding → ContainerRestart event node
+        edges.push({
+          id: nextEdgeId(counter),
+          source: findingId,
+          target: containerRestartNodeId,
+          type: 'causes',
+          weight: 0.9,
+          note: `OOMKill caused container restart for '${containerName}' in pod '${podName}'`,
+        });
+
+        // ContainerRestart event node → CrashLoopBackOff finding (if present)
+        const podKey = `${namespace}/${podName}`;
+        const crashloopFindingId = crashloopFindingByPod.get(podKey);
+        if (crashloopFindingId) {
+          edges.push({
+            id: nextEdgeId(counter),
+            source: containerRestartNodeId,
+            target: crashloopFindingId,
+            type: 'causes',
+            weight: 0.9,
+            note: `Container restart (from OOMKill) led to CrashLoopBackOff for pod '${podName}'`,
+          });
+        }
+      }
+    }
+  }
+
+  return { findings, edges };
+}
+
+// ---------------------------------------------------------------------------
+// 7. Node condition investigation
+// ---------------------------------------------------------------------------
+
+/**
+ * Produces findings for Node resources with unhealthy conditions:
+ *
+ * - `Ready=False`         → `critical` finding: NodeNotReady
+ * - `MemoryPressure=True` → `high` finding: node memory pressure
+ * - `DiskPressure=True`   → `high` finding: node disk pressure
+ * - `PIDPressure=True`    → `high` finding: node PID pressure
+ *
+ * For `NotReady` nodes, causal edges are also created linking the node
+ * finding to any `FailedScheduling` pod events, encoding the relationship
+ * "node X being not-ready may explain why these pods cannot be scheduled."
+ */
+function investigateNodeConditions(
+  context: InvestigatorContext,
+  counter: Counter,
+): { findings: Finding[]; edges: GraphEdge[] } {
+  const findings: Finding[] = [];
+  const edges: GraphEdge[] = [];
+
+  // Collect FailedScheduling events for later correlation with NotReady nodes
+  const failedSchedulingEvents = context.events.filter(
+    (e) => e.type === 'Warning' && e.reason === 'FailedScheduling' && e.involvedObject.kind === 'Pod',
+  );
+
+  for (const resource of context.resources) {
+    if (resource.kind !== 'Node') continue;
+
+    const nodeName = resource.metadata.name;
+    const nodePath = nodeFilePath(nodeName);
+    const conditions = getNodeConditions(resource);
+    if (conditions.length === 0) continue;
+
+    for (const cond of conditions) {
+      if (!cond.type) continue;
+
+      let isUnhealthy = false;
+      let findingTitle = '';
+      let findingReasoning = '';
+      let severity: FindingSeverity = 'high';
+      let confidence = CONF_NODE_PRESSURE;
+      let conditionDescription = '';
+      let recommendedAction = '';
+
+      if (cond.type === 'Ready' && cond.status === 'False') {
+        isUnhealthy = true;
+        findingTitle = `Node '${nodeName}' is NotReady`;
+        conditionDescription =
+          cond.message || `Node '${nodeName}' condition Ready=False`;
+        findingReasoning =
+          `Node '${nodeName}' has Ready=False condition.` +
+          (cond.reason ? ` Reason: ${cond.reason}.` : '') +
+          ` Pods cannot be scheduled on — or will be evicted from — this node.`;
+        severity = 'critical';
+        confidence = CONF_NODE_NOT_READY;
+        recommendedAction =
+          `Node '${nodeName}' is not ready. ` +
+          `Check node status with \`kubectl describe node ${nodeName}\`. ` +
+          `Inspect kubelet logs on the node. ` +
+          `Common causes: kubelet crash, network partition, resource exhaustion.`;
+      } else if (cond.type === 'MemoryPressure' && cond.status === 'True') {
+        isUnhealthy = true;
+        findingTitle = `Node '${nodeName}' is under MemoryPressure`;
+        conditionDescription =
+          cond.message || `Node '${nodeName}' condition MemoryPressure=True`;
+        findingReasoning =
+          `Node '${nodeName}' has MemoryPressure=True condition.` +
+          (cond.reason ? ` Reason: ${cond.reason}.` : '') +
+          ` Pods on this node may be throttled or evicted to free memory.`;
+        recommendedAction =
+          `Node '${nodeName}' has memory pressure. ` +
+          `Free memory by removing unused workloads, evicting low-priority pods, ` +
+          `or adding more nodes to the cluster.`;
+      } else if (cond.type === 'DiskPressure' && cond.status === 'True') {
+        isUnhealthy = true;
+        findingTitle = `Node '${nodeName}' is under DiskPressure`;
+        conditionDescription =
+          cond.message || `Node '${nodeName}' condition DiskPressure=True`;
+        findingReasoning =
+          `Node '${nodeName}' has DiskPressure=True condition.` +
+          (cond.reason ? ` Reason: ${cond.reason}.` : '') +
+          ` Pods on this node may fail to start due to insufficient disk space.`;
+        recommendedAction =
+          `Node '${nodeName}' has disk pressure. ` +
+          `Free disk space by removing unused images, log files, or volumes, ` +
+          `or add nodes with more storage.`;
+      } else if (cond.type === 'PIDPressure' && cond.status === 'True') {
+        isUnhealthy = true;
+        findingTitle = `Node '${nodeName}' is under PIDPressure`;
+        conditionDescription =
+          cond.message || `Node '${nodeName}' condition PIDPressure=True`;
+        findingReasoning =
+          `Node '${nodeName}' has PIDPressure=True condition.` +
+          (cond.reason ? ` Reason: ${cond.reason}.` : '') +
+          ` The node is running too many processes; new processes may fail to start.`;
+        recommendedAction =
+          `Node '${nodeName}' has PID pressure. ` +
+          `Reduce the number of processes by scaling down workloads or adding more nodes.`;
+      }
+
+      if (!isUnhealthy) continue;
+
+      const findingId = nextFindingId(`node-${cond.type.toLowerCase()}`, counter);
+
+      findings.push({
+        id: findingId,
+        title: findingTitle,
+        severity,
+        confidence,
+        affectedComponents: [`Node/${nodeName}`],
+        reasoningSummary: findingReasoning,
+        evidence: [
+          {
+            path: nodePath,
+            note: conditionDescription,
+            artifactType: 'kubernetes-resource',
+          },
+        ],
+        contradictionsChecked: [
+          `Node '${nodeName}' condition '${cond.type}' confirmed with status '${cond.status}'`,
+        ],
+        recommendedAction,
+        missingEvidence: [],
+      });
+
+      // Graph edge: evidence supports finding
+      edges.push({
+        id: nextEdgeId(counter),
+        source: `evidence:${nodePath}:${cond.type}`,
+        target: findingId,
+        type: 'supports',
+        weight: confidence,
+      });
+
+      // For NotReady nodes: create causal edges to FailedScheduling pod events.
+      // A NotReady node is a likely cause of pods failing to schedule.
+      if (cond.type === 'Ready') {
+        for (const event of failedSchedulingEvents) {
+          const eventPodName = event.involvedObject.name;
+          const eventNamespace = event.involvedObject.namespace ?? 'default';
+          const failedSchedulingNodeId = `event:FailedScheduling:${eventPodName}:${eventNamespace}`;
+
+          edges.push({
+            id: nextEdgeId(counter),
+            source: findingId,
+            target: failedSchedulingNodeId,
+            type: 'causes',
+            weight: 0.7,
+            note: `Node '${nodeName}' NotReady may have caused FailedScheduling for Pod '${eventPodName}'`,
+          });
+        }
+      }
+    }
+  }
+
+  return { findings, edges };
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /**
  * Targeted Kubernetes investigator.
  *
- * Inspects the context for five common failure patterns and produces
+ * Inspects the context for seven common failure patterns and produces
  * evidence-backed {@link Finding} objects with graph edges linking
  * evidence nodes to finding nodes:
  *
@@ -866,6 +1409,8 @@ function investigateWorkloads(
  * 3. **Not-ready pods (Running phase)** — correlated with Unhealthy events
  * 4. **Pending / ContainerCreating pods** — correlated with FailedMount, FailedScheduling, and ProvisioningFailed events
  * 5. **Unhealthy workloads** — checked via {@link isWorkloadReady}
+ * 6. **OOMKilled containers** — detected via current or last terminated state; cross-referenced with resource limits
+ * 7. **Node conditions** — NotReady, MemoryPressure, DiskPressure, PIDPressure; correlated with FailedScheduling events
  *
  * @param context - All parsed bundle data.
  * @param seeds   - Investigation seeds (used as context hints; all resources
@@ -880,11 +1425,28 @@ export function investigateKubernetes(
 
   const counter: Counter = { value: 0 };
 
+  // Run CrashLoopBackOff first so the OOM detector can link to its findings
   const crashLoop = investigateCrashLoopPods(context, counter);
+
+  // Build a map from "namespace/podName" → CrashLoopBackOff finding ID so the
+  // OOM detector can complete the causal chain OOMKill→ContainerRestart→CrashLoop
+  const crashloopFindingByPod = new Map<string, string>();
+  for (const finding of crashLoop.findings) {
+    const podComp = finding.affectedComponents.find((c) => c.startsWith('Pod/'));
+    if (podComp) {
+      const parts = podComp.split('/');
+      if (parts.length === 3) {
+        crashloopFindingByPod.set(`${parts[1]}/${parts[2]}`, finding.id);
+      }
+    }
+  }
+
   const imagePull = investigateImagePullPods(context, counter);
   const notReady = investigateNotReadyPods(context, counter);
   const pending = investigatePendingPods(context, counter);
   const workloads = investigateWorkloads(context, counter);
+  const oom = investigateOOMPods(context, counter, crashloopFindingByPod);
+  const nodeHealth = investigateNodeConditions(context, counter);
 
   return {
     findings: [
@@ -893,6 +1455,8 @@ export function investigateKubernetes(
       ...notReady.findings,
       ...pending.findings,
       ...workloads.findings,
+      ...oom.findings,
+      ...nodeHealth.findings,
     ],
     edges: [
       ...crashLoop.edges,
@@ -900,6 +1464,8 @@ export function investigateKubernetes(
       ...notReady.edges,
       ...pending.edges,
       ...workloads.edges,
+      ...oom.edges,
+      ...nodeHealth.edges,
     ],
   };
 }

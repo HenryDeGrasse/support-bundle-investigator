@@ -574,3 +574,258 @@ describe('generateSeeds — edge cases', () => {
     expect(podSeeds[0]?.hypothesis).toContain('CrashLoopBackOff');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Node health seeds
+// ---------------------------------------------------------------------------
+
+describe('generateSeeds — node health seeds', () => {
+  /** A Node that is NotReady. */
+  const notReadyNode: K8sResource = {
+    apiVersion: 'v1',
+    kind: 'Node',
+    metadata: { name: 'node-1' },
+    spec: {},
+    status: {
+      conditions: [
+        {
+          type: 'Ready',
+          status: 'False',
+          reason: 'KubeletNotReady',
+          message: 'kubelet stopped posting node status',
+        },
+        { type: 'MemoryPressure', status: 'False' },
+        { type: 'DiskPressure', status: 'False' },
+        { type: 'PIDPressure', status: 'False' },
+      ],
+    },
+  };
+
+  /** A Node with MemoryPressure. */
+  const memoryPressureNode: K8sResource = {
+    apiVersion: 'v1',
+    kind: 'Node',
+    metadata: { name: 'node-2' },
+    spec: {},
+    status: {
+      conditions: [
+        { type: 'Ready', status: 'True' },
+        {
+          type: 'MemoryPressure',
+          status: 'True',
+          reason: 'KubeletHasInsufficientMemory',
+          message: 'kubelet has insufficient memory available',
+        },
+        { type: 'DiskPressure', status: 'False' },
+        { type: 'PIDPressure', status: 'False' },
+      ],
+    },
+  };
+
+  /** A Node with DiskPressure. */
+  const diskPressureNode: K8sResource = {
+    apiVersion: 'v1',
+    kind: 'Node',
+    metadata: { name: 'node-3' },
+    spec: {},
+    status: {
+      conditions: [
+        { type: 'Ready', status: 'True' },
+        { type: 'MemoryPressure', status: 'False' },
+        { type: 'DiskPressure', status: 'True', reason: 'KubeletHasDiskPressure', message: 'kubelet has disk pressure' },
+        { type: 'PIDPressure', status: 'False' },
+      ],
+    },
+  };
+
+  /** A Node with PIDPressure. */
+  const pidPressureNode: K8sResource = {
+    apiVersion: 'v1',
+    kind: 'Node',
+    metadata: { name: 'node-4' },
+    spec: {},
+    status: {
+      conditions: [
+        { type: 'Ready', status: 'True' },
+        { type: 'MemoryPressure', status: 'False' },
+        { type: 'DiskPressure', status: 'False' },
+        { type: 'PIDPressure', status: 'True', reason: 'KubeletHasPIDPressure', message: 'kubelet has PID pressure' },
+      ],
+    },
+  };
+
+  /** A fully healthy Node — all conditions OK. */
+  const healthyNode: K8sResource = {
+    apiVersion: 'v1',
+    kind: 'Node',
+    metadata: { name: 'healthy-node' },
+    spec: {},
+    status: {
+      conditions: [
+        { type: 'Ready', status: 'True' },
+        { type: 'MemoryPressure', status: 'False' },
+        { type: 'DiskPressure', status: 'False' },
+        { type: 'PIDPressure', status: 'False' },
+      ],
+    },
+  };
+
+  function makeCtxWithNodes(nodes: K8sResource[]): InvestigatorContext {
+    return {
+      analyzerResults: [],
+      resources: nodes,
+      events: [],
+      logs: [],
+      profile: makeMinimalProfile(),
+    };
+  }
+
+  it('generates a seed for a NotReady node', () => {
+    const seeds = generateSeeds(makeCtxWithNodes([notReadyNode]));
+    const nodeSeeds = seeds.filter((s) => s.source.startsWith('node:'));
+    expect(nodeSeeds.length).toBeGreaterThan(0);
+  });
+
+  it('NotReady node seed hypothesis references the node name and NotReady', () => {
+    const seeds = generateSeeds(makeCtxWithNodes([notReadyNode]));
+    const notReadySeed = seeds.find(
+      (s) => s.source.startsWith('node:') && /notready|not ready/i.test(s.hypothesis),
+    );
+    expect(notReadySeed).toBeDefined();
+    expect(notReadySeed!.hypothesis).toContain('node-1');
+  });
+
+  it('NotReady node seed has priority >= 70', () => {
+    const seeds = generateSeeds(makeCtxWithNodes([notReadyNode]));
+    const nodeSeeds = seeds.filter((s) => s.source.startsWith('node:'));
+    for (const s of nodeSeeds) {
+      expect(s.priority).toBeGreaterThanOrEqual(70);
+    }
+  });
+
+  it('NotReady node seed has category kubernetes', () => {
+    const seeds = generateSeeds(makeCtxWithNodes([notReadyNode]));
+    const nodeSeeds = seeds.filter((s) => s.source.startsWith('node:'));
+    for (const s of nodeSeeds) {
+      expect(s.category).toBe('kubernetes');
+    }
+  });
+
+  it('node seed source format is "node:{nodeName}"', () => {
+    const seeds = generateSeeds(makeCtxWithNodes([notReadyNode]));
+    const nodeSeeds = seeds.filter((s) => s.source.startsWith('node:'));
+    expect(nodeSeeds.length).toBeGreaterThan(0);
+    expect(nodeSeeds[0]!.source).toBe('node:node-1');
+  });
+
+  it('generates a seed for a node with MemoryPressure', () => {
+    const seeds = generateSeeds(makeCtxWithNodes([memoryPressureNode]));
+    const pressureSeeds = seeds.filter(
+      (s) =>
+        s.source.startsWith('node:') &&
+        /memory.*pressure|memorypressure/i.test(s.hypothesis),
+    );
+    expect(pressureSeeds.length).toBeGreaterThan(0);
+  });
+
+  it('MemoryPressure node seed hypothesis references the node name', () => {
+    const seeds = generateSeeds(makeCtxWithNodes([memoryPressureNode]));
+    const memorySeed = seeds.find(
+      (s) => s.source.startsWith('node:') && /memory/i.test(s.hypothesis),
+    );
+    expect(memorySeed).toBeDefined();
+    expect(memorySeed!.hypothesis).toContain('node-2');
+  });
+
+  it('generates a seed for a node with DiskPressure', () => {
+    const seeds = generateSeeds(makeCtxWithNodes([diskPressureNode]));
+    const diskSeeds = seeds.filter(
+      (s) => s.source.startsWith('node:') && /disk/i.test(s.hypothesis),
+    );
+    expect(diskSeeds.length).toBeGreaterThan(0);
+  });
+
+  it('generates a seed for a node with PIDPressure', () => {
+    const seeds = generateSeeds(makeCtxWithNodes([pidPressureNode]));
+    const pidSeeds = seeds.filter(
+      (s) => s.source.startsWith('node:') && /pid/i.test(s.hypothesis),
+    );
+    expect(pidSeeds.length).toBeGreaterThan(0);
+  });
+
+  it('does not generate a seed for a healthy node', () => {
+    const seeds = generateSeeds(makeCtxWithNodes([healthyNode]));
+    const nodeSeeds = seeds.filter((s) => s.source.startsWith('node:'));
+    expect(nodeSeeds).toHaveLength(0);
+  });
+
+  it('node seeds have valid ids, hypotheses, and sources', () => {
+    const seeds = generateSeeds(makeCtxWithNodes([notReadyNode, memoryPressureNode]));
+    const nodeSeeds = seeds.filter((s) => s.source.startsWith('node:'));
+    for (const s of nodeSeeds) {
+      expect(s.id).toBeTruthy();
+      expect(s.hypothesis).toBeTruthy();
+      expect(s.source).toBeTruthy();
+    }
+  });
+
+  it('node seeds sort before warning event seeds (higher priority)', () => {
+    const ctx: InvestigatorContext = {
+      analyzerResults: [],
+      resources: [notReadyNode],
+      events: [
+        {
+          type: 'Warning',
+          reason: 'SomeWarning',
+          message: 'some event',
+          involvedObject: { kind: 'Pod', name: 'foo', namespace: 'default' },
+        },
+      ],
+      logs: [],
+      profile: makeMinimalProfile(),
+    };
+    const seeds = generateSeeds(ctx);
+    const nodeSeedIdx = seeds.findIndex((s) => s.source.startsWith('node:'));
+    const eventSeedIdx = seeds.findIndex((s) => s.source.startsWith('event:'));
+    expect(nodeSeedIdx).toBeGreaterThanOrEqual(0);
+    expect(eventSeedIdx).toBeGreaterThanOrEqual(0);
+    // Node NotReady (priority >= 70) > Event Warning (priority 30)
+    expect(seeds[nodeSeedIdx]!.priority).toBeGreaterThan(seeds[eventSeedIdx]!.priority);
+  });
+
+  it('CrashLoopBackOff pod seeds (priority 90) sort before node not-ready seeds', () => {
+    const crashPod: K8sResource = {
+      apiVersion: 'v1',
+      kind: 'Pod',
+      metadata: { name: 'crash-pod', namespace: 'default' },
+      status: {
+        phase: 'Running',
+        conditions: [{ type: 'Ready', status: 'False', reason: 'ContainersNotReady' }],
+        containerStatuses: [
+          {
+            name: 'app',
+            ready: false,
+            restartCount: 5,
+            state: {
+              waiting: { reason: 'CrashLoopBackOff', message: 'back-off restarting failed container' },
+            },
+          },
+        ],
+      },
+    };
+    const ctx: InvestigatorContext = {
+      analyzerResults: [],
+      resources: [notReadyNode, crashPod],
+      events: [],
+      logs: [],
+      profile: makeMinimalProfile(),
+    };
+    const seeds = generateSeeds(ctx);
+    const crashSeedIdx = seeds.findIndex((s) => /CrashLoopBackOff/i.test(s.hypothesis));
+    const nodeSeedIdx = seeds.findIndex((s) => s.source.startsWith('node:'));
+    expect(crashSeedIdx).toBeGreaterThanOrEqual(0);
+    expect(nodeSeedIdx).toBeGreaterThanOrEqual(0);
+    // CrashLoop (priority 90) > Node NotReady (priority >= 70)
+    expect(seeds[crashSeedIdx]!.priority).toBeGreaterThan(seeds[nodeSeedIdx]!.priority);
+  });
+});

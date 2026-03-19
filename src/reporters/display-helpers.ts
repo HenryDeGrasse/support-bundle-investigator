@@ -198,13 +198,16 @@ export function collapseEvidence(items: Evidence[]): Evidence[] {
 export function formatSummaryCard(topFinding: Finding, totalFindings: number): string {
   const title = humanizeTitle(topFinding.title);
   const confidence = Math.round(topFinding.confidence * 100);
+  const qualityLabel = topFinding.confidenceQuality !== undefined
+    ? ` (${topFinding.confidenceQuality})`
+    : '';
   const action = topFinding.recommendedAction;
 
   const lines = [
     '-- START HERE ------------------------------------------------',
     title,
     `> ${action}`,
-    `Confidence: ${confidence}%  |  ${totalFindings} findings total  |  See Finding #1`,
+    `Confidence: ${confidence}%${qualityLabel}  |  ${totalFindings} findings total  |  See Finding #1`,
     '--------------------------------------------------------------',
   ];
 

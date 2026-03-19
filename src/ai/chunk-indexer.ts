@@ -2,9 +2,29 @@ import type { Chunk, ArtifactCategory } from '../types/index.js';
 import type { K8sResource, K8sEvent, AnalyzerResult } from '../types/index.js';
 import type { HelmRelease } from '../parsers/index.js';
 import type { InvestigatorContext } from '../investigators/types.js';
-import { chunkLogFile, chunkResource, chunkAnalyzer } from '../graph/chunker.js';
+import { chunkLogFileErrorAware, chunkResource, chunkAnalyzer } from '../graph/chunker.js';
 import { summarizeResource, summarizeEvent, summarizeAnalyzer, summarizeHelmRelease } from './summarizer.js';
 import { extractTimestamps } from '../parsers/index.js';
+import { contextualizeChunks, buildDocumentContext } from './contextual-retrieval.js';
+
+// ---------------------------------------------------------------------------
+// Token estimation
+// ---------------------------------------------------------------------------
+
+/**
+ * Estimates the number of tokens in a text string using a simple heuristic:
+ * 4 characters per token (a reasonable approximation for English prose, YAML,
+ * and JSON content with Claude/GPT tokenizers).
+ *
+ * This is intentionally a fast, allocation-free estimate — no tokenizer
+ * required.  Uses floor division so the result is always an integer.
+ *
+ * @param text - The text to estimate token count for.
+ * @returns Estimated token count: `Math.floor(text.length / 4)`.
+ */
+export function estimateTokens(text: string): number {
+  return Math.floor(text.length / 4);
+}
 
 // ---------------------------------------------------------------------------
 // IndexedChunk
@@ -39,6 +59,19 @@ export interface IndexedChunk extends Chunk {
   artifactCategory: ArtifactCategory;
   /** ISO timestamp extracted from the chunk content, when present. */
   timestamp?: string;
+  /**
+   * Context-enriched content for embedding.
+   *
+   * A short template-generated context sentence is prepended to the raw
+   * chunk content before embedding so that the vector representation encodes
+   * both the chunk's source (kind, name, namespace, path) and its text.
+   *
+   * When present, the embedding pipeline uses this field instead of the raw
+   * `content`.  The original `content` is always preserved unchanged.
+   *
+   * Populated by {@link contextualizeChunks} inside {@link buildChunkIndex}.
+   */
+  contextualizedContent?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -472,6 +505,15 @@ function augmentHelmReleaseChunk(release: HelmRelease, artifactId: string): Inde
   };
 }
 
+/**
+ * Truncates `text` to at most `maxChars` characters, appending `"..."` when
+ * truncated.  Returns the full text unchanged when it fits within the limit.
+ */
+function truncateContent(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  return text.slice(0, maxChars) + '...';
+}
+
 function augmentLogChunk(chunk: Chunk): IndexedChunk {
   const path = getChunkPath(chunk);
   const identifiers = identifiersFromLogContent(chunk.content, path);
@@ -480,9 +522,34 @@ function augmentLogChunk(chunk: Chunk): IndexedChunk {
   const firstLine = chunk.content.split('\n')[0] ?? '';
   const ts = extractTimestamps(firstLine);
 
+  // Build a meaningful summary that includes actual log content so that
+  // semantic embeddings can match on log content rather than on the bare
+  // file-path description.  ~500 tokens ≈ 2 000 characters at 4 chars/token.
+  const MAX_SUMMARY_CHARS = 2000;
+  const prefix = `Log chunk from ${path} (lines ${chunk.startLine}–${chunk.endLine})`;
+
+  const chunkType = isRecord(chunk.metadata)
+    ? (chunk.metadata['chunkType'] as string | undefined)
+    : undefined;
+
+  let body: string;
+  if (chunkType === 'error-cluster') {
+    // For error-cluster chunks, prioritise error/fatal lines so they appear at
+    // the start of the summary and are captured within any token truncation.
+    const contentLines = chunk.content.split('\n');
+    const errorLines = contentLines.filter((l) => /\b(ERROR|FATAL)\b/i.test(l));
+    const otherLines = contentLines.filter((l) => !/\b(ERROR|FATAL)\b/i.test(l));
+    // Put error lines first, then the rest, then truncate the whole thing.
+    body = truncateContent([...errorLines, ...otherLines].join('\n'), MAX_SUMMARY_CHARS);
+  } else {
+    body = truncateContent(chunk.content, MAX_SUMMARY_CHARS);
+  }
+
+  const summary = body ? `${prefix}:\n${body}` : prefix;
+
   return {
     ...chunk,
-    summary: `Log chunk from ${path} (lines ${chunk.startLine}–${chunk.endLine})`,
+    summary,
     identifiers,
     artifactCategory: 'log',
     timestamp: ts ?? undefined,
@@ -532,7 +599,7 @@ export function buildChunkIndex(context: InvestigatorContext): IndexedChunk[] {
 
   // ── Log files ─────────────────────────────────────────────────────────────
   for (const logFile of context.logs) {
-    const baseChunks = chunkLogFile(logFile, 50, 10);
+    const baseChunks = chunkLogFileErrorAware(logFile);
     for (const baseChunk of baseChunks) {
       chunks.push(augmentLogChunk(baseChunk));
     }
@@ -554,5 +621,11 @@ export function buildChunkIndex(context: InvestigatorContext): IndexedChunk[] {
     }
   }
 
-  return chunks;
+  // ── Contextual retrieval — prepend context prefix to each chunk ────────────
+  // Derive a DocumentContext from each chunk's metadata and produce a new
+  // array where every chunk has a `contextualizedContent` field.  The raw
+  // `content` is preserved unchanged; the embedding pipeline uses
+  // `contextualizedContent` (see analyze.ts).
+  const documents = chunks.map(buildDocumentContext);
+  return contextualizeChunks(chunks, documents);
 }

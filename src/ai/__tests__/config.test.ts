@@ -41,11 +41,19 @@ function withEnv(
 describe('loadAIConfig()', () => {
   it('returns defaults when no env vars are set', () => {
     withEnv(
-      { OPENAI_API_KEY: undefined, SBI_AI_MODEL: undefined, SBI_EMBEDDING_MODEL: undefined },
+      {
+        OPENAI_API_KEY: undefined,
+        SBI_AI_MODEL: undefined,
+        SBI_EMBEDDING_MODEL: undefined,
+        SBI_EMBEDDING_BACKEND: undefined,
+        SBI_EMBEDDING_URL: undefined,
+      },
       () => {
         const config = loadAIConfig();
         expect(config.model).toBe('gpt-4o');
         expect(config.embeddingModel).toBe('text-embedding-3-small');
+        expect(config.embeddingBackend).toBe('local');
+        expect(config.embeddingUrl).toBe('http://localhost:8080');
         expect(config.apiKey).toBe('');
         expect(config.provider).toBe('none');
         expect(config.enabled).toBe(false);
@@ -75,6 +83,55 @@ describe('loadAIConfig()', () => {
         expect(config.embeddingModel).toBe('text-embedding-ada-002');
       },
     );
+  });
+
+  it('reads SBI_EMBEDDING_BACKEND=openai from env', () => {
+    withEnv({ SBI_EMBEDDING_BACKEND: 'openai' }, () => {
+      const config = loadAIConfig();
+      expect(config.embeddingBackend).toBe('openai');
+    });
+  });
+
+  it('reads SBI_EMBEDDING_BACKEND=local from env', () => {
+    withEnv({ SBI_EMBEDDING_BACKEND: 'local' }, () => {
+      const config = loadAIConfig();
+      expect(config.embeddingBackend).toBe('local');
+    });
+  });
+
+  it('reads SBI_EMBEDDING_BACKEND=none from env', () => {
+    withEnv({ SBI_EMBEDDING_BACKEND: 'none' }, () => {
+      const config = loadAIConfig();
+      expect(config.embeddingBackend).toBe('none');
+    });
+  });
+
+  it('defaults SBI_EMBEDDING_BACKEND to local when not set', () => {
+    withEnv({ SBI_EMBEDDING_BACKEND: undefined }, () => {
+      const config = loadAIConfig();
+      expect(config.embeddingBackend).toBe('local');
+    });
+  });
+
+  it('treats unknown SBI_EMBEDDING_BACKEND values as local', () => {
+    withEnv({ SBI_EMBEDDING_BACKEND: 'some-unknown-backend' }, () => {
+      const config = loadAIConfig();
+      expect(config.embeddingBackend).toBe('local');
+    });
+  });
+
+  it('reads SBI_EMBEDDING_URL from env', () => {
+    withEnv({ SBI_EMBEDDING_URL: 'http://my-tei-server:9090' }, () => {
+      const config = loadAIConfig();
+      expect(config.embeddingUrl).toBe('http://my-tei-server:9090');
+    });
+  });
+
+  it('defaults SBI_EMBEDDING_URL to http://localhost:8080 when not set', () => {
+    withEnv({ SBI_EMBEDDING_URL: undefined }, () => {
+      const config = loadAIConfig();
+      expect(config.embeddingUrl).toBe('http://localhost:8080');
+    });
   });
 
   it('enables AI when API key is present and noAi is not set', () => {

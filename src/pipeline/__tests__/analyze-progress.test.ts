@@ -34,14 +34,28 @@ vi.mock('../../parsers/index.js', () => ({
   parseHelmReleaseFile: vi.fn().mockResolvedValue([]),
 }));
 
-vi.mock('../../graph/index.js', () => ({
-  InvestigationGraphImpl: vi.fn().mockImplementation(() => ({
-    addNode: vi.fn(),
-    addEdge: vi.fn(),
-    getNode: vi.fn().mockReturnValue(null),
-  })),
-  buildResourceGraph: vi.fn().mockReturnValue({ nodes: new Map(), edges: [] }),
-}));
+vi.mock('../../graph/index.js', () => {
+  const diagGraph = {
+    addNode: vi.fn(), addEdge: vi.fn(),
+    getNode: vi.fn().mockReturnValue(undefined),
+    getEdgesFrom: vi.fn().mockReturnValue([]),
+    getEdgesTo: vi.fn().mockReturnValue([]),
+    getNeighbors: vi.fn().mockReturnValue([]),
+    nodes: new Map(), edges: [],
+    toResourceRelationshipGraph: vi.fn().mockReturnValue({ nodes: new Map(), edges: [] }),
+  };
+  return {
+    InvestigationGraphImpl: vi.fn().mockImplementation(() => ({
+      addNode: vi.fn(), addEdge: vi.fn(), getNode: vi.fn().mockReturnValue(null),
+    })),
+    buildResourceGraph: vi.fn().mockReturnValue({ nodes: new Map(), edges: [] }),
+    buildDiagnosticGraph: vi.fn().mockReturnValue(diagGraph),
+    buildWorkloadGroups: vi.fn(),
+    addTemporalCorrelationEdges: vi.fn(),
+    addTemporalSequenceEdges: vi.fn(),
+    asResourceRelationshipGraph: vi.fn().mockReturnValue({ nodes: new Map(), edges: [] }),
+  };
+});
 
 vi.mock('../../investigators/index.js', () => ({
   runInvestigation: vi.fn(),
@@ -54,6 +68,7 @@ vi.mock('../../ai/index.js', () => ({
   LexicalSearchIndex: vi.fn(),
   LLMClient: vi.fn(),
   EmbeddingClient: vi.fn(),
+  createEmbeddingClient: vi.fn(),
   VectorStore: vi.fn(),
 }));
 
@@ -74,9 +89,10 @@ import {
   LexicalSearchIndex,
   LLMClient,
   EmbeddingClient,
+  createEmbeddingClient,
   VectorStore,
 } from '../../ai/index.js';
-import { buildResourceGraph, InvestigationGraphImpl } from '../../graph/index.js';
+import { InvestigationGraphImpl, buildDiagnosticGraph, buildWorkloadGroups, addTemporalCorrelationEdges, addTemporalSequenceEdges, asResourceRelationshipGraph } from '../../graph/index.js';
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -123,6 +139,7 @@ function makeInvestigationResult() {
   return {
     findings: [],
     edges: [],
+    findingTree: [],
     seeds: [],
     metadata: {
       seedCount: 0,
@@ -132,6 +149,7 @@ function makeInvestigationResult() {
       aiFindings: 0,
       hypothesesGenerated: 0,
       hypothesesVerified: 0,
+      graphMatchedSymptoms: 0,
     },
   };
 }
@@ -152,7 +170,11 @@ beforeEach(() => {
   vi.mocked(mergeAnalyzerResults).mockReturnValue([]);
   vi.mocked(identifyLogFiles).mockReturnValue([]);
   vi.mocked(runInvestigation).mockResolvedValue(makeInvestigationResult());
-  vi.mocked(buildResourceGraph).mockReturnValue({ nodes: new Map(), edges: [] });
+  vi.mocked(buildDiagnosticGraph).mockReturnValue({ addNode: vi.fn(), addEdge: vi.fn(), getNode: vi.fn().mockReturnValue(undefined), getEdgesFrom: vi.fn().mockReturnValue([]), getEdgesTo: vi.fn().mockReturnValue([]), getNeighbors: vi.fn().mockReturnValue([]), nodes: new Map(), edges: [], toResourceRelationshipGraph: vi.fn().mockReturnValue({ nodes: new Map(), edges: [] }) } as never);
+  vi.mocked(buildWorkloadGroups).mockReturnValue(undefined);
+  vi.mocked(addTemporalCorrelationEdges).mockReturnValue(undefined);
+  vi.mocked(addTemporalSequenceEdges).mockReturnValue(undefined);
+  vi.mocked(asResourceRelationshipGraph).mockReturnValue({ nodes: new Map(), edges: [] });
 
   // Re-initialize InvestigationGraphImpl so graph.addNode/addEdge/getNode work
   // even when events/resources are non-empty (clearAllMocks clears the implementation).
@@ -168,10 +190,15 @@ beforeEach(() => {
     apiKey: '',
     model: 'gpt-4o',
     embeddingModel: 'text-embedding-3-small',
+    embeddingBackend: 'none',
+    embeddingUrl: 'http://localhost:8080',
     enabled: false,
   });
   vi.mocked(isAIEnabled).mockReturnValue(false);
   vi.mocked(buildChunkIndex).mockReturnValue([]);
+
+  // createEmbeddingClient returns undefined by default
+  vi.mocked(createEmbeddingClient).mockReturnValue(undefined);
 
   const mockLexInstance = { build: vi.fn(), search: vi.fn().mockReturnValue([]) };
   vi.mocked(LexicalSearchIndex).mockImplementation(
@@ -326,6 +353,8 @@ describe('analyzeBundlePipeline — onProgress callback', () => {
       apiKey: 'sk-test',
       model: 'gpt-4o',
       embeddingModel: 'text-embedding-3-small',
+      embeddingBackend: 'openai',
+      embeddingUrl: 'http://localhost:8080',
       enabled: true,
     });
     vi.mocked(isAIEnabled).mockReturnValue(true);
@@ -373,6 +402,8 @@ describe('analyzeBundlePipeline — onProgress callback', () => {
       apiKey: 'sk-test',
       model: 'gpt-4o',
       embeddingModel: 'text-embedding-3-small',
+      embeddingBackend: 'openai',
+      embeddingUrl: 'http://localhost:8080',
       enabled: true,
     });
     vi.mocked(isAIEnabled).mockReturnValue(true);
@@ -411,6 +442,8 @@ describe('analyzeBundlePipeline — onProgress callback', () => {
       apiKey: 'sk-test',
       model: 'gpt-4o',
       embeddingModel: 'text-embedding-3-small',
+      embeddingBackend: 'openai',
+      embeddingUrl: 'http://localhost:8080',
       enabled: true,
     });
     vi.mocked(isAIEnabled).mockReturnValue(true);

@@ -1087,3 +1087,857 @@ describe('investigateKubernetes — ImagePullBackOff in Pending phase is not dup
     expect(title).not.toContain('pending pod');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Causal causes edges — kubernetes investigator
+// ---------------------------------------------------------------------------
+
+describe('investigateKubernetes — causal causes edges: MissingSecret→FailedMount→CrashLoopBackOff', () => {
+  const context = makeContext({
+    resources: [crashLoopPod],
+    events: crashLoopEvents, // includes FailedMount mentioning secret "app-credentials"
+  });
+  const result = investigateKubernetes(context, noSeeds);
+
+  it('emits at least one causes edge', () => {
+    const causesEdges = result.edges.filter((e) => e.type === 'causes');
+    expect(causesEdges.length).toBeGreaterThan(0);
+  });
+
+  it('emits a causes edge from the synthetic missing-secret node to the FailedMount event node', () => {
+    const edge = result.edges.find(
+      (e) =>
+        e.type === 'causes' &&
+        e.source === 'finding:missing-secret:app-credentials:default' &&
+        e.target === 'event:FailedMount:app-pod:default',
+    );
+    expect(edge).toBeDefined();
+  });
+
+  it('emits a causes edge from the FailedMount event node to the crashloop finding', () => {
+    const findingId = result.findings[0]!.id;
+    const edge = result.edges.find(
+      (e) =>
+        e.type === 'causes' &&
+        e.source === 'event:FailedMount:app-pod:default' &&
+        e.target === findingId,
+    );
+    expect(edge).toBeDefined();
+  });
+
+  it('causes edges have weight > 0', () => {
+    const causesEdges = result.edges.filter((e) => e.type === 'causes');
+    for (const edge of causesEdges) {
+      expect((edge.weight ?? 1) ).toBeGreaterThan(0);
+    }
+  });
+
+  it('causes edges form a chain: missing-secret → FailedMount → crashloop finding', () => {
+    const causesEdges = result.edges.filter((e) => e.type === 'causes');
+    const findingId = result.findings[0]!.id;
+    // First hop: synthetic root cause → FailedMount event node
+    const hop1 = causesEdges.find(
+      (e) => e.source.startsWith('finding:missing-secret:') && e.target.startsWith('event:FailedMount:'),
+    );
+    expect(hop1).toBeDefined();
+    // Second hop: FailedMount event node → crashloop finding
+    const hop2 = causesEdges.find(
+      (e) => e.source.startsWith('event:FailedMount:') && e.target === findingId,
+    );
+    expect(hop2).toBeDefined();
+    // The two hops share the intermediate FailedMount node
+    expect(hop1!.target).toBe(hop2!.source);
+  });
+});
+
+describe('investigateKubernetes — no causes edges without FailedMount+secret events', () => {
+  it('does not emit causes edges for CrashLoopBackOff without FailedMount events', () => {
+    const context = makeContext({ resources: [crashLoopPod], events: [] });
+    const result = investigateKubernetes(context, noSeeds);
+    const causesEdges = result.edges.filter((e) => e.type === 'causes');
+    expect(causesEdges).toHaveLength(0);
+  });
+
+  it('does not emit causes edges for CrashLoopBackOff with BackOff-only events (no secret mentioned)', () => {
+    const backOffOnly: K8sEvent[] = [
+      {
+        type: 'Warning',
+        reason: 'BackOff',
+        message: 'Back-off restarting failed container',
+        involvedObject: { kind: 'Pod', name: 'app-pod', namespace: 'default' },
+        count: 3,
+        firstTimestamp: '2024-01-15T13:30:05Z',
+        lastTimestamp: '2024-01-15T13:30:05Z',
+      },
+    ];
+    const context = makeContext({ resources: [crashLoopPod], events: backOffOnly });
+    const result = investigateKubernetes(context, noSeeds);
+    const causesEdges = result.edges.filter((e) => e.type === 'causes');
+    expect(causesEdges).toHaveLength(0);
+  });
+});
+
+describe('investigateKubernetes — causal causes edges: BadImageTag→ErrImagePull→ImagePullBackOff', () => {
+  const context = makeContext({
+    resources: [imagePullPod],
+    events: imagePullEvents, // includes ErrImagePull event
+  });
+  const result = investigateKubernetes(context, noSeeds);
+
+  it('emits at least one causes edge', () => {
+    const causesEdges = result.edges.filter((e) => e.type === 'causes');
+    expect(causesEdges.length).toBeGreaterThan(0);
+  });
+
+  it('emits a causes edge from synthetic bad-image-tag node to ErrImagePull event node', () => {
+    const edge = result.edges.find(
+      (e) =>
+        e.type === 'causes' &&
+        e.source.startsWith('finding:bad-image-tag:') &&
+        e.target === 'event:ErrImagePull:app-pod:default',
+    );
+    expect(edge).toBeDefined();
+  });
+
+  it('emits a causes edge from ErrImagePull event node to the imagepull finding', () => {
+    const findingId = result.findings[0]!.id;
+    const edge = result.edges.find(
+      (e) =>
+        e.type === 'causes' &&
+        e.source === 'event:ErrImagePull:app-pod:default' &&
+        e.target === findingId,
+    );
+    expect(edge).toBeDefined();
+  });
+
+  it('bad-image-tag node ID encodes the image tag', () => {
+    const causesEdges = result.edges.filter((e) => e.type === 'causes');
+    const badImageEdge = causesEdges.find((e) => e.source.startsWith('finding:bad-image-tag:'));
+    expect(badImageEdge).toBeDefined();
+    // Image "myapp:v999.99.99" should appear (possibly with chars sanitised)
+    expect(badImageEdge!.source).toContain('myapp');
+  });
+
+  it('does not emit causes edges without ErrImagePull events', () => {
+    const ctxNoEvents = makeContext({ resources: [imagePullPod], events: [] });
+    const r = investigateKubernetes(ctxNoEvents, noSeeds);
+    const causesEdges = r.edges.filter((e) => e.type === 'causes');
+    expect(causesEdges).toHaveLength(0);
+  });
+});
+
+describe('investigateKubernetes — causal causes edges: MissingStorageClass→ProvisioningFailed→FailedMount→PodPending', () => {
+  const context = makeContext({
+    resources: [pendingPvcPod, pendingPvc, standardStorageClass],
+    events: pendingPvcEvents,
+  });
+  const result = investigateKubernetes(context, noSeeds);
+
+  it('emits at least one causes edge', () => {
+    const causesEdges = result.edges.filter((e) => e.type === 'causes');
+    expect(causesEdges.length).toBeGreaterThan(0);
+  });
+
+  it('emits a causes edge from synthetic missing-storage-class node to ProvisioningFailed event node', () => {
+    const edge = result.edges.find(
+      (e) =>
+        e.type === 'causes' &&
+        e.source === 'finding:missing-storage-class:fast-ssd:default' &&
+        e.target === 'event:ProvisioningFailed:data-pvc:default',
+    );
+    expect(edge).toBeDefined();
+  });
+
+  it('emits a causes edge from ProvisioningFailed node to FailedMount event node', () => {
+    const edge = result.edges.find(
+      (e) =>
+        e.type === 'causes' &&
+        e.source === 'event:ProvisioningFailed:data-pvc:default' &&
+        e.target === 'event:FailedMount:db-pod:default',
+    );
+    expect(edge).toBeDefined();
+  });
+
+  it('emits a causes edge from FailedMount event node to the pending finding', () => {
+    const findingId = result.findings[0]!.id;
+    const edge = result.edges.find(
+      (e) =>
+        e.type === 'causes' &&
+        e.source === 'event:FailedMount:db-pod:default' &&
+        e.target === findingId,
+    );
+    expect(edge).toBeDefined();
+  });
+
+  it('produces a 3-hop causes chain: missing-storage-class→ProvisioningFailed→FailedMount→pending', () => {
+    const causesEdges = result.edges.filter((e) => e.type === 'causes');
+    // Verify the 3 causal hops are all present
+    expect(causesEdges.length).toBeGreaterThanOrEqual(3);
+    const findingId = result.findings[0]!.id;
+    const hop1 = causesEdges.find(
+      (e) => e.source.startsWith('finding:missing-storage-class:') && e.target.startsWith('event:ProvisioningFailed:'),
+    );
+    const hop2 = causesEdges.find(
+      (e) => e.source.startsWith('event:ProvisioningFailed:') && e.target.startsWith('event:FailedMount:'),
+    );
+    const hop3 = causesEdges.find(
+      (e) => e.source.startsWith('event:FailedMount:') && e.target === findingId,
+    );
+    expect(hop1).toBeDefined();
+    expect(hop2).toBeDefined();
+    expect(hop3).toBeDefined();
+    // Chain is connected
+    expect(hop1!.target).toBe(hop2!.source);
+    expect(hop2!.target).toBe(hop3!.source);
+  });
+
+  it('does not emit causes edges without ProvisioningFailed events', () => {
+    const ctxNoProvFailed = makeContext({
+      resources: [pendingPvcPod, pendingPvc, standardStorageClass],
+      events: [pendingPvcEvents[1]!, pendingPvcEvents[2]!], // FailedScheduling + FailedMount, no ProvisioningFailed
+    });
+    const r = investigateKubernetes(ctxNoProvFailed, noSeeds);
+    const causesEdges = r.edges.filter((e) => e.type === 'causes');
+    expect(causesEdges).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// OOM / Node-health fixtures
+// ---------------------------------------------------------------------------
+
+/**
+ * A Pod whose last terminated state was OOMKilled — now restarting in
+ * CrashLoopBackOff.  Has explicit memory limits so the finding title can
+ * include the limit.
+ */
+const oomCrashLoopPod: K8sResource = {
+  apiVersion: 'v1',
+  kind: 'Pod',
+  metadata: { name: 'memory-hog', namespace: 'default' },
+  spec: {
+    containers: [
+      {
+        name: 'app',
+        image: 'myapp:v1',
+        resources: {
+          limits: { memory: '256Mi', cpu: '500m' },
+          requests: { memory: '128Mi', cpu: '100m' },
+        },
+      },
+    ],
+  },
+  status: {
+    phase: 'Running',
+    conditions: [{ type: 'Ready', status: 'False', reason: 'ContainersNotReady' }],
+    containerStatuses: [
+      {
+        name: 'app',
+        ready: false,
+        restartCount: 5,
+        state: {
+          waiting: { reason: 'CrashLoopBackOff', message: 'back-off restarting failed container' },
+        },
+        // NOTE: `lastState` is not in the ContainerStatus type — stored as raw K8s status
+        lastState: {
+          terminated: { reason: 'OOMKilled', exitCode: 137 },
+        },
+      },
+    ],
+  },
+};
+
+/**
+ * A Pod whose current container state is OOMKilled (phase=Failed, not restarting).
+ * Has explicit memory limits.
+ */
+const oomTerminatedPod: K8sResource = {
+  apiVersion: 'v1',
+  kind: 'Pod',
+  metadata: { name: 'oom-pod', namespace: 'default' },
+  spec: {
+    containers: [
+      {
+        name: 'worker',
+        image: 'worker:v2',
+        resources: {
+          limits: { memory: '128Mi' },
+          requests: { memory: '64Mi' },
+        },
+      },
+    ],
+  },
+  status: {
+    phase: 'Failed',
+    conditions: [{ type: 'Ready', status: 'False', reason: 'ContainersNotReady' }],
+    containerStatuses: [
+      {
+        name: 'worker',
+        ready: false,
+        restartCount: 0,
+        state: { terminated: { reason: 'OOMKilled', exitCode: 137 } },
+      },
+    ],
+  },
+};
+
+/** A Node that is NotReady (Ready=False). */
+const notReadyNode: K8sResource = {
+  apiVersion: 'v1',
+  kind: 'Node',
+  metadata: { name: 'node-1' },
+  spec: {},
+  status: {
+    conditions: [
+      {
+        type: 'Ready',
+        status: 'False',
+        reason: 'KubeletNotReady',
+        message: 'kubelet stopped posting node status',
+      },
+      { type: 'MemoryPressure', status: 'False', reason: 'KubeletHasSufficientMemory', message: '' },
+      { type: 'DiskPressure', status: 'False', reason: 'KubeletHasNoDiskPressure', message: '' },
+      { type: 'PIDPressure', status: 'False', reason: 'KubeletHasSufficientPID', message: '' },
+    ],
+  },
+};
+
+/** A Node with MemoryPressure (MemoryPressure=True). */
+const memoryPressureNode: K8sResource = {
+  apiVersion: 'v1',
+  kind: 'Node',
+  metadata: { name: 'node-2' },
+  spec: {},
+  status: {
+    conditions: [
+      { type: 'Ready', status: 'True', reason: 'KubeletReady', message: '' },
+      {
+        type: 'MemoryPressure',
+        status: 'True',
+        reason: 'KubeletHasInsufficientMemory',
+        message: 'kubelet has insufficient memory available',
+      },
+      { type: 'DiskPressure', status: 'False', reason: 'KubeletHasNoDiskPressure', message: '' },
+      { type: 'PIDPressure', status: 'False', reason: 'KubeletHasSufficientPID', message: '' },
+    ],
+  },
+};
+
+/** A Node with DiskPressure (DiskPressure=True). */
+const diskPressureNode: K8sResource = {
+  apiVersion: 'v1',
+  kind: 'Node',
+  metadata: { name: 'node-3' },
+  spec: {},
+  status: {
+    conditions: [
+      { type: 'Ready', status: 'True', reason: 'KubeletReady', message: '' },
+      { type: 'MemoryPressure', status: 'False', reason: 'KubeletHasSufficientMemory', message: '' },
+      {
+        type: 'DiskPressure',
+        status: 'True',
+        reason: 'KubeletHasDiskPressure',
+        message: 'kubelet has disk pressure',
+      },
+      { type: 'PIDPressure', status: 'False', reason: 'KubeletHasSufficientPID', message: '' },
+    ],
+  },
+};
+
+/** A Node with PIDPressure (PIDPressure=True). */
+const pidPressureNode: K8sResource = {
+  apiVersion: 'v1',
+  kind: 'Node',
+  metadata: { name: 'node-4' },
+  spec: {},
+  status: {
+    conditions: [
+      { type: 'Ready', status: 'True', reason: 'KubeletReady', message: '' },
+      { type: 'MemoryPressure', status: 'False', reason: 'KubeletHasSufficientMemory', message: '' },
+      { type: 'DiskPressure', status: 'False', reason: 'KubeletHasNoDiskPressure', message: '' },
+      {
+        type: 'PIDPressure',
+        status: 'True',
+        reason: 'KubeletHasPIDPressure',
+        message: 'kubelet has PID pressure',
+      },
+    ],
+  },
+};
+
+/** A fully healthy Node — all conditions OK. */
+const healthyNode: K8sResource = {
+  apiVersion: 'v1',
+  kind: 'Node',
+  metadata: { name: 'healthy-node' },
+  spec: {},
+  status: {
+    conditions: [
+      { type: 'Ready', status: 'True', reason: 'KubeletReady', message: '' },
+      { type: 'MemoryPressure', status: 'False', reason: 'KubeletHasSufficientMemory', message: '' },
+      { type: 'DiskPressure', status: 'False', reason: 'KubeletHasNoDiskPressure', message: '' },
+      { type: 'PIDPressure', status: 'False', reason: 'KubeletHasSufficientPID', message: '' },
+    ],
+  },
+};
+
+/** FailedScheduling event for pods that can't schedule because of a NotReady node. */
+const nodeSchedulingEvents: K8sEvent[] = [
+  {
+    type: 'Warning',
+    reason: 'FailedScheduling',
+    message: '0/1 nodes are available: 1 node(s) were unschedulable',
+    involvedObject: { kind: 'Pod', name: 'pending-pod', namespace: 'default' },
+    count: 3,
+    firstTimestamp: '2024-01-15T10:00:00Z',
+    lastTimestamp: '2024-01-15T10:05:00Z',
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Scenario 13 — OOMKilled container (currently in terminated state, no loop)
+// ---------------------------------------------------------------------------
+
+describe('investigateKubernetes — OOMKilled container (current terminated state)', () => {
+  const context = makeContext({ resources: [oomTerminatedPod] });
+  const result = investigateKubernetes(context, noSeeds);
+
+  it('produces exactly one finding for the OOMKilled container', () => {
+    const oomFindings = result.findings.filter((f) =>
+      f.title.toLowerCase().includes('oom'),
+    );
+    expect(oomFindings).toHaveLength(1);
+  });
+
+  it('finding title contains the container name, pod name, and OOMKilled', () => {
+    const oomFinding = result.findings.find((f) => f.title.toLowerCase().includes('oom'));
+    expect(oomFinding).toBeDefined();
+    expect(oomFinding!.title).toContain('worker');
+    expect(oomFinding!.title).toContain('oom-pod');
+    expect(oomFinding!.title.toLowerCase()).toContain('oomkilled');
+  });
+
+  it('finding title includes the memory limit (128Mi)', () => {
+    const oomFinding = result.findings.find((f) => f.title.toLowerCase().includes('oom'));
+    expect(oomFinding!.title).toContain('128Mi');
+  });
+
+  it('finding severity is high or critical', () => {
+    const oomFinding = result.findings.find((f) => f.title.toLowerCase().includes('oom'));
+    expect(['critical', 'high']).toContain(oomFinding!.severity);
+  });
+
+  it('affectedComponents includes the pod and container', () => {
+    const oomFinding = result.findings.find((f) => f.title.toLowerCase().includes('oom'));
+    expect(oomFinding!.affectedComponents.some((c) => c.includes('oom-pod'))).toBe(true);
+    expect(oomFinding!.affectedComponents.some((c) => c.includes('worker'))).toBe(true);
+  });
+
+  it('evidence includes the pod file path', () => {
+    const oomFinding = result.findings.find((f) => f.title.toLowerCase().includes('oom'));
+    expect(oomFinding!.evidence.some((e) => e.path.includes('pods/default/oom-pod'))).toBe(true);
+  });
+
+  it('evidence note references memory limit or resource information', () => {
+    const oomFinding = result.findings.find((f) => f.title.toLowerCase().includes('oom'));
+    const allNotes = oomFinding!.evidence.map((e) => e.note.toLowerCase()).join(' ');
+    expect(allNotes).toMatch(/limit|memory|resource/);
+  });
+
+  it('produces graph edges supporting the finding', () => {
+    const oomFinding = result.findings.find((f) => f.title.toLowerCase().includes('oom'));
+    const supportEdges = result.edges.filter(
+      (e) => e.target === oomFinding!.id && e.type === 'supports',
+    );
+    expect(supportEdges.length).toBeGreaterThan(0);
+  });
+
+  it('confidence is in [0, 1]', () => {
+    const oomFinding = result.findings.find((f) => f.title.toLowerCase().includes('oom'));
+    expect(oomFinding!.confidence).toBeGreaterThanOrEqual(0);
+    expect(oomFinding!.confidence).toBeLessThanOrEqual(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 14 — OOMKilled in lastState (pod is now in CrashLoopBackOff)
+// ---------------------------------------------------------------------------
+
+describe('investigateKubernetes — OOMKilled in lastState + CrashLoopBackOff', () => {
+  const context = makeContext({ resources: [oomCrashLoopPod] });
+  const result = investigateKubernetes(context, noSeeds);
+
+  it('produces both an OOM finding and a CrashLoopBackOff finding', () => {
+    const oomFindings = result.findings.filter((f) => f.title.toLowerCase().includes('oom'));
+    const crashFindings = result.findings.filter((f) =>
+      f.title.toLowerCase().includes('crashloopbackoff'),
+    );
+    expect(oomFindings.length).toBeGreaterThan(0);
+    expect(crashFindings.length).toBeGreaterThan(0);
+  });
+
+  it('OOM finding title includes container name, pod name, and memory limit', () => {
+    const oomFinding = result.findings.find((f) => f.title.toLowerCase().includes('oom'));
+    expect(oomFinding).toBeDefined();
+    expect(oomFinding!.title).toContain('app');
+    expect(oomFinding!.title).toContain('memory-hog');
+    expect(oomFinding!.title).toContain('256Mi');
+  });
+
+  it('produces causal edges: OOMKill → ContainerRestart → CrashLoopBackOff', () => {
+    const causesEdges = result.edges.filter((e) => e.type === 'causes');
+    // At least 2 causes edges for the OOM chain
+    expect(causesEdges.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('emits a causes edge from OOM finding to a ContainerRestart event node', () => {
+    const oomFinding = result.findings.find((f) => f.title.toLowerCase().includes('oom'));
+    expect(oomFinding).toBeDefined();
+    const oomToRestart = result.edges.find(
+      (e) =>
+        e.type === 'causes' &&
+        e.source === oomFinding!.id &&
+        e.target.includes('ContainerRestart'),
+    );
+    expect(oomToRestart).toBeDefined();
+  });
+
+  it('emits a causes edge from ContainerRestart node to CrashLoopBackOff finding', () => {
+    const crashFinding = result.findings.find((f) =>
+      f.title.toLowerCase().includes('crashloopbackoff'),
+    );
+    expect(crashFinding).toBeDefined();
+    const restartToCrash = result.edges.find(
+      (e) =>
+        e.type === 'causes' &&
+        e.source.includes('ContainerRestart') &&
+        e.target === crashFinding!.id,
+    );
+    expect(restartToCrash).toBeDefined();
+  });
+
+  it('the OOMKill causal chain is connected: OOM → ContainerRestart → CrashLoopBackOff', () => {
+    const causesEdges = result.edges.filter((e) => e.type === 'causes');
+    const oomFinding = result.findings.find((f) => f.title.toLowerCase().includes('oom'));
+    const crashFinding = result.findings.find((f) =>
+      f.title.toLowerCase().includes('crashloopbackoff'),
+    );
+
+    const hop1 = causesEdges.find(
+      (e) => e.source === oomFinding!.id && e.target.includes('ContainerRestart'),
+    );
+    const hop2 = causesEdges.find(
+      (e) => e.source.includes('ContainerRestart') && e.target === crashFinding!.id,
+    );
+
+    expect(hop1).toBeDefined();
+    expect(hop2).toBeDefined();
+    expect(hop1!.target).toBe(hop2!.source);
+  });
+
+  it('causes edges have weight > 0', () => {
+    const causesEdges = result.edges.filter((e) => e.type === 'causes');
+    for (const edge of causesEdges) {
+      expect((edge.weight ?? 1)).toBeGreaterThan(0);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 15 — OOMKilled without resource limits configured
+// ---------------------------------------------------------------------------
+
+describe('investigateKubernetes — OOMKilled without resource limits', () => {
+  const podWithoutLimits: K8sResource = {
+    apiVersion: 'v1',
+    kind: 'Pod',
+    metadata: { name: 'no-limits-pod', namespace: 'default' },
+    spec: {
+      containers: [{ name: 'app', image: 'myapp:v1' }],
+    },
+    status: {
+      phase: 'Failed',
+      conditions: [{ type: 'Ready', status: 'False' }],
+      containerStatuses: [
+        {
+          name: 'app',
+          ready: false,
+          restartCount: 2,
+          state: { terminated: { reason: 'OOMKilled', exitCode: 137 } },
+        },
+      ],
+    },
+  };
+
+  const context = makeContext({ resources: [podWithoutLimits] });
+  const result = investigateKubernetes(context, noSeeds);
+
+  it('still produces an OOM finding even without resource limits configured', () => {
+    const oomFindings = result.findings.filter((f) => f.title.toLowerCase().includes('oom'));
+    expect(oomFindings).toHaveLength(1);
+  });
+
+  it('finding title contains container name and pod name without crashing', () => {
+    const oomFinding = result.findings.find((f) => f.title.toLowerCase().includes('oom'));
+    expect(oomFinding).toBeDefined();
+    expect(oomFinding!.title).toContain('no-limits-pod');
+    expect(oomFinding!.title).toContain('app');
+  });
+
+  it('recommendedAction mentions memory limit', () => {
+    const oomFinding = result.findings.find((f) => f.title.toLowerCase().includes('oom'));
+    expect(oomFinding!.recommendedAction.toLowerCase()).toContain('memory');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 16 — Node NotReady condition
+// ---------------------------------------------------------------------------
+
+describe('investigateKubernetes — Node NotReady', () => {
+  const context = makeContext({ resources: [notReadyNode] });
+  const result = investigateKubernetes(context, noSeeds);
+
+  it('produces a finding for the NotReady node', () => {
+    const nodeFindings = result.findings.filter((f) =>
+      f.title.toLowerCase().includes('node-1'),
+    );
+    expect(nodeFindings.length).toBeGreaterThan(0);
+  });
+
+  it('finding title references the node name and NotReady status', () => {
+    const nodeFinding = result.findings.find(
+      (f) =>
+        (f.title.toLowerCase().includes('notready') ||
+          f.title.toLowerCase().includes('not ready')) &&
+        f.title.includes('node-1'),
+    );
+    expect(nodeFinding).toBeDefined();
+  });
+
+  it('finding severity is critical', () => {
+    const nodeFinding = result.findings.find((f) => f.title.includes('node-1'));
+    expect(nodeFinding!.severity).toBe('critical');
+  });
+
+  it('confidence is in [0, 1]', () => {
+    const nodeFinding = result.findings.find((f) => f.title.includes('node-1'));
+    expect(nodeFinding!.confidence).toBeGreaterThanOrEqual(0);
+    expect(nodeFinding!.confidence).toBeLessThanOrEqual(1);
+  });
+
+  it('affectedComponents includes the node', () => {
+    const nodeFinding = result.findings.find((f) => f.title.includes('node-1'));
+    expect(nodeFinding!.affectedComponents.some((c) => c.includes('node-1'))).toBe(true);
+  });
+
+  it('evidence includes reference to the node resource', () => {
+    const nodeFinding = result.findings.find((f) => f.title.includes('node-1'));
+    expect(nodeFinding!.evidence.length).toBeGreaterThan(0);
+    expect(nodeFinding!.evidence.some((e) => e.path.includes('node-1'))).toBe(true);
+  });
+
+  it('contradictionsChecked is non-empty', () => {
+    const nodeFinding = result.findings.find((f) => f.title.includes('node-1'));
+    expect(nodeFinding!.contradictionsChecked.length).toBeGreaterThan(0);
+  });
+
+  it('recommendedAction is non-empty and mentions the node name', () => {
+    const nodeFinding = result.findings.find((f) => f.title.includes('node-1'));
+    expect(nodeFinding!.recommendedAction).toBeTruthy();
+    expect(nodeFinding!.recommendedAction).toContain('node-1');
+  });
+
+  it('produces graph edges supporting the finding', () => {
+    const nodeFinding = result.findings.find((f) => f.title.includes('node-1'));
+    const supportEdges = result.edges.filter(
+      (e) => e.target === nodeFinding!.id && e.type === 'supports',
+    );
+    expect(supportEdges.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 17 — Node MemoryPressure condition
+// ---------------------------------------------------------------------------
+
+describe('investigateKubernetes — Node MemoryPressure', () => {
+  const context = makeContext({ resources: [memoryPressureNode] });
+  const result = investigateKubernetes(context, noSeeds);
+
+  it('produces a finding for the MemoryPressure node', () => {
+    const pressureFindings = result.findings.filter(
+      (f) =>
+        (f.title.toLowerCase().includes('memorypressure') ||
+          (f.title.toLowerCase().includes('memory') &&
+            f.title.toLowerCase().includes('pressure'))) &&
+        f.title.includes('node-2'),
+    );
+    expect(pressureFindings.length).toBeGreaterThan(0);
+  });
+
+  it('finding title references the node name and MemoryPressure', () => {
+    const finding = result.findings.find(
+      (f) =>
+        f.title.includes('node-2') &&
+        (f.title.toLowerCase().includes('memory') || f.title.toLowerCase().includes('pressure')),
+    );
+    expect(finding).toBeDefined();
+    expect(finding!.title).toContain('node-2');
+  });
+
+  it('finding severity is high or critical', () => {
+    const finding = result.findings.find((f) => f.title.includes('node-2'));
+    expect(['critical', 'high']).toContain(finding!.severity);
+  });
+
+  it('affectedComponents includes the node', () => {
+    const finding = result.findings.find((f) => f.title.includes('node-2'));
+    expect(finding!.affectedComponents.some((c) => c.includes('node-2'))).toBe(true);
+  });
+
+  it('produces graph edges supporting the finding', () => {
+    const finding = result.findings.find((f) => f.title.includes('node-2'));
+    const supportEdges = result.edges.filter(
+      (e) => e.target === finding!.id && e.type === 'supports',
+    );
+    expect(supportEdges.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 18 — Node DiskPressure condition
+// ---------------------------------------------------------------------------
+
+describe('investigateKubernetes — Node DiskPressure', () => {
+  const context = makeContext({ resources: [diskPressureNode] });
+  const result = investigateKubernetes(context, noSeeds);
+
+  it('produces a finding for the DiskPressure node', () => {
+    const finding = result.findings.find(
+      (f) =>
+        f.title.toLowerCase().includes('disk') &&
+        f.title.includes('node-3'),
+    );
+    expect(finding).toBeDefined();
+  });
+
+  it('finding title references the node name and DiskPressure', () => {
+    const finding = result.findings.find(
+      (f) => f.title.includes('node-3') && f.title.toLowerCase().includes('disk'),
+    );
+    expect(finding!.title).toContain('node-3');
+  });
+
+  it('affectedComponents includes the node', () => {
+    const finding = result.findings.find((f) => f.title.includes('node-3'));
+    expect(finding).toBeDefined();
+    expect(finding!.affectedComponents.some((c) => c.includes('node-3'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 19 — Node PIDPressure condition
+// ---------------------------------------------------------------------------
+
+describe('investigateKubernetes — Node PIDPressure', () => {
+  const context = makeContext({ resources: [pidPressureNode] });
+  const result = investigateKubernetes(context, noSeeds);
+
+  it('produces a finding for the PIDPressure node', () => {
+    const finding = result.findings.find(
+      (f) =>
+        f.title.toLowerCase().includes('pid') &&
+        f.title.includes('node-4'),
+    );
+    expect(finding).toBeDefined();
+  });
+
+  it('affectedComponents includes the node', () => {
+    const finding = result.findings.find((f) => f.title.includes('node-4'));
+    expect(finding).toBeDefined();
+    expect(finding!.affectedComponents.some((c) => c.includes('node-4'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 20 — Healthy node produces no findings
+// ---------------------------------------------------------------------------
+
+describe('investigateKubernetes — healthy node produces no findings', () => {
+  it('returns no findings for a healthy node', () => {
+    const context = makeContext({ resources: [healthyNode] });
+    const result = investigateKubernetes(context, noSeeds);
+    expect(result.findings).toHaveLength(0);
+    expect(result.edges).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 21 — NodeNotReady correlates with pod scheduling failures
+// ---------------------------------------------------------------------------
+
+describe('investigateKubernetes — NodeNotReady correlates with FailedScheduling events', () => {
+  const context = makeContext({
+    resources: [notReadyNode],
+    events: nodeSchedulingEvents,
+  });
+  const result = investigateKubernetes(context, noSeeds);
+
+  it('produces a NodeNotReady finding', () => {
+    const nodeFinding = result.findings.find((f) => f.title.includes('node-1'));
+    expect(nodeFinding).toBeDefined();
+  });
+
+  it('emits a causes edge from NodeNotReady finding to FailedScheduling event node', () => {
+    const nodeFinding = result.findings.find((f) => f.title.includes('node-1'));
+    expect(nodeFinding).toBeDefined();
+    const causesEdge = result.edges.find(
+      (e) =>
+        e.type === 'causes' &&
+        e.source === nodeFinding!.id &&
+        e.target.includes('FailedScheduling'),
+    );
+    expect(causesEdge).toBeDefined();
+  });
+
+  it('causal edge target includes the pending pod name', () => {
+    const nodeFinding = result.findings.find((f) => f.title.includes('node-1'));
+    const causesEdge = result.edges.find(
+      (e) =>
+        e.type === 'causes' &&
+        e.source === nodeFinding!.id &&
+        e.target.includes('FailedScheduling'),
+    );
+    expect(causesEdge!.target).toContain('pending-pod');
+  });
+
+  it('causes edge has weight > 0', () => {
+    const nodeFinding = result.findings.find((f) => f.title.includes('node-1'));
+    const causesEdge = result.edges.find(
+      (e) => e.type === 'causes' && e.source === nodeFinding!.id,
+    );
+    expect((causesEdge!.weight ?? 1)).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 22 — No OOM findings for pods without OOMKilled
+// ---------------------------------------------------------------------------
+
+describe('investigateKubernetes — no OOM findings for normal pods', () => {
+  it('does not produce OOM findings for a healthy pod', () => {
+    const context = makeContext({ resources: [healthyPod] });
+    const result = investigateKubernetes(context, noSeeds);
+    const oomFindings = result.findings.filter((f) => f.title.toLowerCase().includes('oom'));
+    expect(oomFindings).toHaveLength(0);
+  });
+
+  it('does not produce OOM findings for a CrashLoopBackOff pod without OOMKilled', () => {
+    // crashLoopPod has CrashLoopBackOff but no OOMKilled in lastState
+    const context = makeContext({ resources: [crashLoopPod] });
+    const result = investigateKubernetes(context, noSeeds);
+    const oomFindings = result.findings.filter((f) => f.title.toLowerCase().includes('oom'));
+    expect(oomFindings).toHaveLength(0);
+  });
+});

@@ -32,6 +32,8 @@ const TEST_CONFIG: AIConfig = {
   apiKey: 'sk-test-key',
   model: 'gpt-4o',
   embeddingModel: 'text-embedding-3-small',
+  embeddingBackend: 'openai',
+  embeddingUrl: 'http://localhost:8080',
   enabled: true,
 };
 

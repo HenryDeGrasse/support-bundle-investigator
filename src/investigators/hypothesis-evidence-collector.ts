@@ -1167,6 +1167,224 @@ function collectVolumeFailureEvidence(context: InvestigatorContext): EvidenceAss
 }
 
 // ---------------------------------------------------------------------------
+// Regex helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Escapes all regex special characters in a string so it can be used inside a
+ * `new RegExp(…)` constructor without unintended meta-character semantics.
+ */
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Attempts to extract the container registry hostname from an image reference
+ * or free-text string.  Returns the hostname in lower-case, or `undefined`
+ * when no registry-shaped hostname can be found.
+ *
+ * Matches patterns like:
+ *   - `"myregistry.io/image:tag"` (quoted)
+ *   - `myregistry.io/image:tag`   (unquoted)
+ *   - `gcr.io/project/image:tag`
+ */
+function extractRegistryFromImageRef(text: string): string | undefined {
+  // Quoted image reference first — more specific
+  const quotedMatch = text.match(/"([a-z0-9][a-z0-9.-]*\.[a-z]{2,})\/[^"]+"/i);
+  if (quotedMatch?.[1]) return quotedMatch[1].toLowerCase();
+
+  // Unquoted image reference
+  const unquotedMatch = text.match(
+    /\b([a-z0-9][a-z0-9.-]*\.[a-z]{2,})\/[a-z0-9][a-z0-9._/-]*/i,
+  );
+  if (unquotedMatch?.[1]) return unquotedMatch[1].toLowerCase();
+
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Active falsification collectors (7.6)
+// ---------------------------------------------------------------------------
+
+/**
+ * Actively looks for evidence that would DISPROVE a `dns-failure` hypothesis.
+ *
+ * Strategy: extract every hostname mentioned in DNS-failure log lines, then
+ * search for log lines that show a *successful* resolution or connection to
+ * **that same hostname**.  Generic success patterns elsewhere in the logs are
+ * not enough — only hostname-specific successes count.
+ */
+function collectDnsFalsifyingEvidence(
+  hypothesis: Hypothesis,
+  context: InvestigatorContext,
+): EvidenceAssessment {
+  const assessment = emptyAssessment();
+
+  const dnsFailurePattern =
+    /no such host|lookup\s+failed|name\s+resolution\s+fail|NXDOMAIN|could not resolve|dns.*fail/i;
+
+  // Collect failing hostnames from logs
+  const failedHostnames = new Set<string>();
+  for (const logFile of context.logs) {
+    for (const line of logFile.lines) {
+      if (dnsFailurePattern.test(line.content)) {
+        const hostname = extractHostnameFromText(line.content);
+        if (hostname) failedHostnames.add(hostname.toLowerCase());
+      }
+    }
+  }
+
+  // Also extract from hypothesis text (symptom + rootCause)
+  const hypothesisText = `${hypothesis.symptom} ${hypothesis.rootCause}`;
+  const hostnameFromHypothesis = extractHostnameFromText(hypothesisText);
+  if (hostnameFromHypothesis) failedHostnames.add(hostnameFromHypothesis.toLowerCase());
+
+  // For each failing hostname, search for successful connections to THAT hostname
+  for (const hostname of failedHostnames) {
+    const escaped = escapeRegex(hostname);
+    // Matches: "successfully connected to <host>", "connected to <host> successfully",
+    // "resolved <host>", "<host> connection established", etc.
+    const successForHostPattern = new RegExp(
+      `(successfully\\s+(?:connected|resolved)|connected.*successfully|connection\\s+established|resolved).*${escaped}` +
+        `|${escaped}.*(successfully\\s+(?:connected|resolved)|connected.*successfully|connection\\s+established)`,
+      'i',
+    );
+
+    const successMatches = findInLogs(context.logs, successForHostPattern);
+    for (const { logFile, lineContent } of successMatches) {
+      assessment.contradicting.push({
+        path: cleanEvidencePath(logFile.path),
+        note: `Log line shows successful DNS resolution/connection for hostname '${hostname}' — directly contradicts the DNS failure hypothesis: "${lineContent.trim()}"`,
+        artifactType: 'log',
+      });
+    }
+  }
+
+  return assessment;
+}
+
+/**
+ * Actively looks for evidence that would DISPROVE a `missing-secret`
+ * hypothesis.
+ *
+ * Strategy: extract the specific secret name(s) mentioned in events, log
+ * lines, and the hypothesis text, then check whether that secret *actually
+ * exists* in the captured Kubernetes resources.  Finding the secret in the
+ * cluster inventory directly falsifies the "secret is missing" claim.
+ */
+function collectMissingSecretFalsifyingEvidence(
+  hypothesis: Hypothesis,
+  context: InvestigatorContext,
+): EvidenceAssessment {
+  const assessment = emptyAssessment();
+  const secretsByNamespace = indexResourceNamesByNamespace(context.resources, 'Secret');
+
+  const namedSecrets = new Set<string>();
+
+  // Extract from events
+  for (const ev of context.events) {
+    const name = extractSecretNameFromText(ev.message);
+    if (name) namedSecrets.add(name);
+  }
+
+  // Extract from logs
+  for (const logFile of context.logs) {
+    for (const line of logFile.lines) {
+      const name = extractSecretNameFromText(line.content);
+      if (name) namedSecrets.add(name);
+    }
+  }
+
+  // Extract from hypothesis text
+  const hypothesisText = `${hypothesis.symptom} ${hypothesis.rootCause}`;
+  const nameFromHypothesis = extractSecretNameFromText(hypothesisText);
+  if (nameFromHypothesis) namedSecrets.add(nameFromHypothesis);
+
+  // Actively check: is the explicitly named secret actually present?
+  for (const secretName of namedSecrets) {
+    for (const [namespace, names] of secretsByNamespace) {
+      if (names.has(secretName)) {
+        assessment.contradicting.push({
+          path: secretFilePath(secretName, namespace),
+          note: `Secret '${secretName}' is actually present in namespace '${namespace}' — this directly contradicts the missing-secret hypothesis`,
+          artifactType: 'kubernetes-resource',
+        });
+      }
+    }
+  }
+
+  return assessment;
+}
+
+/**
+ * Actively looks for evidence that would DISPROVE an `image-pull-failure`
+ * hypothesis where the suspected cause is registry authentication.
+ *
+ * Strategy: extract the container registry hostname from the failing image
+ * reference, then search for successful image pulls **from that same
+ * registry** in events and logs.  A successful pull from the same registry
+ * suggests auth is not the root cause.
+ */
+function collectImagePullFalsifyingEvidence(
+  hypothesis: Hypothesis,
+  context: InvestigatorContext,
+): EvidenceAssessment {
+  const assessment = emptyAssessment();
+
+  // Collect registries from pull-failure events
+  const failingRegistries = new Set<string>();
+
+  for (const ev of context.events) {
+    if (/ErrImagePull|ImagePullBackOff|failed.*pull|pull.*fail/i.test(ev.message)) {
+      const registry = extractRegistryFromImageRef(ev.message);
+      if (registry) failingRegistries.add(registry);
+    }
+  }
+
+  // Also from hypothesis text
+  const hypothesisText = `${hypothesis.symptom} ${hypothesis.rootCause}`;
+  const registryFromHypothesis = extractRegistryFromImageRef(hypothesisText);
+  if (registryFromHypothesis) failingRegistries.add(registryFromHypothesis);
+
+  // For each failing registry, search for successful pulls from THAT registry
+  for (const registry of failingRegistries) {
+    const escaped = escapeRegex(registry);
+    const successPattern = new RegExp(
+      `(successfully\\s+pulled|pulled\\s+image.*success|pulling.*done).*${escaped}` +
+        `|${escaped}.*(successfully\\s+pulled|pulled\\s+image.*success)`,
+      'i',
+    );
+
+    // Check events
+    const successEvents = context.events.filter(
+      (ev) =>
+        /Pulled|successfully\s+pulled/i.test(`${ev.reason} ${ev.message}`) &&
+        successPattern.test(ev.message),
+    );
+    for (const ev of successEvents) {
+      const ns = ev.involvedObject.namespace ?? 'default';
+      assessment.contradicting.push({
+        path: eventsFilePath(ns),
+        note: `Event shows successful image pull from registry '${registry}' — suggests registry auth is not the cause: ${ev.message}`,
+        artifactType: 'event',
+      });
+    }
+
+    // Check logs
+    const logSuccessMatches = findInLogs(context.logs, successPattern);
+    for (const { logFile, lineContent } of logSuccessMatches) {
+      assessment.contradicting.push({
+        path: cleanEvidencePath(logFile.path),
+        note: `Log shows successful image pull from registry '${registry}' — contradicts registry auth failure hypothesis: "${lineContent.trim()}"`,
+        artifactType: 'log',
+      });
+    }
+  }
+
+  return assessment;
+}
+
+// ---------------------------------------------------------------------------
 // Dispatch table
 // ---------------------------------------------------------------------------
 
@@ -1187,12 +1405,59 @@ const CATEGORY_COLLECTORS: Partial<Record<HypothesisCategory, CategoryCollector>
 // ---------------------------------------------------------------------------
 
 /**
+ * Actively searches for evidence that would *disprove* (falsify) a
+ * hypothesis, based on its category.
+ *
+ * Unlike the category-specific collectors which gather both supporting and
+ * contradicting evidence broadly, this function focuses exclusively on finding
+ * evidence that would directly negate the hypothesis:
+ *
+ * - `dns-failure`         — successful DNS resolution/connection to the **same hostname**
+ *   that was failing
+ * - `missing-secret`      — the **explicitly named** Secret is actually present in the
+ *   cluster resource inventory
+ * - `image-pull-failure`  — a successful pull from the **same container registry** that
+ *   experienced the pull failure (contradicts registry auth as the cause)
+ *
+ * The returned {@link EvidenceAssessment} populates only `contradicting`;
+ * `supporting` and `missingDecisive` are always empty.
+ *
+ * This function is wired into {@link collectEvidenceForHypothesis} and its
+ * results are merged into the final assessment's `contradicting` array.
+ *
+ * @param hypothesis - The hypothesis to actively attempt to falsify.
+ * @param context    - The full bundle context (resources, events, logs).
+ * @returns An {@link EvidenceAssessment} whose `contradicting` array contains
+ *   any found falsifying evidence.
+ */
+export function collectFalsifyingEvidence(
+  hypothesis: Hypothesis,
+  context: InvestigatorContext,
+): EvidenceAssessment {
+  switch (hypothesis.category) {
+    case 'dns-failure':
+      return collectDnsFalsifyingEvidence(hypothesis, context);
+    case 'missing-secret':
+      return collectMissingSecretFalsifyingEvidence(hypothesis, context);
+    case 'image-pull-failure':
+      return collectImagePullFalsifyingEvidence(hypothesis, context);
+    default:
+      return emptyAssessment();
+  }
+}
+
+/**
  * Collects supporting, contradicting, and missing-decisive evidence for a
  * single {@link Hypothesis} from the bundle data in `context`.
  *
  * The function dispatches to a category-specific internal collector based on
  * `hypothesis.category`.  Categories without a dedicated collector return an
  * assessment with only a generic missing-decisive entry.
+ *
+ * After the category-specific collector runs, {@link collectFalsifyingEvidence}
+ * is called to actively search for evidence that would *disprove* the
+ * hypothesis; any found contradicting items are merged into the final
+ * assessment.
  *
  * Evidence items are populated with real bundle paths (following the
  * `cluster-resources/…` and `logs/…` conventions used throughout this
@@ -1209,14 +1474,21 @@ export function collectEvidenceForHypothesis(
 ): EvidenceAssessment {
   const collector = CATEGORY_COLLECTORS[hypothesis.category];
 
+  let assessment: EvidenceAssessment;
+
   if (collector != null) {
-    return collector(context);
+    assessment = collector(context);
+  } else {
+    // Fallback for categories without a dedicated collector
+    assessment = emptyAssessment();
+    assessment.missingDecisive.push(
+      `No dedicated evidence collector for category '${hypothesis.category}' — manual investigation required`,
+    );
   }
 
-  // Fallback for categories without a dedicated collector
-  const assessment = emptyAssessment();
-  assessment.missingDecisive.push(
-    `No dedicated evidence collector for category '${hypothesis.category}' — manual investigation required`,
-  );
+  // Actively collect falsifying evidence and merge contradicting items
+  const falsifying = collectFalsifyingEvidence(hypothesis, context);
+  assessment.contradicting.push(...falsifying.contradicting);
+
   return assessment;
 }

@@ -13,6 +13,8 @@ import { ProgressView } from './ProgressView.js';
 import type { ProgressStep } from './ProgressView.js';
 import { DashboardLayout } from './DashboardLayout.js';
 import { ExportStatus } from './ExportStatus.js';
+import { RatArtHeader } from './RatArtHeader.js';
+import { RatRunner } from './RatRunner.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -254,14 +256,14 @@ export function App({
   return (
     <Box flexDirection="column" width={termWidth} height={termHeight}>
       {dashState.phase === 'loading' ? (
-        <Box flexDirection="column" flexGrow={1} justifyContent="center" alignItems="center">
-          <Box marginBottom={1}>
-            <Text bold color="cyan">
-              Support Bundle Investigator
-            </Text>
+        <Box flexDirection="column" flexGrow={1}>
+          {/* Vertically-centred progress content */}
+          <Box flexDirection="column" flexGrow={1} justifyContent="center" alignItems="center">
+            <RatArtHeader />
+            <ProgressView steps={steps} recentDetails={recentDetails} />
           </Box>
-          <ProgressView steps={steps} recentDetails={recentDetails} />
-          <Box flexGrow={1} />
+          {/* Rat runs along the bottom edge while the AI is thinking */}
+          <RatRunner width={termWidth} />
           <Box>
             <Text color="gray" dimColor>
               {'  [q] quit'}
@@ -275,6 +277,7 @@ export function App({
           state={dashState}
           height={termHeight}
           width={termWidth}
+          findingTree={result?.findingTree}
         />
       )}
 

@@ -3,7 +3,10 @@ import type { BundleProfile, K8sResource, K8sEvent } from '../../types/index.js'
 import type { InvestigatorContext } from '../types.js';
 import type { LogFile, LogLine } from '../../parsers/index.js';
 import type { Hypothesis } from '../hypothesis-types.js';
-import { collectEvidenceForHypothesis } from '../hypothesis-evidence-collector.js';
+import {
+  collectEvidenceForHypothesis,
+  collectFalsifyingEvidence,
+} from '../hypothesis-evidence-collector.js';
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -751,5 +754,330 @@ describe('collectEvidenceForHypothesis — evidence item structure', () => {
       expect(typeof ev.note).toBe('string');
       expect(ev.note.length).toBeGreaterThan(0);
     }
+  });
+});
+
+// ===========================================================================
+// collectFalsifyingEvidence — active falsification (7.6)
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// dns-failure — active hostname-specific falsification
+// ---------------------------------------------------------------------------
+
+describe('collectFalsifyingEvidence — dns-failure: finds successful connection to same failing hostname', () => {
+  it('adds contradicting evidence when a success log for the same hostname is present', () => {
+    const ctx = makeContext({
+      logs: [
+        makeLogFile('logs/default/app-pod/app/current.log', [
+          'ERROR dial tcp: lookup my-backend: no such host',
+          'INFO successfully connected to my-backend on retry',
+        ]),
+      ],
+    });
+    const hypothesis = makeHypothesis({ category: 'dns-failure' });
+    const result = collectFalsifyingEvidence(hypothesis, ctx);
+
+    expect(result.contradicting.length).toBeGreaterThanOrEqual(1);
+    const combined = result.contradicting.map((e) => e.note).join(' ');
+    expect(combined).toMatch(/my-backend/);
+  });
+
+  it('every contradicting item has a non-empty path and note', () => {
+    const ctx = makeContext({
+      logs: [
+        makeLogFile('logs/default/app-pod/app/current.log', [
+          'ERROR no such host: auth-service',
+          'INFO successfully connected to auth-service',
+        ]),
+      ],
+    });
+    const hypothesis = makeHypothesis({ category: 'dns-failure' });
+    const result = collectFalsifyingEvidence(hypothesis, ctx);
+
+    for (const ev of result.contradicting) {
+      expect(ev.path.length).toBeGreaterThan(0);
+      expect(ev.note.length).toBeGreaterThan(5);
+    }
+  });
+
+  it('does NOT add contradicting evidence when success is only for a different hostname', () => {
+    const ctx = makeContext({
+      logs: [
+        makeLogFile('logs/default/app-pod/app/current.log', [
+          'ERROR no such host: my-backend',
+          'INFO successfully connected to other-service',
+        ]),
+      ],
+    });
+    const hypothesis = makeHypothesis({ category: 'dns-failure' });
+    const result = collectFalsifyingEvidence(hypothesis, ctx);
+
+    // No hostname-specific success for 'my-backend' → no contradicting
+    const hasMismatch = result.contradicting.some(
+      (e) =>
+        e.note.toLowerCase().includes('my-backend') &&
+        e.note.toLowerCase().includes('success'),
+    );
+    expect(hasMismatch).toBe(false);
+  });
+
+  it('returns no contradicting evidence when no DNS failure lines exist in logs', () => {
+    const ctx = makeContext({
+      logs: [
+        makeLogFile('logs/default/app-pod/app/current.log', [
+          'INFO application started',
+          'INFO ready',
+        ]),
+      ],
+    });
+    const hypothesis = makeHypothesis({ category: 'dns-failure' });
+    const result = collectFalsifyingEvidence(hypothesis, ctx);
+
+    expect(result.contradicting).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// missing-secret — actively checks whether the Secret is present
+// ---------------------------------------------------------------------------
+
+describe('collectFalsifyingEvidence — missing-secret: checks whether the Secret is actually present', () => {
+  it('adds contradicting evidence when the named Secret exists in the cluster resources', () => {
+    const ctx = makeContext({
+      events: [
+        makeEvent(
+          'FailedMount',
+          "MountVolume.SetUp failed: secret 'db-credentials' not found",
+          'app-pod',
+        ),
+      ],
+      resources: [makeResource('Secret', 'db-credentials')],
+    });
+    const hypothesis = makeHypothesis({ category: 'missing-secret' });
+    const result = collectFalsifyingEvidence(hypothesis, ctx);
+
+    expect(result.contradicting.length).toBeGreaterThanOrEqual(1);
+    expect(result.contradicting.some((e) => e.note.includes('db-credentials'))).toBe(true);
+  });
+
+  it('contradicting evidence note is descriptive (mentions present, exists, or actually)', () => {
+    const ctx = makeContext({
+      events: [
+        makeEvent('FailedMount', "secret 'api-token' not found", 'app-pod'),
+      ],
+      resources: [makeResource('Secret', 'api-token')],
+    });
+    const hypothesis = makeHypothesis({ category: 'missing-secret' });
+    const result = collectFalsifyingEvidence(hypothesis, ctx);
+
+    const combined = result.contradicting.map((e) => e.note).join(' ').toLowerCase();
+    expect(combined).toMatch(/present|exist|actually|found/);
+  });
+
+  it('returns no contradicting evidence when the named Secret is absent', () => {
+    const ctx = makeContext({
+      events: [
+        makeEvent(
+          'FailedMount',
+          "MountVolume.SetUp failed: secret 'db-credentials' not found",
+          'app-pod',
+        ),
+      ],
+      // No Secret resource → should find nothing to falsify with
+    });
+    const hypothesis = makeHypothesis({ category: 'missing-secret' });
+    const result = collectFalsifyingEvidence(hypothesis, ctx);
+
+    // Secret is genuinely absent — no contradicting evidence
+    expect(
+      result.contradicting.some((e) => e.note.includes('db-credentials')),
+    ).toBe(false);
+  });
+
+  it('extracts secret name from a log line and finds it in resources', () => {
+    const ctx = makeContext({
+      logs: [
+        makeLogFile('logs/default/app-pod/app/current.log', [
+          "ERROR failed to mount: secret 'app-tls' not found",
+        ]),
+      ],
+      resources: [makeResource('Secret', 'app-tls')],
+    });
+    const hypothesis = makeHypothesis({ category: 'missing-secret' });
+    const result = collectFalsifyingEvidence(hypothesis, ctx);
+
+    expect(result.contradicting.some((e) => e.note.includes('app-tls'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// image-pull-failure (registry auth) — searches for successful pulls from same registry
+// ---------------------------------------------------------------------------
+
+describe('collectFalsifyingEvidence — image-pull-failure: searches for successful pulls from same registry', () => {
+  it('adds contradicting evidence when a successful pull from the same registry exists in events', () => {
+    const ctx = makeContext({
+      events: [
+        makeEvent(
+          'Failed',
+          'Failed to pull image "myregistry.io/myapp:v1.0": unauthorized: authentication required',
+          'app-pod',
+        ),
+        makeEvent(
+          'Pulled',
+          'Successfully pulled image "myregistry.io/sidecar:v2.0"',
+          'sidecar-pod',
+        ),
+      ],
+    });
+    const hypothesis = makeHypothesis({
+      category: 'image-pull-failure',
+      rootCause: 'Registry authentication failed for myregistry.io/myapp:v1.0',
+    });
+    const result = collectFalsifyingEvidence(hypothesis, ctx);
+
+    expect(result.contradicting.length).toBeGreaterThanOrEqual(1);
+    const combined = result.contradicting.map((e) => e.note).join(' ');
+    expect(combined).toMatch(/myregistry\.io/);
+  });
+
+  it('contradicting evidence note mentions the registry and successful pull', () => {
+    const ctx = makeContext({
+      events: [
+        makeEvent('Failed', 'Failed to pull image "gcr.io/myproject/app:v3": access denied', 'app-pod'),
+        makeEvent('Pulled', 'Successfully pulled image "gcr.io/myproject/sidecar:latest"', 'other-pod'),
+      ],
+    });
+    const hypothesis = makeHypothesis({
+      category: 'image-pull-failure',
+      rootCause: 'Registry auth failure for gcr.io/myproject',
+    });
+    const result = collectFalsifyingEvidence(hypothesis, ctx);
+
+    const combined = result.contradicting.map((e) => e.note).join(' ').toLowerCase();
+    expect(combined).toMatch(/gcr\.io/);
+    expect(combined).toMatch(/success|pulled/);
+  });
+
+  it('does NOT add contradicting evidence when no successful pull from the same registry exists', () => {
+    const ctx = makeContext({
+      events: [
+        makeEvent(
+          'Failed',
+          'Failed to pull image "myregistry.io/myapp:v1.0": unauthorized',
+          'app-pod',
+        ),
+        // Different registry in the successful pull
+        makeEvent(
+          'Pulled',
+          'Successfully pulled image "docker.io/library/nginx:latest"',
+          'nginx-pod',
+        ),
+      ],
+    });
+    const hypothesis = makeHypothesis({
+      category: 'image-pull-failure',
+      rootCause: 'Registry auth failure for myregistry.io',
+    });
+    const result = collectFalsifyingEvidence(hypothesis, ctx);
+
+    expect(
+      result.contradicting.some((e) => e.note.includes('myregistry.io')),
+    ).toBe(false);
+  });
+
+  it('also finds successful pulls from registry mentioned in logs', () => {
+    const ctx = makeContext({
+      events: [
+        makeEvent('Failed', 'Failed to pull image "private.registry.com/app:v1": auth failed', 'app-pod'),
+      ],
+      logs: [
+        makeLogFile('logs/default/app-pod/app/current.log', [
+          'INFO Successfully pulled image "private.registry.com/init-container:v1"',
+        ]),
+      ],
+    });
+    const hypothesis = makeHypothesis({
+      category: 'image-pull-failure',
+      rootCause: 'Auth failure for private.registry.com',
+    });
+    const result = collectFalsifyingEvidence(hypothesis, ctx);
+
+    expect(result.contradicting.some((e) => e.note.toLowerCase().includes('private.registry.com'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// collectFalsifyingEvidence — returns empty assessment for unknown categories
+// ---------------------------------------------------------------------------
+
+describe('collectFalsifyingEvidence — unknown category returns empty assessment', () => {
+  it('returns empty contradicting for a category without active falsification', () => {
+    const ctx = makeContext({
+      logs: [
+        makeLogFile('logs/default/app-pod/app/current.log', ['INFO all good']),
+      ],
+    });
+    const hypothesis = makeHypothesis({ category: 'config-error' });
+    const result = collectFalsifyingEvidence(hypothesis, ctx);
+
+    // config-error has no dedicated active falsification — should be empty
+    expect(result.supporting).toHaveLength(0);
+    expect(result.contradicting).toHaveLength(0);
+    expect(result.missingDecisive).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Wiring: collectEvidenceForHypothesis merges falsifying evidence
+// ---------------------------------------------------------------------------
+
+describe('collectEvidenceForHypothesis — wiring of collectFalsifyingEvidence into contradicting', () => {
+  it('dns-failure: hostname-specific falsification appears in final contradicting array', () => {
+    const ctx = makeContext({
+      logs: [
+        makeLogFile('logs/default/app-pod/app/current.log', [
+          'ERROR no such host: my-db',
+          'INFO successfully connected to my-db',
+        ]),
+      ],
+    });
+    const hypothesis = makeHypothesis({ category: 'dns-failure' });
+    const assessment = collectEvidenceForHypothesis(hypothesis, ctx);
+
+    const combined = assessment.contradicting.map((e) => e.note).join(' ');
+    expect(combined).toMatch(/my-db/);
+  });
+
+  it('missing-secret: named Secret presence appears in contradicting when it exists', () => {
+    const ctx = makeContext({
+      events: [
+        makeEvent('FailedMount', "secret 'api-key' not found", 'app-pod'),
+      ],
+      resources: [makeResource('Secret', 'api-key')],
+    });
+    const hypothesis = makeHypothesis({ category: 'missing-secret' });
+    const assessment = collectEvidenceForHypothesis(hypothesis, ctx);
+
+    const combined = assessment.contradicting.map((e) => e.note).join(' ');
+    expect(combined).toMatch(/api-key/);
+  });
+
+  it('image-pull-failure: successful registry pull appears in contradicting', () => {
+    const ctx = makeContext({
+      events: [
+        makeEvent('Failed', 'Failed to pull image "myregistry.io/app:v1": unauthorized', 'app-pod'),
+        makeEvent('Pulled', 'Successfully pulled image "myregistry.io/other:v2"', 'other-pod'),
+      ],
+    });
+    const hypothesis = makeHypothesis({
+      category: 'image-pull-failure',
+      rootCause: 'Registry auth failure for myregistry.io',
+    });
+    const assessment = collectEvidenceForHypothesis(hypothesis, ctx);
+
+    const combined = assessment.contradicting.map((e) => e.note).join(' ');
+    expect(combined).toMatch(/myregistry\.io/);
   });
 });

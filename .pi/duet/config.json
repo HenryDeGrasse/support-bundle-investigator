@@ -25,8 +25,8 @@
     "thinking": "high"
   },
   "reviewer": {
-    "label": "GPT-5.4",
-    "model": "openai-codex/gpt-5.4",
+    "label": "Claude Opus 4.6",
+    "model": "anthropic/claude-opus-4-6",
     "thinking": "high"
   },
   "executionMode": "relay",

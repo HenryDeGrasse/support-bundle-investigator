@@ -17,6 +17,7 @@ import OpenAI from 'openai';
 import type { AIConfig } from './config.js';
 import type { AIFinding } from './schemas.js';
 import { validateAIFindings } from './schemas.js';
+import type { HydeLLMClient } from './hyde.js';
 
 // ---------------------------------------------------------------------------
 // AIFindingResponse
@@ -43,17 +44,46 @@ export interface AIFindingResponse {
 /**
  * Wraps the OpenAI chat completions API for structured K8s investigation.
  *
+ * Implements {@link HydeLLMClient} so it can be passed directly to
+ * `generateHypotheticalDocument` without any adapter.
+ *
  * Instantiate with a loaded {@link AIConfig} (must have `enabled: true` and a
  * valid `apiKey`). If the config is disabled, callers should not construct
  * this class — use the `isAIEnabled` guard from `config.ts` first.
  */
-export class LLMClient {
+export class LLMClient implements HydeLLMClient {
   private readonly client: OpenAI;
   private readonly model: string;
 
   constructor(config: AIConfig) {
     this.client = new OpenAI({ apiKey: config.apiKey });
     this.model = config.model;
+  }
+
+  /**
+   * Generates free-form text given a system and user prompt.
+   *
+   * Unlike `investigateSeed`, this method does NOT use JSON mode — the model
+   * response is returned as a plain string.
+   *
+   * **Does not swallow errors** — throws on network/API failure so that
+   * callers (e.g. `generateHypotheticalDocument`) can detect failure and apply
+   * their own fallback logic.
+   *
+   * @param systemPrompt - System-level context for the generation task.
+   * @param userPrompt   - User-facing prompt.
+   * @returns Generated text string.  Empty string if the model returns no content.
+   */
+  async generateText(systemPrompt: string, userPrompt: string): Promise<string> {
+    const response = await this.client.chat.completions.create({
+      model: this.model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+    });
+
+    return response.choices[0]?.message?.content ?? '';
   }
 
   /**

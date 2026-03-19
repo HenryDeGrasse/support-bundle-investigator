@@ -1,6 +1,6 @@
 import React from 'react';
 import { Box } from 'ink';
-import type { Finding } from '../../types/index.js';
+import type { Finding, FindingTreeNode } from '../../types/index.js';
 import type { SpecRecommendation } from '../../reporters/index.js';
 import type { DashboardState } from '../dashboard-state.js';
 import { StatusBarHeader, StatusBarFooter } from './StatusBar.js';
@@ -24,6 +24,11 @@ export interface DashboardLayoutProps {
   height?: number;
   /** Terminal width in columns (for fullscreen layout). */
   width?: number;
+  /**
+   * Optional causal tree built from the pipeline's finding tree.
+   * Used to show causal chain indicators in the findings pane.
+   */
+  findingTree?: FindingTreeNode[];
 }
 
 // ---------------------------------------------------------------------------
@@ -56,8 +61,18 @@ export function DashboardLayout({
   state,
   height,
   width,
+  findingTree,
 }: DashboardLayoutProps): React.ReactElement {
   const selectedFinding = findings[state.selectedIndex] ?? null;
+
+  // Compute the set of finding IDs that are causal effects (have a parent).
+  // These are shown with a '→' chain indicator in the findings pane.
+  const causalChildIds = React.useMemo<ReadonlySet<string>>(() => {
+    if (!findingTree || findingTree.length === 0) return new Set<string>();
+    return new Set(
+      findingTree.filter((n) => n.parent !== undefined).map((n) => n.finding.id),
+    );
+  }, [findingTree]);
 
   // Reserve 2 rows for header + footer status bars.
   // Remaining rows go to the main content area.
@@ -90,6 +105,7 @@ export function DashboardLayout({
             findings={findings}
             selectedIndex={state.selectedIndex}
             focused={state.activePane === 'findings'}
+            causalChildIds={causalChildIds}
           />
         </Box>
 

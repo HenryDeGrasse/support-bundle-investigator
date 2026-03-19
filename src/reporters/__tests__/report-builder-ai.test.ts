@@ -119,6 +119,7 @@ function makePipelineResult(findings: Finding[] = []): PipelineResult {
     events: [],
     logs: [],
     findings,
+    findingTree: [],
     graph: {
       nodes: new Map(),
       edges: [],

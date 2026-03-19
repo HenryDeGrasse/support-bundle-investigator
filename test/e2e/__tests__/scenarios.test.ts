@@ -559,7 +559,13 @@ describe('E2E — Chunker', () => {
     expect(pod).toBeDefined();
 
     const chunk = chunkResource(pod!, 'test/path/pod.yaml');
-    expect(chunk.content).toContain('"kind": "Pod"');
+    // After step 3.3, chunk.content is the human-readable summarizeResource
+    // output (e.g. "Pod: <name> (namespace: <ns>)\nContainers: ..."), not raw
+    // JSON.  The raw JSON is preserved in metadata.rawContent.
+    expect(chunk.content).toContain('Pod:');
+    expect(chunk.content).toContain(pod!.metadata.name);
+    // Raw JSON is stashed in metadata for callers that need the full spec
+    expect(chunk.metadata?.['rawContent']).toContain('"kind": "Pod"');
     expect(chunk.metadata?.['kind']).toBe('Pod');
     expect(chunk.metadata?.['name']).toBe(pod!.metadata.name);
   });

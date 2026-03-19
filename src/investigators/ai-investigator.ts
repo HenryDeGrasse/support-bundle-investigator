@@ -21,12 +21,16 @@ import type { IndexedChunk } from '../ai/chunk-indexer.js';
 import type { ResourceRelationshipGraph } from '../graph/resource-graph.js';
 import type { LexicalSearchIndex } from '../ai/lexical-search.js';
 import type { AIFinding, AIFindingEvidence } from '../ai/schemas.js';
-import type { EmbeddingClient } from '../ai/embeddings.js';
+import type { EmbeddingClientInterface } from '../ai/embeddings.js';
 import type { VectorStore } from '../ai/vector-store.js';
+import type { DiagnosticGraph } from '../graph/diagnostic-graph.js';
 import { validateAIFindings } from '../ai/schemas.js';
 import { getRelatedChunks } from '../graph/resource-graph.js';
 import type { GraphScoredChunk } from '../graph/resource-graph.js';
+import { traverseForChunks, RETRIEVAL_EDGE_TYPES, isDiagnosticGraph } from '../graph/traversal.js';
 import { buildInvestigationPrompt } from '../ai/prompts.js';
+import { estimateTokens } from '../ai/chunk-indexer.js';
+import { generateHypotheticalDocument } from '../ai/hyde.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -54,6 +58,19 @@ const LEXICAL_TOP_K = 10;
  */
 const SEMANTIC_TOP_K = 5;
 
+/**
+ * Default token budget for merged context sent to the LLM per seed call.
+ *
+ * Set to ~80 % of a 128 k-token context window (128 × 1 024 × 0.8 ≈ 104 k).
+ * Lower-priority chunks (those ranked later by RRF) fall back to their
+ * {@link IndexedChunk.summary} content once the cumulative estimated token
+ * count would exceed this limit.
+ *
+ * Exported so callers can override the budget for testing or for models with
+ * different context window sizes.
+ */
+export const DEFAULT_TOKEN_BUDGET = 100_000;
+
 // ---------------------------------------------------------------------------
 // AIInvestigatorDeps
 // ---------------------------------------------------------------------------
@@ -71,8 +88,14 @@ export interface AIInvestigatorDeps {
   llmClient: LLMClient;
   /** Pre-built flat chunk index from `buildChunkIndex`. */
   chunkIndex: IndexedChunk[];
-  /** Pre-built K8s resource relationship graph from `buildResourceGraph`. */
+  /** Pre-built K8s resource relationship graph (backward-compat adapter). */
   resourceGraph: ResourceRelationshipGraph;
+  /**
+   * Unified DiagnosticGraph with label-selector, service-selector, temporal,
+   * and causal edges. When present, graph retrieval uses the richer
+   * `traverseForChunks` instead of the legacy `getRelatedChunks` BFS.
+   */
+  diagnosticGraph?: DiagnosticGraph;
   /** Pre-built lexical inverted index from `LexicalSearchIndex.build`. */
   lexicalIndex: LexicalSearchIndex;
   /**
@@ -85,7 +108,7 @@ export interface AIInvestigatorDeps {
    * If absent (or if embedding fails), investigation continues without semantic
    * expansion.
    */
-  embeddingClient?: EmbeddingClient;
+  embeddingClient?: EmbeddingClientInterface;
   /**
    * Optional pre-built vector store populated with chunk embeddings.
    *
@@ -117,6 +140,58 @@ export interface AIInvestigatorDeps {
 
 interface Counter {
   value: number;
+}
+
+// ---------------------------------------------------------------------------
+// DiagnosticGraph seed → node ID resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolves a seed to one or more starting node IDs in the DiagnosticGraph.
+ *
+ * Strategy:
+ * 1. Parse `Pod/<ns>/<name>` components from the seed source (from seed.id or
+ *    hypothesis text) to get concrete K8s node IDs.
+ * 2. Fall back to identifier extraction from the hypothesis text: look for
+ *    known resource names that appear as graph nodes.
+ * 3. If nothing matches, return an empty array (caller falls back to BFS path).
+ *
+ * Node ID format in DiagnosticGraph: `{Kind}:{namespace}/{name}`
+ */
+function resolveSeedStartNodes(
+  seed: InvestigationSeed,
+  graph: DiagnosticGraph,
+): string[] {
+  const nodeIds: string[] = [];
+
+  // Extract Pod/namespace/name patterns from the seed source or hypothesis
+  const combinedText = `${seed.source} ${seed.hypothesis}`;
+
+  // Pattern: Pod/<namespace>/<name> from seed.source (set by seed generator)
+  const podPattern = /Pod\/([^/\s]+)\/([^/\s,]+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = podPattern.exec(combinedText)) !== null) {
+    const ns = match[1]!;
+    const name = match[2]!;
+    const nodeId = `Pod:${ns}/${name}`;
+    if (graph.getNode(nodeId) && !nodeIds.includes(nodeId)) nodeIds.push(nodeId);
+  }
+
+  // Pattern: extract bare resource names from seed hypothesis that match graph node names
+  if (nodeIds.length === 0) {
+    const hypothesis = seed.hypothesis.toLowerCase();
+    for (const [id, node] of graph.nodes) {
+      if (node.nodeType !== 'resource' && node.nodeType !== 'workload-group') continue;
+      const data = node.data as { name?: string };
+      const name = (data.name ?? '').toLowerCase();
+      if (name.length > 2 && hypothesis.includes(name)) {
+        if (!nodeIds.includes(id)) nodeIds.push(id);
+        if (nodeIds.length >= 3) break; // cap to avoid over-broad traversal
+      }
+    }
+  }
+
+  return nodeIds;
 }
 
 function nextFindingId(category: string, counter: Counter): string {
@@ -158,7 +233,8 @@ const RRF_K = 60;
 
 /**
  * Merges multiple ranked chunk lists into a single deduplicated list using
- * Reciprocal Rank Fusion (RRF).
+ * Reciprocal Rank Fusion (RRF), then applies a configurable token budget so
+ * that the total estimated tokens sent to the LLM stays within model limits.
  *
  * Algorithm:
  * 1. For every chunk in every retrieval list, accumulate an RRF score:
@@ -168,12 +244,28 @@ const RRF_K = 60;
  * 3. Sort by descending RRF score. Ties are broken by chunk ID (lexicographic)
  *    for determinism.
  * 4. Cap the merged list at {@link MAX_CHUNKS_PER_SEED}.
+ * 5. **Token budget pass** — iterate the capped list in priority order
+ *    (highest RRF score first). Track cumulative estimated tokens via
+ *    `estimateTokens(chunk.content)` (≈ `content.length / 4`). When the next
+ *    chunk's full content would push the running total above `tokenBudget`,
+ *    return a copy of that chunk with `content` replaced by `chunk.summary`
+ *    instead. The original chunk object is never mutated.
  *
  * @param retrievalLists - One entry per retrieval system, each containing a
  *   ranked `chunks` array (already sorted best-first).
- * @returns Merged, deduplicated chunk array capped at {@link MAX_CHUNKS_PER_SEED}.
+ * @param tokenBudget - Maximum estimated tokens to include as full content.
+ *   Chunks that would exceed this limit fall back to their summary.
+ *   Defaults to {@link DEFAULT_TOKEN_BUDGET} (~100 k tokens, ≈ 80% of 128 k).
+ * @returns Merged, deduplicated chunk array capped at {@link MAX_CHUNKS_PER_SEED},
+ *   with lower-priority chunks switched to summary-only content when the
+ *   budget is exceeded.
  */
-export function mergeChunks(retrievalLists: RetrievalList[]): IndexedChunk[] {
+export function mergeChunks(
+  retrievalLists: RetrievalList[],
+  tokenBudget = DEFAULT_TOKEN_BUDGET,
+): IndexedChunk[] {
+  // ── Step 1–4: RRF scoring, dedup, sort, cap ───────────────────────────────
+
   // Accumulate RRF scores: chunkId → { chunk, rrfScore }
   const scoreMap = new Map<string, { chunk: IndexedChunk; rrfScore: number }>();
 
@@ -198,7 +290,193 @@ export function mergeChunks(retrievalLists: RetrievalList[]): IndexedChunk[] {
     return a.chunk.id.localeCompare(b.chunk.id);
   });
 
-  return sorted.slice(0, MAX_CHUNKS_PER_SEED).map(({ chunk }) => chunk);
+  const capped = sorted.slice(0, MAX_CHUNKS_PER_SEED);
+
+  // ── Step 5: Token budget pass ─────────────────────────────────────────────
+  // Iterate in priority order (highest RRF first). High-priority chunks get
+  // full content; once the cumulative token count would exceed the budget,
+  // switch remaining chunks to their summary (cheaper, still informative).
+
+  let usedTokens = 0;
+  return capped.map(({ chunk }) => {
+    const contentTokens = estimateTokens(chunk.content);
+    if (usedTokens + contentTokens <= tokenBudget) {
+      usedTokens += contentTokens;
+      return chunk; // full content fits — return original (no copy needed)
+    }
+    // Budget exceeded: return a shallow copy with content replaced by summary.
+    // The original chunk object is NOT mutated.
+    return { ...chunk, content: chunk.summary };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Seed deduplication — computeChunkOverlap and deduplicateSeeds
+// ---------------------------------------------------------------------------
+
+/**
+ * Retrieves the set of chunk IDs that a given seed would retrieve using the
+ * graph traversal and lexical search pipelines.
+ *
+ * Used internally by {@link computeChunkOverlap} to avoid duplicating the
+ * retrieval logic between overlap computation and actual investigation.
+ *
+ * @param seed          - The seed whose chunk set to compute.
+ * @param chunkIndex    - Pre-built flat chunk index.
+ * @param resourceGraph - Pre-built K8s resource relationship graph.
+ * @param lexicalIndex  - Pre-built lexical inverted index.
+ * @returns Set of chunk IDs retrieved by graph traversal + lexical search.
+ */
+function getChunkIdsForSeed(
+  seed: InvestigationSeed,
+  chunkIndex: IndexedChunk[],
+  resourceGraph: ResourceRelationshipGraph,
+  lexicalIndex: AIInvestigatorDeps['lexicalIndex'],
+): Set<string> {
+  const graphScoredChunks = getRelatedChunks(resourceGraph, seed, chunkIndex);
+  const lexicalResults = lexicalIndex.search(seed.hypothesis, LEXICAL_TOP_K);
+
+  const ids = new Set<string>();
+  for (const { chunk } of graphScoredChunks) {
+    ids.add(chunk.id);
+  }
+  for (const { chunk } of lexicalResults) {
+    ids.add(chunk.id);
+  }
+  return ids;
+}
+
+/**
+ * Computes the Jaccard similarity of the chunk sets retrieved for two seeds.
+ *
+ * Both seeds' chunk sets are computed using graph traversal + lexical search
+ * (the same retrieval pipeline used in actual investigation). The Jaccard
+ * coefficient `|A ∩ B| / |A ∪ B|` measures how much evidence overlap the
+ * two seeds share.
+ *
+ * Returns 0 when both seeds retrieve no chunks (empty ∩ empty).
+ *
+ * @param seedA         - First investigation seed.
+ * @param seedB         - Second investigation seed.
+ * @param chunkIndex    - Pre-built flat chunk index.
+ * @param resourceGraph - Pre-built K8s resource relationship graph.
+ * @param lexicalIndex  - Pre-built lexical inverted index.
+ * @returns Jaccard similarity in [0, 1]. 1.0 = identical chunk sets.
+ */
+export function computeChunkOverlap(
+  seedA: InvestigationSeed,
+  seedB: InvestigationSeed,
+  chunkIndex: IndexedChunk[],
+  resourceGraph: ResourceRelationshipGraph,
+  lexicalIndex: AIInvestigatorDeps['lexicalIndex'],
+): number {
+  const setA = getChunkIdsForSeed(seedA, chunkIndex, resourceGraph, lexicalIndex);
+  const setB = getChunkIdsForSeed(seedB, chunkIndex, resourceGraph, lexicalIndex);
+
+  // Both empty: no evidence overlap (return 0, not NaN from 0/0)
+  if (setA.size === 0 && setB.size === 0) return 0;
+
+  let intersectionCount = 0;
+  for (const id of setA) {
+    if (setB.has(id)) intersectionCount++;
+  }
+
+  const unionCount = setA.size + setB.size - intersectionCount;
+  return intersectionCount / unionCount;
+}
+
+/**
+ * Constructs a merged {@link InvestigationSeed} from two overlapping seeds.
+ *
+ * The merged seed:
+ * - Gets a new `seed:merged:{counter}` id.
+ * - Combines both hypotheses so the LLM sees both in a single call.
+ * - Inherits category and source from the first (higher-priority) seed.
+ * - Uses the maximum priority of the two input seeds.
+ *
+ * @param seedA    - First seed (expected to be the higher-priority one).
+ * @param seedB    - Second seed.
+ * @param counter  - Unique counter suffix for the merged seed id.
+ * @returns A new merged seed ready for investigation.
+ */
+function createMergedSeed(
+  seedA: InvestigationSeed,
+  seedB: InvestigationSeed,
+  counter: number,
+): InvestigationSeed {
+  return {
+    id: `seed:merged:${counter}`,
+    // Combine both hypotheses so the LLM investigates them in a single call
+    hypothesis: `${seedA.hypothesis}\n\nAlso investigate: ${seedB.hypothesis}`,
+    source: seedA.source,
+    category: seedA.category,
+    priority: Math.max(seedA.priority, seedB.priority),
+  };
+}
+
+/**
+ * Deduplicates a list of investigation seeds by merging pairs whose retrieved
+ * chunk sets overlap above a similarity threshold.
+ *
+ * Algorithm (greedy pairwise merge):
+ * 1. Scan all `(i, j)` pairs in the current seed list.
+ * 2. For the first pair where `computeChunkOverlap > threshold`, replace
+ *    both seeds with a single merged seed (containing both hypotheses).
+ * 3. Repeat until no pair exceeds the threshold.
+ *
+ * Seeds with >80% chunk overlap (default) will receive identical context in
+ * the LLM prompt, making two separate calls near-redundant. Merging them into
+ * a single multi-hypothesis call halves the LLM cost for those seeds without
+ * losing diagnostic coverage.
+ *
+ * The merge is greedy and iterative — it handles transitive overlaps naturally
+ * (A∩B>threshold then B∩C>threshold after A+B are merged).
+ *
+ * @param seeds         - Seeds to deduplicate (order preserved for non-merged seeds).
+ * @param chunkIndex    - Pre-built flat chunk index.
+ * @param resourceGraph - Pre-built K8s resource relationship graph.
+ * @param lexicalIndex  - Pre-built lexical inverted index.
+ * @param threshold     - Jaccard similarity threshold above which two seeds are
+ *                        merged. Default 0.8 (80%). Comparison is strict: `>`.
+ * @returns Deduplicated seed list. Length ≤ input length.
+ */
+export function deduplicateSeeds(
+  seeds: InvestigationSeed[],
+  chunkIndex: IndexedChunk[],
+  resourceGraph: ResourceRelationshipGraph,
+  lexicalIndex: AIInvestigatorDeps['lexicalIndex'],
+  threshold = 0.8,
+): InvestigationSeed[] {
+  if (seeds.length <= 1) return seeds;
+
+  const result = [...seeds];
+  let mergeCounter = 0;
+  let changed = true;
+
+  while (changed) {
+    changed = false;
+    // Use labelled break to restart the outer loop after a merge
+    outer: for (let i = 0; i < result.length; i++) {
+      for (let j = i + 1; j < result.length; j++) {
+        const overlap = computeChunkOverlap(
+          result[i]!,
+          result[j]!,
+          chunkIndex,
+          resourceGraph,
+          lexicalIndex,
+        );
+        if (overlap > threshold) {
+          const merged = createMergedSeed(result[i]!, result[j]!, mergeCounter++);
+          result.splice(j, 1); // remove j first (higher index) to preserve i
+          result[i] = merged;
+          changed = true;
+          break outer;
+        }
+      }
+    }
+  }
+
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -370,30 +648,73 @@ export async function investigateWithAI(
   deps: AIInvestigatorDeps,
   maxSeeds = DEFAULT_MAX_SEEDS,
 ): Promise<InvestigatorResult> {
-  const { llmClient, chunkIndex, resourceGraph, lexicalIndex, embeddingClient, vectorStore, verbose = false, onSeedProgress } = deps;
+  const { llmClient, chunkIndex, resourceGraph, diagnosticGraph, lexicalIndex, embeddingClient, vectorStore, verbose = false, onSeedProgress } = deps;
 
   // Sort seeds by priority descending and cap at maxSeeds
   const prioritisedSeeds = [...seeds]
     .sort((a, b) => b.priority - a.priority)
     .slice(0, maxSeeds);
 
+  // Deduplicate seeds with high chunk overlap to reduce redundant LLM calls.
+  // Seeds sharing >80% of their retrieved chunks receive nearly identical context
+  // — merging them into a single multi-hypothesis call halves cost without
+  // losing diagnostic coverage.
+  const deduplicatedSeeds = deduplicateSeeds(
+    prioritisedSeeds,
+    chunkIndex,
+    resourceGraph,
+    lexicalIndex,
+  );
+
   const allFindings: Finding[] = [];
   const allEdges: GraphEdge[] = [];
   const counter: Counter = { value: 0 };
-  const seedTotal = prioritisedSeeds.length;
+  const seedTotal = deduplicatedSeeds.length;
 
-  for (let seedIdx = 0; seedIdx < prioritisedSeeds.length; seedIdx++) {
-    const seed = prioritisedSeeds[seedIdx]!;
+  for (let seedIdx = 0; seedIdx < deduplicatedSeeds.length; seedIdx++) {
+    const seed = deduplicatedSeeds[seedIdx]!;
     try {
       // Emit per-seed progress for TUI
       onSeedProgress?.(seedIdx + 1, seedTotal, seed.hypothesis);
       // ── Step 1: Graph retrieval (deterministic precision floor) ───────────
-      // Returns GraphScoredChunk[] sorted by hop-distance score (1.0 / 0.7 / 0.4)
-      const graphScoredChunks: GraphScoredChunk[] = getRelatedChunks(resourceGraph, seed, chunkIndex);
-      // Sort by score descending so highest-precision chunks fill context first
-      const graphSorted = graphScoredChunks.sort((a, b) => b.score - a.score);
-      const graphChunks = graphSorted.map((sc) => sc.chunk);
-      const graphScores = graphSorted.map((sc) => sc.score);
+      // Use DiagnosticGraph typed traversal when available (label-selector,
+      // service-selector, temporal, and causal edges included).
+      // Fall back to legacy ResourceRelationshipGraph BFS otherwise.
+      let graphChunks: IndexedChunk[];
+      let graphScores: number[];
+
+      if (diagnosticGraph !== undefined && isDiagnosticGraph(diagnosticGraph)) {
+        // Derive starting node IDs from the seed's affected identifiers
+        const startNodeIds = resolveSeedStartNodes(seed, diagnosticGraph);
+        const traversalResults: GraphScoredChunk[] = startNodeIds.flatMap((startId) =>
+          traverseForChunks(
+            diagnosticGraph,
+            {
+              start: startId,
+              direction: 'both',
+              edgeTypes: RETRIEVAL_EDGE_TYPES,
+              maxDepth: 3,
+              scoreDecay: 0.7,
+            },
+            chunkIndex,
+          ).map((r) => ({ chunk: r.chunk, score: r.score })),
+        );
+        // Deduplicate by chunk id, keeping highest score
+        const bestByChunk = new Map<string, GraphScoredChunk>();
+        for (const r of traversalResults) {
+          const existing = bestByChunk.get(r.chunk.id);
+          if (!existing || r.score > existing.score) bestByChunk.set(r.chunk.id, r);
+        }
+        const sorted = [...bestByChunk.values()].sort((a, b) => b.score - a.score);
+        graphChunks = sorted.map((r) => r.chunk);
+        graphScores = sorted.map((r) => r.score);
+      } else {
+        // Legacy path: BFS over ResourceRelationshipGraph
+        const graphScoredChunks: GraphScoredChunk[] = getRelatedChunks(resourceGraph, seed, chunkIndex);
+        const graphSorted = graphScoredChunks.sort((a, b) => b.score - a.score);
+        graphChunks = graphSorted.map((sc) => sc.chunk);
+        graphScores = graphSorted.map((sc) => sc.score);
+      }
 
       // ── Step 2: Lexical retrieval (supplementary evidence) ────────────────
       const lexicalResults = lexicalIndex.search(seed.hypothesis, LEXICAL_TOP_K);
@@ -401,11 +722,17 @@ export async function investigateWithAI(
       const lexicalScores = lexicalResults.map((r) => r.score);
 
       // ── Step 2b: Semantic retrieval (expansion layer, lower priority) ─────
+      // Uses HyDE: generate a hypothetical evidence document from the seed
+      // hypothesis before embedding, so the query vector is closer in semantic
+      // space to the real evidence chunks.  Falls back to the raw hypothesis
+      // if HyDE generation fails (network error, empty response, etc.).
       let semanticChunks: IndexedChunk[] = [];
       let semanticScores: number[] = [];
       if (embeddingClient !== undefined && vectorStore !== undefined) {
         try {
-          const queryEmbedding = await embeddingClient.embedSingle(seed.hypothesis);
+          // HyDE: embed the hypothetical document instead of the raw hypothesis
+          const queryText = await generateHypotheticalDocument(seed.hypothesis, llmClient);
+          const queryEmbedding = await embeddingClient.embedSingle(queryText);
           if (queryEmbedding.length > 0) {
             const semanticResults = vectorStore.query(queryEmbedding, SEMANTIC_TOP_K);
             semanticChunks = semanticResults.map((r) => r.chunk);

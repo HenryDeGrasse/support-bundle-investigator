@@ -961,3 +961,222 @@ describe('generateSpecRecommendations — hypothesis gaps: mixed hypothesis and 
     expect(disambiguationRec).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Section 10: AI findings gap recommendations (7.9)
+// ---------------------------------------------------------------------------
+
+describe('generateSpecRecommendations — AI findings: CoreDNS logs', () => {
+  it('recommends CoreDNS log collector when an AI finding has missing CoreDNS logs', () => {
+    const finding = makeFinding({
+      id: 'finding:ai:dns-failure:1',
+      title: 'DNS resolution failure causing pod restarts',
+      missingEvidence: [
+        'CoreDNS or kube-dns pod logs would decisively confirm DNS resolution failures cluster-wide',
+      ],
+    });
+    const result = generateSpecRecommendations([finding], makeProfile());
+
+    const coreDnsRec = result.find(
+      (r) => r.type === 'collector' && r.description.toLowerCase().includes('coredns'),
+    );
+    expect(coreDnsRec).toBeDefined();
+  });
+
+  it('CoreDNS recommendation rationale references the AI finding title', () => {
+    const finding = makeFinding({
+      id: 'finding:ai:dns-failure:1',
+      title: 'DNS resolution failure for db.internal service',
+      missingEvidence: [
+        'CoreDNS or kube-dns pod logs would decisively confirm DNS resolution failures cluster-wide',
+      ],
+    });
+    const result = generateSpecRecommendations([finding], makeProfile());
+
+    const coreDnsRec = result.find(
+      (r) => r.type === 'collector' && r.description.toLowerCase().includes('coredns'),
+    );
+    expect(coreDnsRec?.rationale).toContain('DNS resolution failure for db.internal service');
+  });
+});
+
+describe('generateSpecRecommendations — AI findings: NetworkPolicy', () => {
+  it('recommends NetworkPolicy collector when an AI finding has missing network policy data', () => {
+    const finding = makeFinding({
+      id: 'finding:ai:connectivity-failure:1',
+      title: 'Network connectivity blocked between api and db',
+      missingEvidence: [
+        'NetworkPolicy resources and Endpoints data would confirm whether the network path is blocked',
+      ],
+    });
+    const result = generateSpecRecommendations([finding], makeProfile());
+
+    const networkPolicyRec = result.find(
+      (r) => r.type === 'collector' && r.description.toLowerCase().includes('networkpolic'),
+    );
+    expect(networkPolicyRec).toBeDefined();
+  });
+
+  it('NetworkPolicy recommendation rationale references the AI finding title', () => {
+    const finding = makeFinding({
+      id: 'finding:ai:connectivity-failure:1',
+      title: 'Connectivity failure from api-pod to db-service (AI analysis)',
+      missingEvidence: [
+        'NetworkPolicy resources and Endpoints data would confirm whether the network path is blocked',
+      ],
+    });
+    const result = generateSpecRecommendations([finding], makeProfile());
+
+    const networkPolicyRec = result.find(
+      (r) => r.type === 'collector' && r.description.toLowerCase().includes('networkpolic'),
+    );
+    expect(networkPolicyRec?.rationale).toContain(
+      'Connectivity failure from api-pod to db-service (AI analysis)',
+    );
+  });
+});
+
+describe('generateSpecRecommendations — AI findings: missingEvidence generates recommendations', () => {
+  it('AI findings with missingEvidence entries generate spec recommendations', () => {
+    const finding = makeFinding({
+      id: 'finding:ai:root-cause:1',
+      title: 'Database connection pool exhaustion',
+      missingEvidence: [
+        'CoreDNS or kube-dns pod logs would decisively confirm DNS resolution failures cluster-wide',
+      ],
+    });
+    const result = generateSpecRecommendations([finding], makeProfile());
+
+    // Should produce at least one recommendation from the AI finding's missing evidence
+    expect(result.length).toBeGreaterThan(0);
+  });
+
+  it('non-AI non-hypothesis findings with CoreDNS missing evidence do NOT trigger CoreDNS collector', () => {
+    // Existing heuristic findings (finding:log:*, finding:k8s:*, etc.) should
+    // still NOT trigger the CoreDNS gap recommendation — only finding:hypothesis:*
+    // and finding:ai:* are eligible.
+    const finding = makeFinding({
+      id: 'finding:log:dns:1',
+      title: 'DNS Resolution Failures in pods/app.log',
+      missingEvidence: [
+        'CoreDNS or kube-dns pod logs would decisively confirm DNS resolution failures cluster-wide',
+      ],
+    });
+    const result = generateSpecRecommendations([finding], makeProfile());
+
+    const coreDnsRec = result.find(
+      (r) => r.type === 'collector' && r.description.toLowerCase().includes('coredns'),
+    );
+    expect(coreDnsRec).toBeUndefined();
+  });
+});
+
+describe('generateSpecRecommendations — AI findings: close-confidence disambiguation', () => {
+  it('close-confidence detection fires for two AI findings within 0.15 confidence', () => {
+    const findings = [
+      makeFinding({
+        id: 'finding:ai:dns-failure:1',
+        title: 'DNS resolution failure causing pod restarts',
+        confidence: 0.68,
+        missingEvidence: ['CoreDNS pod logs would confirm DNS failures'],
+      }),
+      makeFinding({
+        id: 'finding:ai:connectivity-failure:2',
+        title: 'Network connectivity blocked between services',
+        confidence: 0.58,
+        missingEvidence: ['NetworkPolicy resources would confirm network path'],
+      }),
+    ];
+    const result = generateSpecRecommendations(findings, makeProfile());
+
+    const disambiguationRec = result.find(
+      (r) => r.type === 'collector' && r.description.includes('distinguish'),
+    );
+    expect(disambiguationRec).toBeDefined();
+  });
+
+  it('close-confidence detection fires when one hypothesis and one AI finding are within 0.15 confidence', () => {
+    const findings = [
+      makeFinding({
+        id: 'finding:hypothesis:dns-failure:1',
+        title: '[Hypothesis] DNS resolution failure',
+        confidence: 0.70,
+        missingEvidence: ['CoreDNS pod logs would confirm DNS failures'],
+      }),
+      makeFinding({
+        id: 'finding:ai:connectivity-failure:2',
+        title: 'Network connectivity blocked between services',
+        confidence: 0.62,
+        missingEvidence: ['NetworkPolicy resources would confirm network path'],
+      }),
+    ];
+    const result = generateSpecRecommendations(findings, makeProfile());
+
+    const disambiguationRec = result.find(
+      (r) => r.type === 'collector' && r.description.includes('distinguish'),
+    );
+    expect(disambiguationRec).toBeDefined();
+  });
+
+  it('disambiguation rec mentions both the AI finding titles', () => {
+    const findings = [
+      makeFinding({
+        id: 'finding:ai:dns-failure:1',
+        title: 'DNS resolution failure causing pod restarts',
+        confidence: 0.70,
+        missingEvidence: ['CoreDNS pod logs would confirm DNS failures'],
+      }),
+      makeFinding({
+        id: 'finding:ai:connectivity-failure:2',
+        title: 'Network connectivity blocked between services',
+        confidence: 0.60,
+        missingEvidence: ['NetworkPolicy resources would confirm network path'],
+      }),
+    ];
+    const result = generateSpecRecommendations(findings, makeProfile());
+
+    const disambiguationRec = result.find(
+      (r) => r.type === 'collector' && r.description.includes('distinguish'),
+    );
+    expect(disambiguationRec?.description).toContain('DNS resolution failure causing pod restarts');
+    expect(disambiguationRec?.description).toContain('Network connectivity blocked between services');
+  });
+
+  it('no disambiguation rec when AI findings have confidence gap > 0.15', () => {
+    const findings = [
+      makeFinding({
+        id: 'finding:ai:dns-failure:1',
+        title: 'DNS resolution failure causing pod restarts',
+        confidence: 0.90,
+        missingEvidence: ['CoreDNS pod logs would confirm DNS failures'],
+      }),
+      makeFinding({
+        id: 'finding:ai:connectivity-failure:2',
+        title: 'Network connectivity blocked between services',
+        confidence: 0.50,
+        missingEvidence: ['NetworkPolicy resources would confirm network path'],
+      }),
+    ];
+    const result = generateSpecRecommendations(findings, makeProfile());
+
+    const disambiguationRec = result.find(
+      (r) => r.type === 'collector' && r.description.includes('distinguish'),
+    );
+    expect(disambiguationRec).toBeUndefined();
+  });
+
+  it('does not produce disambiguation rec when only one eligible finding exists', () => {
+    const finding = makeFinding({
+      id: 'finding:ai:dns-failure:1',
+      title: 'DNS resolution failure causing pod restarts',
+      confidence: 0.70,
+      missingEvidence: ['CoreDNS pod logs would confirm DNS failures'],
+    });
+    const result = generateSpecRecommendations([finding], makeProfile());
+
+    const disambiguationRec = result.find(
+      (r) => r.type === 'collector' && r.description.includes('distinguish'),
+    );
+    expect(disambiguationRec).toBeUndefined();
+  });
+});

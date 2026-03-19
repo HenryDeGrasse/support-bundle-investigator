@@ -41,12 +41,15 @@ function severityLabel(severity: FindingSeverity): string {
 }
 
 /**
- * Returns a confidence percentage string, e.g. `0.87` → `"87%"`.
+ * Returns a confidence percentage string with an optional quality indicator.
+ * e.g. `0.87` with quality `'strong'` → `"87% (strong)"`.
  * Clamps the value to [0, 1] before formatting.
  */
-function formatConfidence(confidence: number): string {
+function formatConfidence(confidence: number, quality?: Finding['confidenceQuality']): string {
   const clamped = Math.min(1, Math.max(0, confidence));
-  return `${Math.round(clamped * 100)}%`;
+  const pct = `${Math.round(clamped * 100)}%`;
+  if (quality === undefined) return pct;
+  return `${pct} (${quality})`;
 }
 
 /**
@@ -709,7 +712,7 @@ function buildFindings(findings: Finding[]): string {
             </div>
             <div class="finding-body">
               <div class="finding-meta">
-                <span class="confidence-badge">Confidence: <strong>${formatConfidence(finding.confidence)}</strong></span>
+                <span class="confidence-badge">Confidence: <strong>${formatConfidence(finding.confidence, finding.confidenceQuality)}</strong></span>
               </div>
               ${buildAffectedComponents(finding)}
               <div class="reasoning">

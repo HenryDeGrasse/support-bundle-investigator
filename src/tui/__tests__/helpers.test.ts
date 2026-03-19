@@ -14,7 +14,10 @@ import {
   evidenceIcon,
   formatSeverityLabel,
   extractDifferentialContext,
+  formatCausalChain,
+  formatConfidenceWithQuality,
 } from '../helpers.js';
+import type { FindingTreeNode } from '../../types/index.js';
 
 // ---------------------------------------------------------------------------
 // severityColor
@@ -249,5 +252,120 @@ describe('extractDifferentialContext()', () => {
   it('runner-up comparison does not include "Derived from" content', () => {
     const result = extractDifferentialContext(withRunnerUp);
     expect(result.runnerUpComparison).not.toContain('Derived from');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatCausalChain
+// ---------------------------------------------------------------------------
+
+function makeNode(title: string, children: FindingTreeNode[] = []): FindingTreeNode {
+  return {
+    finding: {
+      id: `finding:test:${title.toLowerCase().replace(/\s+/g, '-')}`,
+      title,
+      severity: 'high',
+      confidence: 0.8,
+      affectedComponents: ['test'],
+      reasoningSummary: 'test',
+      evidence: [],
+      contradictionsChecked: [],
+      recommendedAction: 'none',
+      missingEvidence: [],
+    },
+    children,
+  };
+}
+
+describe('formatCausalChain()', () => {
+  it('formats a single-node (leaf) as just its title', () => {
+    const leaf = makeNode('Missing Secret');
+    expect(formatCausalChain(leaf)).toBe('Missing Secret');
+  });
+
+  it('formats a two-node chain as "A → B"', () => {
+    const child = makeNode('CrashLoopBackOff');
+    const root = makeNode('Missing Secret', [child]);
+    expect(formatCausalChain(root)).toBe('Missing Secret → CrashLoopBackOff');
+  });
+
+  it('formats the canonical four-node chain correctly', () => {
+    const unhealthy = makeNode('Unhealthy Workload');
+    const crashLoop = makeNode('CrashLoopBackOff', [unhealthy]);
+    const failedMount = makeNode('FailedMount', [crashLoop]);
+    const missingSecret = makeNode('Missing Secret', [failedMount]);
+
+    expect(formatCausalChain(missingSecret)).toBe(
+      'Missing Secret → FailedMount → CrashLoopBackOff → Unhealthy Workload',
+    );
+  });
+
+  it('formats starting from a mid-chain node (sub-chain)', () => {
+    const unhealthy = makeNode('Unhealthy Workload');
+    const crashLoop = makeNode('CrashLoopBackOff', [unhealthy]);
+    const failedMount = makeNode('FailedMount', [crashLoop]);
+    // Start from FailedMount, not the root
+    expect(formatCausalChain(failedMount)).toBe(
+      'FailedMount → CrashLoopBackOff → Unhealthy Workload',
+    );
+  });
+
+  it('respects maxDepth to avoid runaway traversal', () => {
+    // Build a chain 5 deep but set maxDepth=3
+    const d5 = makeNode('D5');
+    const d4 = makeNode('D4', [d5]);
+    const d3 = makeNode('D3', [d4]);
+    const d2 = makeNode('D2', [d3]);
+    const d1 = makeNode('D1', [d2]);
+
+    const result = formatCausalChain(d1, 3);
+    expect(result).toBe('D1 → D2 → D3');
+  });
+
+  it('follows only the first child at each level (primary causal path)', () => {
+    const sibling1 = makeNode('Sibling1');
+    const sibling2 = makeNode('Sibling2');
+    // Node with two children — only first child is followed
+    const root = makeNode('Root', [sibling1, sibling2]);
+
+    expect(formatCausalChain(root)).toBe('Root → Sibling1');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatConfidenceWithQuality
+// ---------------------------------------------------------------------------
+
+describe('formatConfidenceWithQuality()', () => {
+  it('formats confidence with "strong" quality', () => {
+    expect(formatConfidenceWithQuality(0.8, 'strong')).toBe('80% (strong)');
+  });
+
+  it('formats confidence with "moderate" quality', () => {
+    expect(formatConfidenceWithQuality(0.8, 'moderate')).toBe('80% (moderate)');
+  });
+
+  it('formats confidence with "weak" quality', () => {
+    expect(formatConfidenceWithQuality(0.8, 'weak')).toBe('80% (weak)');
+  });
+
+  it('formats 95% confidence with "strong" quality', () => {
+    expect(formatConfidenceWithQuality(0.95, 'strong')).toBe('95% (strong)');
+  });
+
+  it('formats 0% confidence with "weak" quality', () => {
+    expect(formatConfidenceWithQuality(0, 'weak')).toBe('0% (weak)');
+  });
+
+  it('formats 100% confidence with "strong" quality', () => {
+    expect(formatConfidenceWithQuality(1.0, 'strong')).toBe('100% (strong)');
+  });
+
+  it('falls back to plain percentage when quality is undefined', () => {
+    expect(formatConfidenceWithQuality(0.75, undefined)).toBe('75%');
+  });
+
+  it('rounds to the nearest integer percent', () => {
+    expect(formatConfidenceWithQuality(0.856, 'moderate')).toBe('86% (moderate)');
   });
 });

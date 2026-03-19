@@ -6,6 +6,7 @@ import type { AIInvestigatorDeps } from '../ai-investigator.js';
 import type { ResourceRelationshipGraph } from '../../graph/resource-graph.js';
 import { classifyLogLevel } from '../../parsers/index.js';
 import { runInvestigation } from '../orchestrator.js';
+import { getRootCauses } from '../../graph/finding-tree.js';
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -827,8 +828,13 @@ describe('runInvestigation', () => {
       );
       expect(pendingFinding).toBeUndefined();
 
+      // The root-cause finding may come from either the hypothesis layer
+      // (finding:hypothesis:volume-mount-failure:*) or the graph-driven phase
+      // (finding:missing-storage-class:*) depending on whether the causal
+      // template matches.  Either form satisfies the suppression contract.
       const rootCauseFinding = result.findings.find((f) =>
-        f.id.startsWith('finding:hypothesis:volume-mount-failure:'),
+        f.id.startsWith('finding:hypothesis:volume-mount-failure:') ||
+        f.id.includes('missing-storage-class'),
       );
       expect(rootCauseFinding).toBeDefined();
     });
@@ -959,6 +965,338 @@ describe('runInvestigation', () => {
     });
   });
 
+  // ── Two-pass dedup strategy (7.8) ──────────────────────────────────────────
+  //
+  // The orchestrator must implement exactly two dedup passes:
+  //   Pass 1 — component-based merge (structural): groups findings by
+  //            (primaryComponent, issueFamily) and applies a single merge
+  //            strategy (AI > hypothesis > heuristic; evidence absorbed from
+  //            non-winners).
+  //   Pass 2 — title-based dedup (cosmetic): normalises titles and keeps the
+  //            higher-confidence entry when two findings share the same
+  //            normalised title. AI findings win title collisions.
+  //   Symptom suppression remains a separate post-dedup filter.
+  //
+  // The tests below validate the behavioural contracts of each pass and
+  // verify that existing correctness invariants are preserved.
+
+  describe('two-pass dedup strategy (7.8)', () => {
+    // ── Fixtures ──────────────────────────────────────────────────────────────
+
+    /** Pod with CrashLoopBackOff that also references a missing Secret, so it
+     *  generates BOTH a crashloop finding (family: crashloop) and a
+     *  missing-secret hypothesis (family: missing-secret) on the same component.
+     */
+    const dualFamilyPod: K8sResource = {
+      apiVersion: 'v1',
+      kind: 'Pod',
+      metadata: { name: 'dual-pod', namespace: 'default' },
+      spec: {
+        containers: [
+          {
+            name: 'app',
+            image: 'myapp:v1.2.3',
+            envFrom: [{ secretRef: { name: 'app-credentials' } }],
+          },
+        ],
+      },
+      status: {
+        phase: 'Running',
+        conditions: [{ type: 'Ready', status: 'False' }],
+        containerStatuses: [
+          {
+            name: 'app',
+            ready: false,
+            restartCount: 8,
+            state: { waiting: { reason: 'CrashLoopBackOff', message: 'back-off' } },
+          },
+        ],
+      },
+    };
+
+    const dualPodFailedMountEvent: K8sEvent = {
+      involvedObject: { kind: 'Pod', name: 'dual-pod', namespace: 'default' },
+      reason: 'FailedMount',
+      message: 'secret "app-credentials" not found',
+      type: 'Warning',
+      count: 5,
+      firstTimestamp: '2024-01-01T00:00:00Z',
+      lastTimestamp: '2024-01-01T01:00:00Z',
+    };
+
+    /** A Secret in the default namespace (not the missing one) so the
+     *  missing-secret evidence collector can confirm app-credentials is absent. */
+    const defaultNamespaceSecret: K8sResource = {
+      apiVersion: 'v1',
+      kind: 'Secret',
+      metadata: { name: 'other-secret', namespace: 'default' },
+    };
+
+    /** Pod whose Ready=False is explained by DNS failure; used in the
+     *  symptom-suppression contract test below. */
+    const notReadyDnsPodForPassTest: K8sResource = {
+      apiVersion: 'v1',
+      kind: 'Pod',
+      metadata: { name: 'dns-test-pod', namespace: 'default' },
+      spec: {
+        containers: [
+          {
+            name: 'app',
+            image: 'nginx:latest',
+            env: [{ name: 'DB_HOST', value: 'db' }],
+          },
+        ],
+      },
+      status: {
+        phase: 'Running',
+        conditions: [{ type: 'Ready', status: 'False', reason: 'ContainersNotReady' }],
+        containerStatuses: [
+          {
+            name: 'app',
+            ready: false,
+            restartCount: 0,
+            state: { running: {} },
+          },
+        ],
+      },
+    };
+
+    const dnsLogForPassTest = makeLogFile('pod-logs/default/dns-test-pod.log', [
+      'ERROR lookup db: no such host',
+    ]);
+
+    // ── Pass 1: Component-based merge ─────────────────────────────────────────
+
+    it('Pass 1 — AI finding absorbs hypothesis and heuristic findings for the same component and issue family', async () => {
+      // dualFamilyPod has CrashLoopBackOff + references missing secret →
+      // the seed generator creates a CrashLoopBackOff seed (so the AI mock is
+      // called), the config investigator produces a heuristic missing-secret
+      // finding, and the hypothesis layer produces a missing-secret hypothesis
+      // (all for Pod/default/dual-pod).
+      //
+      // An AI finding that addresses the same
+      // (component=Pod/default/dual-pod, family=missing-secret) must absorb
+      // both the heuristic and hypothesis missing-secret findings, leaving
+      // exactly ONE missing-secret finding for that pod.
+      const aiFinding = {
+        title: "Missing Secret 'app-credentials' causes pod crash",
+        severity: 'critical' as const,
+        confidence: 0.95,
+        affectedComponents: ['Pod/default/dual-pod'],
+        reasoningSummary: 'Secret app-credentials is absent from default namespace.',
+        evidence: [
+          {
+            path: 'cluster-resources/pods/default/dual-pod.yaml',
+            note: 'envFrom secretRef: app-credentials',
+          },
+        ],
+        contradictionsChecked: [],
+        recommendedAction: 'Create the missing secret.',
+        missingEvidence: [],
+      };
+
+      const deps = makeEmptyAIDeps();
+      (deps.llmClient.investigateSeed as ReturnType<typeof vi.fn>).mockResolvedValue({
+        findings: [aiFinding],
+      });
+
+      const context = makeContext({
+        resources: [dualFamilyPod, defaultNamespaceSecret],
+        events: [dualPodFailedMountEvent],
+      });
+      const result = await runInvestigation(context, deps);
+
+      // All missing-secret findings for dual-pod → consolidated to the AI
+      // finding by Pass 1 (one normalization strategy + one merge strategy).
+      const missingSecretForPod = result.findings.filter(
+        (f) =>
+          f.affectedComponents.some((c) => c === 'Pod/default/dual-pod') &&
+          (f.id.includes('missing-secret') ||
+            f.title.toLowerCase().includes('secret')),
+      );
+      expect(missingSecretForPod).toHaveLength(1);
+      expect(missingSecretForPod[0]!.id.startsWith('finding:ai:')).toBe(true);
+    });
+
+    it('Pass 1 — hypothesis finding wins over heuristic finding for same component and issue family (no AI)', async () => {
+      // Without AI, the hypothesis layer produces a high-confidence
+      // missing-secret hypothesis finding.  The heuristic config investigator
+      // also produces a missing-secret finding for the same pod.  Pass 1 must
+      // keep the hypothesis finding (higher priority than heuristic) and
+      // absorb the heuristic one — leaving exactly ONE finding per (component,
+      // family) group.
+      const context = makeContext({ resources: [missingSecretPod, dummySecret] });
+      const result = await runInvestigation(context);
+
+      const missingSecretForPod = result.findings.filter(
+        (f) =>
+          f.affectedComponents.some((c) => c === 'Pod/production/secret-pod') &&
+          (f.id.includes('missing-secret') ||
+            f.title.toLowerCase().includes('secret')),
+      );
+      expect(missingSecretForPod).toHaveLength(1);
+      // Hypothesis finding wins over heuristic (finding:hypothesis:* prefix)
+      expect(missingSecretForPod[0]!.id.startsWith('finding:hypothesis:')).toBe(true);
+    });
+
+    it('Pass 1 — findings for different issue families on the same component both survive', async () => {
+      // dualFamilyPod generates:
+      //   • finding:k8s:crashloop:* (family: crashloop)
+      //   • finding:hypothesis:missing-secret:* (family: missing-secret)
+      // Both reference Pod/default/dual-pod but belong to different families →
+      // Pass 1 must place them in separate groups and preserve both.
+      const context = makeContext({
+        resources: [dualFamilyPod, defaultNamespaceSecret],
+        events: [dualPodFailedMountEvent],
+      });
+      const result = await runInvestigation(context);
+
+      const crashFinding = result.findings.find((f) =>
+        f.id.startsWith('finding:k8s:crashloop:'),
+      );
+      expect(crashFinding).toBeDefined();
+
+      // The missing-secret finding may come from either the hypothesis layer
+      // (finding:hypothesis:missing-secret:*) or the graph-driven phase
+      // (finding:missing-secret:app-credentials:default).  Both satisfy the
+      // behavioral contract: two findings from different families survive.
+      const secretFinding = result.findings.find((f) =>
+        f.id.startsWith('finding:hypothesis:missing-secret:') ||
+        f.id.includes('missing-secret'),
+      );
+      expect(secretFinding).toBeDefined();
+    });
+
+    // ── Pass 2: Title-based dedup ──────────────────────────────────────────────
+
+    it('Pass 2 — deduplicates findings with identical normalised titles from different components', async () => {
+      // Two AI findings with the exact same root-cause title but targeting
+      // different pods.  Pass 1 does NOT merge them (different primary
+      // components).  Pass 2 sees the same normalised title and keeps only
+      // the higher-confidence entry.
+      const sharedTitle =
+        "Missing Secret 'shared-credentials' is absent from the namespace";
+
+      const aiFinding1 = {
+        title: sharedTitle,
+        severity: 'critical' as const,
+        confidence: 0.9,
+        affectedComponents: ['Pod/default/pod-alpha'],
+        reasoningSummary: 'pod-alpha cannot start; shared-credentials missing.',
+        evidence: [{ path: 'logs/pod-alpha.log', note: 'envFrom: shared-credentials' }],
+        contradictionsChecked: [],
+        recommendedAction: 'Create the secret.',
+        missingEvidence: [],
+      };
+      const aiFinding2 = {
+        title: sharedTitle,
+        severity: 'critical' as const,
+        confidence: 0.7,
+        affectedComponents: ['Pod/default/pod-beta'],
+        reasoningSummary: 'pod-beta also cannot start; same missing secret.',
+        evidence: [{ path: 'logs/pod-beta.log', note: 'envFrom: shared-credentials' }],
+        contradictionsChecked: [],
+        recommendedAction: 'Create the secret.',
+        missingEvidence: [],
+      };
+
+      const deps = makeEmptyAIDeps();
+      (deps.llmClient.investigateSeed as ReturnType<typeof vi.fn>).mockResolvedValue({
+        findings: [aiFinding1, aiFinding2],
+      });
+
+      const context = makeContext({ resources: [crashLoopPod], events: [backOffEvent] });
+      const result = await runInvestigation(context, deps);
+
+      const matchingFindings = result.findings.filter(
+        (f) => f.title === sharedTitle,
+      );
+      // Exactly one finding should survive Pass 2
+      expect(matchingFindings).toHaveLength(1);
+      // The higher-confidence entry wins
+      expect(matchingFindings[0]!.confidence).toBeCloseTo(0.9, 1);
+    });
+
+    it('Pass 2 — higher-confidence finding wins title collision regardless of source order', async () => {
+      // Lower-confidence finding arrives before higher-confidence one in the
+      // sorted array.  Pass 2 must replace the lower-confidence entry when it
+      // encounters the higher-confidence duplicate, not keep insertion order.
+      //
+      // We identify the winner by its affectedComponents ('Pod/default/svc-b'
+      // for the higher-confidence entry, 'Pod/default/svc-a' for the lower),
+      // since post-processing adjustments may shift the absolute confidence
+      // value away from the original 0.9 / 0.6.
+      const sharedTitle = 'DNS resolution failure: service endpoint unreachable';
+
+      const lowConf = {
+        title: sharedTitle,
+        severity: 'high' as const,
+        confidence: 0.6,
+        affectedComponents: ['Pod/default/svc-a'],
+        reasoningSummary: 'DNS failure in svc-a.',
+        evidence: [{ path: 'logs/svc-a.log', note: 'lookup failed' }],
+        contradictionsChecked: [],
+        recommendedAction: 'Check CoreDNS.',
+        missingEvidence: [],
+      };
+      const highConf = {
+        title: sharedTitle,
+        severity: 'high' as const,
+        confidence: 0.9,
+        affectedComponents: ['Pod/default/svc-b'],
+        reasoningSummary: 'DNS failure in svc-b (more evidence).',
+        evidence: [
+          { path: 'logs/svc-b.log', note: 'lookup failed' },
+          { path: 'cluster-resources/pods/default/svc-b.yaml', note: 'env DB_HOST=db' },
+        ],
+        contradictionsChecked: [],
+        recommendedAction: 'Check CoreDNS.',
+        missingEvidence: [],
+      };
+
+      const deps = makeEmptyAIDeps();
+      // Deliver low-confidence first so insertion order cannot be the winning factor
+      (deps.llmClient.investigateSeed as ReturnType<typeof vi.fn>).mockResolvedValue({
+        findings: [lowConf, highConf],
+      });
+
+      const context = makeContext({ resources: [crashLoopPod], events: [backOffEvent] });
+      const result = await runInvestigation(context, deps);
+
+      const matchingFindings = result.findings.filter((f) => f.title === sharedTitle);
+      // Exactly one finding should survive Pass 2
+      expect(matchingFindings).toHaveLength(1);
+      // The higher-confidence entry (svc-b) wins; the lower-confidence entry (svc-a) is dropped
+      expect(matchingFindings[0]!.affectedComponents).toContain('Pod/default/svc-b');
+    });
+
+    // ── Symptom suppression: separate post-dedup filter ───────────────────────
+
+    it('symptom suppression runs after both dedup passes (contract: third independent step)', async () => {
+      // This mirrors the existing suppression tests but explicitly documents the
+      // relationship to the two-pass design: symptom suppression is a separate
+      // filter that fires AFTER both Pass 1 and Pass 2 have completed.
+      const context = makeContext({
+        resources: [notReadyDnsPodForPassTest],
+        logs: [dnsLogForPassTest],
+      });
+      const result = await runInvestigation(context);
+
+      // After both dedup passes, symptom suppression must still remove the
+      // Not-Ready-Pod finding when a root-cause hypothesis exists.
+      const notReadyFinding = result.findings.find((f) =>
+        f.id.startsWith('finding:k8s:notready:'),
+      );
+      expect(notReadyFinding).toBeUndefined();
+
+      // The dns-failure root cause survived both passes and suppression.
+      const rootCause = result.findings.find((f) =>
+        f.id.startsWith('finding:hypothesis:dns-failure:'),
+      );
+      expect(rootCause).toBeDefined();
+    });
+  });
+
   describe('final dedup uses full normalised title (no 80-char truncation)', () => {
     it('preserves two findings whose titles differ only after position 80', async () => {
       // Both titles share the same first 80 characters after normalisation but
@@ -1012,6 +1350,293 @@ describe('runInvestigation', () => {
 
       expect(found1).toBeDefined();
       expect(found2).toBeDefined();
+    });
+  });
+
+  // ── Graph-driven investigation (Phase 5e / 4.8) ───────────────────────────
+  //
+  // The orchestrator now runs a graph-query phase BEFORE the hypothesis
+  // generator.  When causal template matching discovers a known failure chain
+  // (e.g. MissingSecret → FailedMount → CrashLoopBackOff), it:
+  //   1. Skips the hypothesis generator for those matched symptom findings.
+  //   2. Creates a synthetic root-cause Finding linked to the symptom via a
+  //      `causes` edge so the FindingTree has a real parent→child structure.
+  //   3. Ranks the graph root causes by causal path length, edge weights,
+  //      and evidence count.
+  //   4. Falls back to the hypothesis generator for unmatched symptoms.
+  //
+  // The existing procedural pipeline (hypothesis generation) becomes the
+  // fallback path only when no causal template matches a symptom.
+
+  describe('graph-driven investigation (4.8)', () => {
+    // ── Fixtures ─────────────────────────────────────────────────────────────
+
+    /**
+     * A pod with CrashLoopBackOff but NO secret references in its spec.
+     * The k8s investigator produces ONLY the crashloop finding.
+     * A companion FailedMount event (see below) triggers the causal template.
+     */
+    const graphTemplatePod: K8sResource = {
+      apiVersion: 'v1',
+      kind: 'Pod',
+      metadata: { name: 'template-pod', namespace: 'default' },
+      spec: {
+        containers: [{ name: 'app', image: 'myapp:v1.0.0' }],
+      },
+      status: {
+        phase: 'Running',
+        conditions: [{ type: 'Ready', status: 'False', reason: 'ContainersNotReady' }],
+        containerStatuses: [
+          {
+            name: 'app',
+            ready: false,
+            restartCount: 8,
+            state: { waiting: { reason: 'CrashLoopBackOff', message: 'back-off 5m0s restarting' } },
+          },
+        ],
+      },
+    };
+
+    /** FailedMount event for template-pod that names the missing secret. */
+    const templateFailedMountEvent: K8sEvent = {
+      involvedObject: { kind: 'Pod', name: 'template-pod', namespace: 'default' },
+      reason: 'FailedMount',
+      message: 'MountVolume.SetUp failed for volume "creds": secret "app-secret" not found',
+      type: 'Warning',
+      count: 5,
+      firstTimestamp: '2024-01-01T00:00:00Z',
+      lastTimestamp: '2024-01-01T01:00:00Z',
+    };
+
+    /**
+     * BackOff event (NOT FailedMount) — no secret name → causal template
+     * will NOT match, so the hypothesis generator must be used as fallback.
+     */
+    const templateBackOffEvent: K8sEvent = {
+      involvedObject: { kind: 'Pod', name: 'template-pod', namespace: 'default' },
+      reason: 'BackOff',
+      message: 'Back-off restarting failed container',
+      type: 'Warning',
+      count: 12,
+      firstTimestamp: '2024-01-01T00:00:00Z',
+      lastTimestamp: '2024-01-01T01:00:00Z',
+    };
+
+    /**
+     * Second pod for ranking test (image pull failure with ErrImagePull).
+     */
+    const imagePullPod: K8sResource = {
+      apiVersion: 'v1',
+      kind: 'Pod',
+      metadata: { name: 'image-pod', namespace: 'default' },
+      spec: {
+        containers: [{ name: 'app', image: 'myapp:v999' }],
+      },
+      status: {
+        phase: 'Pending',
+        conditions: [{ type: 'Ready', status: 'False' }],
+        containerStatuses: [
+          {
+            name: 'app',
+            ready: false,
+            restartCount: 0,
+            state: { waiting: { reason: 'ImagePullBackOff', message: 'Back-off pulling image "myapp:v999"' } },
+          },
+        ],
+      },
+    };
+
+    const errImagePullEvent: K8sEvent = {
+      involvedObject: { kind: 'Pod', name: 'image-pod', namespace: 'default' },
+      reason: 'ErrImagePull',
+      message: 'failed to pull image "myapp:v999": not found',
+      type: 'Warning',
+      count: 3,
+      firstTimestamp: '2024-01-01T00:00:00Z',
+      lastTimestamp: '2024-01-01T01:00:00Z',
+    };
+
+    const imagePullBackOffEvent: K8sEvent = {
+      involvedObject: { kind: 'Pod', name: 'image-pod', namespace: 'default' },
+      reason: 'ImagePullBackOff',
+      message: 'Back-off pulling image "myapp:v999"',
+      type: 'Warning',
+      count: 8,
+      firstTimestamp: '2024-01-01T00:00:10Z',
+      lastTimestamp: '2024-01-01T01:00:00Z',
+    };
+
+    // ── Test 1: graph traversal replaces hypothesis generator for matched symptoms ──
+
+    it('sets graphMatchedSymptoms > 0 when causal template matches the crashloop symptom', async () => {
+      // The FailedMount event with a named secret triggers the
+      // missing-secret-crashloop causal template.  The crashloop symptom is
+      // matched → hypothesis generator is skipped for that finding.
+      const context = makeContext({
+        resources: [graphTemplatePod],
+        events: [templateFailedMountEvent],
+      });
+      const result = await runInvestigation(context);
+
+      expect(result.metadata.graphMatchedSymptoms).toBeGreaterThan(0);
+    });
+
+    it('hypothesis generator is skipped for matched symptoms (hypothesesGenerated = 0 when only one matched symptom and no other findings)', async () => {
+      // graphTemplatePod produces ONLY a crashloop finding (no secret refs in spec
+      // → config investigator emits nothing).  templateFailedMountEvent triggers
+      // the causal template, so the crashloop finding is marked "graph-handled".
+      // With no remaining unmatched findings, the hypothesis generator produces 0.
+      const context = makeContext({
+        resources: [graphTemplatePod],
+        events: [templateFailedMountEvent],
+      });
+      const result = await runInvestigation(context);
+
+      expect(result.metadata.hypothesesGenerated).toBe(0);
+    });
+
+    it('creates a synthetic root-cause finding linked to the matched symptom', async () => {
+      const context = makeContext({
+        resources: [graphTemplatePod],
+        events: [templateFailedMountEvent],
+      });
+      const result = await runInvestigation(context);
+
+      // The causal template creates a synthetic "missing-secret" root-cause finding.
+      const rootCauseFinding = result.findings.find((f) =>
+        f.id.includes('missing-secret') && f.id.includes('app-secret'),
+      );
+      expect(rootCauseFinding).toBeDefined();
+      expect(rootCauseFinding!.severity).toBe('critical');
+      expect(rootCauseFinding!.confidence).toBeGreaterThan(0);
+    });
+
+    // ── Test 2: hypothesis generator used as fallback ─────────────────────────
+
+    it('uses hypothesis generator as fallback when no causal template matches', async () => {
+      // BackOff event has no FailedMount + no secret name → no causal template
+      // match → hypothesis generator runs for the crashloop finding.
+      const context = makeContext({
+        resources: [graphTemplatePod],
+        events: [templateBackOffEvent],
+      });
+      const result = await runInvestigation(context);
+
+      // No causal template matched
+      expect(result.metadata.graphMatchedSymptoms).toBe(0);
+      // Hypothesis generator ran (crashloop generates 5 hypotheses)
+      expect(result.metadata.hypothesesGenerated).toBeGreaterThan(0);
+    });
+
+    // ── Test 3: root causes ranked by path length, edge weights, evidence count ──
+
+    it('multiple graph root causes appear in the finding list and are in severity-confidence order', async () => {
+      // Two causal templates match:
+      //   - missing-secret-crashloop (crashloop + FailedMount with secret)
+      //   - bad-image-tag (imagepull + ErrImagePull)
+      // Both root causes must appear in the result findings.
+      const context = makeContext({
+        resources: [graphTemplatePod, imagePullPod],
+        events: [templateFailedMountEvent, errImagePullEvent, imagePullBackOffEvent],
+      });
+      const result = await runInvestigation(context);
+
+      expect(result.metadata.graphMatchedSymptoms).toBeGreaterThanOrEqual(2);
+
+      // Both root-cause findings should appear
+      const missingSecretRoot = result.findings.find((f) =>
+        f.id.includes('missing-secret') && f.id.includes('app-secret'),
+      );
+      const badImageRoot = result.findings.find((f) =>
+        f.id.includes('bad-image-tag'),
+      );
+      expect(missingSecretRoot).toBeDefined();
+      expect(badImageRoot).toBeDefined();
+
+      // Result findings are sorted by severity desc, confidence desc
+      // (the existing sort logic applies to graph root-cause findings too)
+      for (let i = 0; i < result.findings.length - 1; i++) {
+        const severityOrder: Record<string, number> = {
+          critical: 4, high: 3, medium: 2, low: 1, info: 0,
+        };
+        const cur = result.findings[i]!;
+        const nxt = result.findings[i + 1]!;
+        const curSev = severityOrder[cur.severity] ?? 0;
+        const nxtSev = severityOrder[nxt.severity] ?? 0;
+        if (curSev === nxtSev) {
+          expect(cur.confidence).toBeGreaterThanOrEqual(nxt.confidence);
+        } else {
+          expect(curSev).toBeGreaterThanOrEqual(nxtSev);
+        }
+      }
+    });
+
+    // ── Test 4: finding tree built from causes edges ──────────────────────────
+
+    it('finding tree has non-trivial causal structure (root-cause → symptom) when causal template matches', async () => {
+      const context = makeContext({
+        resources: [graphTemplatePod],
+        events: [templateFailedMountEvent],
+      });
+      const result = await runInvestigation(context);
+
+      // The finding tree should have at least one node with children
+      const hasChildren = result.findingTree.some((n) => n.children.length > 0);
+      expect(hasChildren).toBe(true);
+
+      // The root causes (nodes with no parent) should include the missing-secret finding
+      const rootCauseNodes = getRootCauses(result.findingTree);
+      const missingSecretRoot = rootCauseNodes.find((n) =>
+        n.finding.id.includes('missing-secret'),
+      );
+      expect(missingSecretRoot).toBeDefined();
+
+      // The crashloop finding should be a child of the root-cause node
+      const crashloopChild = missingSecretRoot!.children.find((child) =>
+        child.finding.id.includes('crashloop'),
+      );
+      expect(crashloopChild).toBeDefined();
+    });
+
+    it('finding tree is flat (no causes edges) when no causal template matches', async () => {
+      // BackOff event only → no causal template match → no causes edges
+      const context = makeContext({
+        resources: [graphTemplatePod],
+        events: [templateBackOffEvent],
+      });
+      const result = await runInvestigation(context);
+
+      // No causes edges → finding tree is flat (all nodes are root causes)
+      const rootCauseNodes = getRootCauses(result.findingTree);
+      // All findings are root causes (no parents assigned)
+      expect(rootCauseNodes.length).toBe(result.findingTree.length);
+    });
+
+    it('graph-matched symptoms are excluded from the hypothesis generator but still appear in final findings', async () => {
+      // The crashloop finding is matched by a causal template and excluded from
+      // hypothesis generation.  It must still appear in the final findings
+      // (graph-driven does not remove heuristic findings, only skips hypothesis gen).
+      const context = makeContext({
+        resources: [graphTemplatePod],
+        events: [templateFailedMountEvent],
+      });
+      const result = await runInvestigation(context);
+
+      const crashFinding = result.findings.find((f) =>
+        f.id.startsWith('finding:k8s:crashloop:'),
+      );
+      expect(crashFinding).toBeDefined();
+
+      // And the graph root-cause is also present
+      const rootCause = result.findings.find((f) =>
+        f.id.includes('missing-secret') && f.id.includes('app-secret'),
+      );
+      expect(rootCause).toBeDefined();
+    });
+
+    it('metadata.graphMatchedSymptoms is 0 when context is empty', async () => {
+      const result = await runInvestigation(makeContext());
+      expect(result.metadata.graphMatchedSymptoms).toBe(0);
     });
   });
 });

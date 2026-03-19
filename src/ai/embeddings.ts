@@ -18,17 +18,57 @@ import type { AIConfig } from './config.js';
 const EMBEDDING_BATCH_SIZE = 100;
 
 // ---------------------------------------------------------------------------
-// EmbeddingClient
+// EmbeddingClientInterface
+// ---------------------------------------------------------------------------
+
+/**
+ * Common interface for all embedding backends.
+ *
+ * Both {@link EmbeddingClient} (OpenAI) and {@link LocalEmbeddingClient}
+ * (TEI / Ollama) implement this interface so the rest of the pipeline is
+ * backend-agnostic.
+ *
+ * Graceful-degradation contract: all implementations MUST return empty arrays
+ * (not throw) when embeddings fail, enabling callers to skip semantic
+ * retrieval rather than aborting.
+ */
+export interface EmbeddingClientInterface {
+  /**
+   * Embeds an array of texts.
+   *
+   * Returns a parallel array of embedding vectors.  Entries may be empty
+   * arrays when the corresponding embedding could not be computed.
+   *
+   * @param texts - Input texts to embed.
+   * @returns Parallel array of float vectors (empty sub-arrays on failure).
+   */
+  embed(texts: string[]): Promise<number[][]>;
+
+  /**
+   * Embeds a single text string.
+   *
+   * Returns an empty array on failure.
+   *
+   * @param text - Input text to embed.
+   * @returns Embedding vector, or an empty array on failure.
+   */
+  embedSingle(text: string): Promise<number[]>;
+}
+
+// ---------------------------------------------------------------------------
+// EmbeddingClient (OpenAI backend)
 // ---------------------------------------------------------------------------
 
 /**
  * Wraps the OpenAI embeddings API for batch text embedding.
  *
+ * Implements {@link EmbeddingClientInterface}.
+ *
  * Graceful degradation: any embedding failure returns an empty array for the
  * affected batch rather than throwing. Callers that check for empty arrays
  * can skip semantic retrieval and fall back to graph + lexical results.
  */
-export class EmbeddingClient {
+export class EmbeddingClient implements EmbeddingClientInterface {
   private readonly client: OpenAI;
   private readonly model: string;
 

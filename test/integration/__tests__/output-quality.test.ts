@@ -204,13 +204,17 @@ describe('output quality per scenario', () => {
       const result = await runPipeline(badImageTagBundlePath);
       const top = result.findings[0];
       expect(top).toBeDefined();
-      // Either a hypothesis with category 'image-pull-failure', or a heuristic
-      // finding whose title mentions image pull.
+      // Either a hypothesis with category 'image-pull-failure', a heuristic
+      // finding whose title mentions image pull, or a graph root-cause finding
+      // about a bad image tag (introduced by the graph-driven investigation phase).
       const isImagePull =
         top!.id.includes('image-pull-failure') ||
+        top!.id.includes('bad-image-tag') ||
         top!.title.toLowerCase().includes('image pull') ||
         top!.title.toLowerCase().includes('imagepullbackoff') ||
-        top!.title.toLowerCase().includes('errimagepull');
+        top!.title.toLowerCase().includes('errimagepull') ||
+        top!.title.toLowerCase().includes('bad image') ||
+        top!.title.toLowerCase().includes('image tag');
       expect(isImagePull, `Expected top finding to be about image pull, got: "${top!.title}"`).toBe(true);
     });
 

@@ -7,11 +7,26 @@
 // caller has not explicitly opted out with --no-ai.
 //
 // Environment variables:
-//   OPENAI_API_KEY      — OpenAI API key (required for AI features)
-//   SBI_AI_MODEL        — Chat completion model (default: gpt-4o)
-//   SBI_EMBEDDING_MODEL — Embedding model     (default: text-embedding-3-small)
+//   OPENAI_API_KEY         — OpenAI API key (required for AI features)
+//   SBI_AI_MODEL           — Chat completion model (default: gpt-4o)
+//   SBI_EMBEDDING_MODEL    — Embedding model     (default: text-embedding-3-small)
+//   SBI_EMBEDDING_BACKEND  — Embedding backend   (default: local)
+//                            Values: local | openai | none
+//   SBI_EMBEDDING_URL      — Local embedding endpoint (default: http://localhost:8080)
+//                            Used when SBI_EMBEDDING_BACKEND=local
 
 export type AIProvider = 'openai' | 'none';
+
+/**
+ * Backend to use for text embeddings.
+ *
+ * - `local`  — Local HTTP embedding service (TEI or Ollama). Preferred for
+ *              offline / on-premise deployments. Falls back to Ollama when
+ *              TEI is unavailable.
+ * - `openai` — OpenAI Embeddings API (requires OPENAI_API_KEY).
+ * - `none`   — Disable embeddings entirely; graph + BM25 retrieval only.
+ */
+export type EmbeddingBackend = 'local' | 'openai' | 'none';
 
 export interface AIConfig {
   /** AI provider. 'none' means AI features are disabled. */
@@ -22,6 +37,20 @@ export interface AIConfig {
   model: string;
   /** Text embedding model identifier. */
   embeddingModel: string;
+  /**
+   * Embedding backend to use.
+   *
+   * Defaults to 'local' so the system prefers a locally-running embedding
+   * service (TEI or Ollama) over the OpenAI API.
+   */
+  embeddingBackend: EmbeddingBackend;
+  /**
+   * Base URL for the local embedding service.
+   *
+   * Used when `embeddingBackend === 'local'`.  Defaults to
+   * `http://localhost:8080` (HuggingFace TEI default port).
+   */
+  embeddingUrl: string;
   /** Whether AI features are active for this run. */
   enabled: boolean;
 }
@@ -43,6 +72,13 @@ function resolveRequestedProvider(aiProvider?: string): AIProvider {
   return 'openai';
 }
 
+function resolveEmbeddingBackend(raw: string | undefined): EmbeddingBackend {
+  const normalized = raw?.trim().toLowerCase();
+  if (normalized === 'openai') return 'openai';
+  if (normalized === 'none') return 'none';
+  return 'local'; // default
+}
+
 /**
  * Loads AI configuration from environment variables, applying optional
  * overrides from CLI flags.
@@ -58,6 +94,8 @@ export function loadAIConfig(overrides: LoadAIConfigOverrides = {}): AIConfig {
   const apiKey = process.env['OPENAI_API_KEY'] ?? '';
   const model = process.env['SBI_AI_MODEL'] ?? 'gpt-4o';
   const embeddingModel = process.env['SBI_EMBEDDING_MODEL'] ?? 'text-embedding-3-small';
+  const embeddingBackend = resolveEmbeddingBackend(process.env['SBI_EMBEDDING_BACKEND']);
+  const embeddingUrl = process.env['SBI_EMBEDDING_URL'] ?? 'http://localhost:8080';
   const requestedProvider = resolveRequestedProvider(aiProvider);
 
   const hasKey = apiKey.trim().length > 0;
@@ -70,6 +108,8 @@ export function loadAIConfig(overrides: LoadAIConfigOverrides = {}): AIConfig {
     apiKey,
     model,
     embeddingModel,
+    embeddingBackend,
+    embeddingUrl,
     enabled,
   };
 }

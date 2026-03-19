@@ -924,6 +924,56 @@ export function investigateLog(
   const missingResult = investigateMissingResources(context, classificationMap, counter);
   const imagePullResult = investigateImagePullInLogs(context, classificationMap, counter);
 
+  // ---------------------------------------------------------------------------
+  // Cross-finding causal edges
+  //
+  // Encode causal chains that span multiple detection passes.
+  // These edges complement the per-finding `supports` edges already produced
+  // by each individual detector.
+  // ---------------------------------------------------------------------------
+  const causalEdges: GraphEdge[] = [];
+
+  // DNSFailure → causes → ConnectionTimeout (same pod)
+  for (const dnsFinding of dnsResult.findings) {
+    const dnsPod = extractPodNameFromComponents(dnsFinding.affectedComponents);
+    if (!dnsPod) continue;
+
+    for (const connFinding of connResult.findings) {
+      const connPod = extractPodNameFromComponents(connFinding.affectedComponents);
+      if (connPod !== dnsPod) continue;
+
+      causalEdges.push({
+        id: nextEdgeId(counter),
+        source: dnsFinding.id,
+        target: connFinding.id,
+        type: 'causes',
+        weight: 0.8,
+        note: `DNS resolution failure for pod '${dnsPod}' causes connection timeout`,
+      });
+    }
+  }
+
+  // MissingResource → causes → ConnectionTimeout (same pod)
+  // A missing secret/configmap can cause the application to fail connecting.
+  for (const missFinding of missingResult.findings) {
+    const missPod = extractPodNameFromComponents(missFinding.affectedComponents);
+    if (!missPod) continue;
+
+    for (const connFinding of connResult.findings) {
+      const connPod = extractPodNameFromComponents(connFinding.affectedComponents);
+      if (connPod !== missPod) continue;
+
+      causalEdges.push({
+        id: nextEdgeId(counter),
+        source: missFinding.id,
+        target: connFinding.id,
+        type: 'causes',
+        weight: 0.75,
+        note: `Missing resource in pod '${missPod}' may cause connection failure`,
+      });
+    }
+  }
+
   return {
     findings: [
       ...dnsResult.findings,
@@ -936,6 +986,7 @@ export function investigateLog(
       ...connResult.edges,
       ...missingResult.edges,
       ...imagePullResult.edges,
+      ...causalEdges,
     ],
   };
 }

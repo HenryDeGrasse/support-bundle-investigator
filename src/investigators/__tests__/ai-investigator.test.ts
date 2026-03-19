@@ -6,8 +6,18 @@ import type { AIInvestigatorDeps } from '../ai-investigator.js';
 import type { IndexedChunk } from '../../ai/chunk-indexer.js';
 import type { ResourceRelationshipGraph } from '../../graph/resource-graph.js';
 import type { AIFindingResponse } from '../../ai/llm-client.js';
-import { investigateWithAI, DEFAULT_MAX_SEEDS, mergeChunks } from '../ai-investigator.js';
+import {
+  investigateWithAI,
+  DEFAULT_MAX_SEEDS,
+  mergeChunks,
+  DEFAULT_TOKEN_BUDGET,
+  computeChunkOverlap,
+  deduplicateSeeds,
+} from '../ai-investigator.js';
 import type { RetrievalList } from '../ai-investigator.js';
+import { estimateTokens } from '../../ai/chunk-indexer.js';
+import { generateHypotheticalDocument } from '../../ai/hyde.js';
+import type { HydeLLMClient } from '../../ai/hyde.js';
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -1198,5 +1208,996 @@ describe('mergeChunks (RRF)', () => {
 
     expect(result[0]!.id).toBe('chunk:alpha');
     expect(result[1]!.id).toBe('chunk:zeta');
+  });
+
+  // ── Token budget ──────────────────────────────────────────────────────────
+
+  it('includes all chunks with full content when they fit within the default budget', () => {
+    // Small chunks (10 tokens each at 40 chars) never hit the 100k default budget
+    const chunkA = makeChunk('chunk:a', 'a.json', 'a'.repeat(40));
+    const chunkB = makeChunk('chunk:b', 'b.json', 'b'.repeat(40));
+
+    const result = mergeChunks([{ chunks: [chunkA, chunkB] }]);
+
+    expect(result[0]!.content).toBe('a'.repeat(40));
+    expect(result[1]!.content).toBe('b'.repeat(40));
+  });
+
+  it('falls back to chunk.summary content for lower-priority chunks when budget is exceeded', () => {
+    // chunkA content: 40 chars = 10 tokens
+    // chunkB content: 40 chars = 10 tokens
+    // budget = 15 → chunkA fits (usedTokens: 0→10 ≤ 15), chunkB doesn't (10+10=20 > 15)
+    const chunkA = makeChunk('chunk:a', 'a.json', 'a'.repeat(40));
+    const chunkB = makeChunk('chunk:b', 'b.json', 'b'.repeat(40));
+
+    const result = mergeChunks([{ chunks: [chunkA, chunkB] }], 15);
+
+    expect(result[0]!.content).toBe('a'.repeat(40));       // full content preserved
+    expect(result[1]!.content).toBe('Chunk from b.json');  // summary fallback
+  });
+
+  it('tracks cumulative token count across all chunks in priority order', () => {
+    // 40 chars = 10 tokens each
+    // budget = 25 → A fits (10), B fits (20), C doesn't (30 > 25)
+    const chunkA = makeChunk('chunk:a', 'a.json', 'a'.repeat(40));
+    const chunkB = makeChunk('chunk:b', 'b.json', 'b'.repeat(40));
+    const chunkC = makeChunk('chunk:c', 'c.json', 'c'.repeat(40));
+
+    const result = mergeChunks([{ chunks: [chunkA, chunkB, chunkC] }], 25);
+
+    expect(result[0]!.content).toBe('a'.repeat(40));       // full content (10 tokens used)
+    expect(result[1]!.content).toBe('b'.repeat(40));       // full content (20 tokens used)
+    expect(result[2]!.content).toBe('Chunk from c.json');  // summary fallback (would be 30)
+  });
+
+  it('does not mutate the original chunk when falling back to summary', () => {
+    const chunkA = makeChunk('chunk:a', 'a.json', 'a'.repeat(40));
+    const chunkB = makeChunk('chunk:b', 'b.json', 'b'.repeat(40));
+    const origContentA = chunkA.content;
+    const origContentB = chunkB.content;
+
+    // Tight budget forces chunkB to use summary
+    mergeChunks([{ chunks: [chunkA, chunkB] }], 15);
+
+    // Original objects must not have been mutated
+    expect(chunkA.content).toBe(origContentA);
+    expect(chunkB.content).toBe(origContentB);
+  });
+
+  it('returns all chunks as summary-only when budget is 0', () => {
+    const chunkA = makeChunk('chunk:a', 'a.json', 'a'.repeat(40));
+    const chunkB = makeChunk('chunk:b', 'b.json', 'b'.repeat(40));
+
+    const result = mergeChunks([{ chunks: [chunkA, chunkB] }], 0);
+
+    // Budget of 0 means even the first chunk's content (10 tokens) exceeds it
+    expect(result[0]!.content).toBe('Chunk from a.json');
+    expect(result[1]!.content).toBe('Chunk from b.json');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// estimateTokens unit tests
+// ---------------------------------------------------------------------------
+
+describe('estimateTokens', () => {
+  it('returns 0 for an empty string', () => {
+    expect(estimateTokens('')).toBe(0);
+  });
+
+  it('returns Math.floor(text.length / 4)', () => {
+    expect(estimateTokens('aaaa')).toBe(1);           // 4 / 4 = 1
+    expect(estimateTokens('a'.repeat(8))).toBe(2);    // 8 / 4 = 2
+    expect(estimateTokens('a'.repeat(100))).toBe(25); // 100 / 4 = 25
+  });
+
+  it('uses floor division (rounds down for non-multiples of 4)', () => {
+    expect(estimateTokens('aaa')).toBe(0);   // floor(3/4) = 0
+    expect(estimateTokens('aaaaa')).toBe(1); // floor(5/4) = 1
+    expect(estimateTokens('a'.repeat(7))).toBe(1); // floor(7/4) = 1
+  });
+
+  it('works on realistic log line content', () => {
+    const logLine = '2024-01-01T00:00:00Z ERROR connection refused to db.internal:5432';
+    // 68 chars → floor(68/4) = 17 tokens
+    expect(estimateTokens(logLine)).toBe(Math.floor(logLine.length / 4));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DEFAULT_TOKEN_BUDGET constant
+// ---------------------------------------------------------------------------
+
+describe('DEFAULT_TOKEN_BUDGET', () => {
+  it('is approximately 80% of a 128k context window (~100k tokens)', () => {
+    // 80% of 128 * 1024 = 104,857 tokens; we use a round number near that
+    expect(DEFAULT_TOKEN_BUDGET).toBeGreaterThanOrEqual(95_000);
+    expect(DEFAULT_TOKEN_BUDGET).toBeLessThanOrEqual(110_000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// generateHypotheticalDocument (HyDE) unit tests
+// ---------------------------------------------------------------------------
+
+describe('generateHypotheticalDocument', () => {
+  // ── Basic shape ───────────────────────────────────────────────────────────
+
+  it('returns the LLM-generated hypothetical document when the call succeeds', async () => {
+    const hypotheticalText =
+      'Container app in pod app-pod terminated with exit code 1 due to ' +
+      'missing environment variable DB_PASSWORD referenced from secret ' +
+      'app-credentials which does not exist in namespace default.';
+
+    const mockClient: HydeLLMClient = {
+      generateText: vi.fn().mockResolvedValue(hypotheticalText),
+    };
+
+    const result = await generateHypotheticalDocument(
+      'Pod app-pod is in CrashLoopBackOff',
+      mockClient,
+    );
+
+    expect(result).toBe(hypotheticalText);
+  });
+
+  it('calls generateText with a system prompt and a user prompt containing the hypothesis', async () => {
+    const mockGenerateText = vi.fn().mockResolvedValue('hypothetical evidence text');
+    const mockClient: HydeLLMClient = { generateText: mockGenerateText };
+
+    const hypothesis = 'Pod app-pod is in CrashLoopBackOff';
+    await generateHypotheticalDocument(hypothesis, mockClient);
+
+    expect(mockGenerateText).toHaveBeenCalledTimes(1);
+    const [systemPrompt, userPrompt] = mockGenerateText.mock.calls[0] as [string, string];
+
+    // System prompt should give Kubernetes diagnostic context
+    expect(systemPrompt).toContain('Kubernetes');
+    // User prompt should contain the hypothesis
+    expect(userPrompt).toContain(hypothesis);
+  });
+
+  it('returns the raw hypothesis when the LLM call throws an error (graceful fallback)', async () => {
+    const mockClient: HydeLLMClient = {
+      generateText: vi.fn().mockRejectedValue(new Error('LLM API unavailable')),
+    };
+
+    const hypothesis = 'Pod app-pod is in CrashLoopBackOff';
+    const result = await generateHypotheticalDocument(hypothesis, mockClient);
+
+    // Must not throw; must return the raw hypothesis as fallback
+    expect(result).toBe(hypothesis);
+  });
+
+  it('returns the raw hypothesis when the LLM returns an empty string', async () => {
+    const mockClient: HydeLLMClient = {
+      generateText: vi.fn().mockResolvedValue(''),
+    };
+
+    const hypothesis = 'Missing Secret app-credentials in namespace default';
+    const result = await generateHypotheticalDocument(hypothesis, mockClient);
+
+    expect(result).toBe(hypothesis);
+  });
+
+  it('trims whitespace from the LLM response before returning', async () => {
+    const innerText = 'Pod app-pod OOMKilled: container exceeded memory limit 256Mi';
+    const mockClient: HydeLLMClient = {
+      generateText: vi.fn().mockResolvedValue(`\n\n  ${innerText}  \n`),
+    };
+
+    const result = await generateHypotheticalDocument(
+      'Pod app-pod was OOM-killed',
+      mockClient,
+    );
+
+    expect(result).toBe(innerText);
+  });
+
+  it('returns the raw hypothesis when the LLM returns only whitespace', async () => {
+    const mockClient: HydeLLMClient = {
+      generateText: vi.fn().mockResolvedValue('   \n  \t  '),
+    };
+
+    const hypothesis = 'Service has no ready endpoints';
+    const result = await generateHypotheticalDocument(hypothesis, mockClient);
+
+    expect(result).toBe(hypothesis);
+  });
+
+  it('generates a more detailed, evidence-like text than the input hypothesis', async () => {
+    // The hypothetical document should be longer and more specific than the hypothesis
+    const hypothesis = 'DNS lookup failure in pod app-pod';
+    const hypotheticalDoc =
+      'dial tcp: lookup db.internal on 10.96.0.10:53: no such host\n' +
+      'Pod app-pod in namespace default failed to resolve hostname db.internal.\n' +
+      'CoreDNS returned NXDOMAIN for the query. The database service endpoint ' +
+      'may not exist or the service name is misconfigured.';
+
+    const mockClient: HydeLLMClient = {
+      generateText: vi.fn().mockResolvedValue(hypotheticalDoc),
+    };
+
+    const result = await generateHypotheticalDocument(hypothesis, mockClient);
+
+    // The result should be the detailed document, not the short hypothesis
+    expect(result.length).toBeGreaterThan(hypothesis.length);
+    expect(result).toContain('db.internal');
+    expect(result).toContain('NXDOMAIN');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HyDE integration with investigateWithAI
+// ---------------------------------------------------------------------------
+
+describe('investigateWithAI — HyDE integration', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('embeds the hypothetical document instead of the raw hypothesis when HyDE succeeds', async () => {
+    const hypotheticalDoc =
+      'Container app terminated with exit code 1. FailedMount event: ' +
+      'secret "app-credentials" not found in namespace "default".';
+
+    const mockEmbedSingle = vi.fn().mockResolvedValue([0.1, 0.2, 0.3]);
+    const mockQuery = vi.fn().mockReturnValue([]);
+    // The llmClient mock supports both investigateSeed (for the LLM call) and
+    // generateText (for HyDE document generation).
+    const mockGenerateText = vi.fn().mockResolvedValue(hypotheticalDoc);
+    const mockInvestigateSeed = vi.fn().mockResolvedValue({ findings: [] });
+
+    const deps: AIInvestigatorDeps = {
+      llmClient: {
+        investigateSeed: mockInvestigateSeed,
+        generateText: mockGenerateText,
+      } as unknown as AIInvestigatorDeps['llmClient'],
+      chunkIndex: [],
+      resourceGraph: { nodes: new Map(), edges: [] },
+      lexicalIndex: {
+        build: vi.fn(),
+        search: vi.fn().mockReturnValue([]),
+        extractQueryIdentifiers: vi.fn().mockReturnValue([]),
+      } as unknown as AIInvestigatorDeps['lexicalIndex'],
+      embeddingClient: {
+        embed: vi.fn(),
+        embedSingle: mockEmbedSingle,
+      } as unknown as AIInvestigatorDeps['embeddingClient'],
+      vectorStore: {
+        query: mockQuery,
+        addAll: vi.fn(),
+        size: 0,
+        clear: vi.fn(),
+      } as unknown as AIInvestigatorDeps['vectorStore'],
+    };
+
+    const seeds = [
+      makeSeed('seed:k8s:0', 'kubernetes', 'Pod app-pod is in CrashLoopBackOff'),
+    ];
+
+    await investigateWithAI(makeContext(), seeds, deps);
+
+    // HyDE should have been called with the hypothesis
+    expect(mockGenerateText).toHaveBeenCalledTimes(1);
+    const [, userPrompt] = mockGenerateText.mock.calls[0] as [string, string];
+    expect(userPrompt).toContain('Pod app-pod is in CrashLoopBackOff');
+
+    // embedSingle should be called with the HYPOTHETICAL DOCUMENT, not the raw hypothesis
+    expect(mockEmbedSingle).toHaveBeenCalledTimes(1);
+    expect(mockEmbedSingle).toHaveBeenCalledWith(hypotheticalDoc);
+    expect(mockEmbedSingle).not.toHaveBeenCalledWith('Pod app-pod is in CrashLoopBackOff');
+  });
+
+  it('falls back to embedding the raw hypothesis when HyDE LLM call fails', async () => {
+    const mockEmbedSingle = vi.fn().mockResolvedValue([0.1, 0.2, 0.3]);
+    const mockQuery = vi.fn().mockReturnValue([]);
+    // generateText throws — simulates LLM API being unavailable for HyDE
+    const mockGenerateText = vi.fn().mockRejectedValue(new Error('LLM timeout'));
+    const mockInvestigateSeed = vi.fn().mockResolvedValue({ findings: [] });
+
+    const deps: AIInvestigatorDeps = {
+      llmClient: {
+        investigateSeed: mockInvestigateSeed,
+        generateText: mockGenerateText,
+      } as unknown as AIInvestigatorDeps['llmClient'],
+      chunkIndex: [],
+      resourceGraph: { nodes: new Map(), edges: [] },
+      lexicalIndex: {
+        build: vi.fn(),
+        search: vi.fn().mockReturnValue([]),
+        extractQueryIdentifiers: vi.fn().mockReturnValue([]),
+      } as unknown as AIInvestigatorDeps['lexicalIndex'],
+      embeddingClient: {
+        embed: vi.fn(),
+        embedSingle: mockEmbedSingle,
+      } as unknown as AIInvestigatorDeps['embeddingClient'],
+      vectorStore: {
+        query: mockQuery,
+        addAll: vi.fn(),
+        size: 0,
+        clear: vi.fn(),
+      } as unknown as AIInvestigatorDeps['vectorStore'],
+    };
+
+    const hypothesis = 'Pod app-pod is in CrashLoopBackOff';
+    const seeds = [makeSeed('seed:k8s:0', 'kubernetes', hypothesis)];
+
+    // Should not throw even though HyDE's generateText fails
+    await expect(investigateWithAI(makeContext(), seeds, deps)).resolves.not.toThrow();
+
+    // embedSingle should be called with the RAW HYPOTHESIS as fallback
+    expect(mockEmbedSingle).toHaveBeenCalledTimes(1);
+    expect(mockEmbedSingle).toHaveBeenCalledWith(hypothesis);
+  });
+
+  it('falls back to embedding the raw hypothesis when HyDE returns empty string', async () => {
+    const mockEmbedSingle = vi.fn().mockResolvedValue([0.4, 0.5, 0.6]);
+    const mockQuery = vi.fn().mockReturnValue([]);
+    // generateText returns empty string — simulates model refusal or timeout
+    const mockGenerateText = vi.fn().mockResolvedValue('');
+    const mockInvestigateSeed = vi.fn().mockResolvedValue({ findings: [] });
+
+    const deps: AIInvestigatorDeps = {
+      llmClient: {
+        investigateSeed: mockInvestigateSeed,
+        generateText: mockGenerateText,
+      } as unknown as AIInvestigatorDeps['llmClient'],
+      chunkIndex: [],
+      resourceGraph: { nodes: new Map(), edges: [] },
+      lexicalIndex: {
+        build: vi.fn(),
+        search: vi.fn().mockReturnValue([]),
+        extractQueryIdentifiers: vi.fn().mockReturnValue([]),
+      } as unknown as AIInvestigatorDeps['lexicalIndex'],
+      embeddingClient: {
+        embed: vi.fn(),
+        embedSingle: mockEmbedSingle,
+      } as unknown as AIInvestigatorDeps['embeddingClient'],
+      vectorStore: {
+        query: mockQuery,
+        addAll: vi.fn(),
+        size: 0,
+        clear: vi.fn(),
+      } as unknown as AIInvestigatorDeps['vectorStore'],
+    };
+
+    const hypothesis = 'Missing Secret app-credentials in namespace default';
+    const seeds = [makeSeed('seed:config:0', 'configuration', hypothesis)];
+
+    await investigateWithAI(makeContext(), seeds, deps);
+
+    // embedSingle should be called with the RAW HYPOTHESIS as fallback
+    expect(mockEmbedSingle).toHaveBeenCalledWith(hypothesis);
+  });
+
+  it('does not call generateText when embeddingClient is absent (no HyDE without semantic retrieval)', async () => {
+    const mockGenerateText = vi.fn().mockResolvedValue('hypothetical doc');
+    const mockInvestigateSeed = vi.fn().mockResolvedValue({ findings: [] });
+
+    const deps: AIInvestigatorDeps = {
+      llmClient: {
+        investigateSeed: mockInvestigateSeed,
+        generateText: mockGenerateText,
+      } as unknown as AIInvestigatorDeps['llmClient'],
+      chunkIndex: [],
+      resourceGraph: { nodes: new Map(), edges: [] },
+      lexicalIndex: {
+        build: vi.fn(),
+        search: vi.fn().mockReturnValue([]),
+        extractQueryIdentifiers: vi.fn().mockReturnValue([]),
+      } as unknown as AIInvestigatorDeps['lexicalIndex'],
+      // No embeddingClient or vectorStore → semantic retrieval skipped
+    };
+
+    const seeds = [makeSeed('seed:k8s:0', 'kubernetes', 'Pod app-pod is in CrashLoopBackOff')];
+    await investigateWithAI(makeContext(), seeds, deps);
+
+    // HyDE should NOT be triggered when there is no embeddingClient
+    expect(mockGenerateText).not.toHaveBeenCalled();
+  });
+
+  it('retrieves semantically similar chunks using the hypothetical document embedding', async () => {
+    const semanticChunk = makeChunk(
+      'chunk:semantic',
+      'logs/api-server/app.log',
+      'secret "app-credentials" not found',
+      'log',
+    );
+
+    const hypotheticalDoc =
+      'secret "app-credentials" not found in namespace default. ' +
+      'FailedMount: unable to retrieve secret.';
+
+    const mockEmbedSingle = vi.fn().mockResolvedValue([0.9, 0.1, 0.0]);
+    const mockQuery = vi.fn().mockReturnValue([{ chunk: semanticChunk, score: 0.92 }]);
+    const mockGenerateText = vi.fn().mockResolvedValue(hypotheticalDoc);
+
+    let capturedUserPrompt = '';
+    const mockInvestigateSeed = vi.fn().mockImplementation(
+      async (_system: string, user: string) => {
+        capturedUserPrompt = user;
+        return { findings: [] };
+      },
+    );
+
+    const deps: AIInvestigatorDeps = {
+      llmClient: {
+        investigateSeed: mockInvestigateSeed,
+        generateText: mockGenerateText,
+      } as unknown as AIInvestigatorDeps['llmClient'],
+      chunkIndex: [semanticChunk],
+      resourceGraph: { nodes: new Map(), edges: [] },
+      lexicalIndex: {
+        build: vi.fn(),
+        search: vi.fn().mockReturnValue([]),
+        extractQueryIdentifiers: vi.fn().mockReturnValue([]),
+      } as unknown as AIInvestigatorDeps['lexicalIndex'],
+      embeddingClient: {
+        embed: vi.fn(),
+        embedSingle: mockEmbedSingle,
+      } as unknown as AIInvestigatorDeps['embeddingClient'],
+      vectorStore: {
+        query: mockQuery,
+        addAll: vi.fn(),
+        size: 1,
+        clear: vi.fn(),
+      } as unknown as AIInvestigatorDeps['vectorStore'],
+    };
+
+    const seeds = [makeSeed('seed:k8s:0', 'kubernetes', 'Pod app-pod has FailedMount for secret')];
+    await investigateWithAI(makeContext(), seeds, deps);
+
+    // The vector store query should have been issued with the hypothetical doc's embedding
+    // (SEMANTIC_TOP_K = 5 is the internal constant in ai-investigator.ts)
+    expect(mockQuery).toHaveBeenCalledWith([0.9, 0.1, 0.0], 5);
+    // The semantic chunk should appear in the LLM prompt
+    expect(capturedUserPrompt).toContain('logs/api-server/app.log');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeChunkOverlap unit tests
+// ---------------------------------------------------------------------------
+
+describe('computeChunkOverlap', () => {
+  // Helper to create a minimal mock lexical index that always returns the given results
+  function makeSearchMockFixed(
+    results: { chunk: IndexedChunk; score: number }[],
+  ): AIInvestigatorDeps['lexicalIndex'] {
+    return {
+      build: vi.fn(),
+      search: vi.fn().mockReturnValue(results),
+      extractQueryIdentifiers: vi.fn().mockReturnValue([]),
+    } as unknown as AIInvestigatorDeps['lexicalIndex'];
+  }
+
+  function makeSearchMockSequence(
+    first: { chunk: IndexedChunk; score: number }[],
+    second: { chunk: IndexedChunk; score: number }[],
+  ): AIInvestigatorDeps['lexicalIndex'] {
+    return {
+      build: vi.fn(),
+      search: vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second),
+      extractQueryIdentifiers: vi.fn().mockReturnValue([]),
+    } as unknown as AIInvestigatorDeps['lexicalIndex'];
+  }
+
+  it('returns 0 when both seeds retrieve no chunks (empty sets)', () => {
+    const graph: ResourceRelationshipGraph = { nodes: new Map(), edges: [] };
+    const lexical = makeSearchMockFixed([]);
+
+    const seedA = makeSeed('seed:a', 'kubernetes', 'Pod A crashlooping');
+    const seedB = makeSeed('seed:b', 'kubernetes', 'Pod B crashlooping');
+
+    expect(computeChunkOverlap(seedA, seedB, [], graph, lexical)).toBe(0);
+  });
+
+  it('returns 1.0 when both seeds retrieve identical chunk sets', () => {
+    const sharedA = makeChunk('chunk:shared-a', 'pods/default.json', 'content a');
+    const sharedB = makeChunk('chunk:shared-b', 'events/default.json', 'content b');
+    const sharedResults = [
+      { chunk: sharedA, score: 3.0 },
+      { chunk: sharedB, score: 2.0 },
+    ];
+
+    const graph: ResourceRelationshipGraph = { nodes: new Map(), edges: [] };
+    const lexical = makeSearchMockFixed(sharedResults);
+
+    const seedA = makeSeed('seed:a', 'kubernetes', 'Pod A crashlooping');
+    const seedB = makeSeed('seed:b', 'kubernetes', 'Pod B crashlooping');
+
+    const overlap = computeChunkOverlap(seedA, seedB, [sharedA, sharedB], graph, lexical);
+    expect(overlap).toBe(1.0);
+  });
+
+  it('returns correct Jaccard similarity for partial overlap: |A∩B| / |A∪B|', () => {
+    // A = {chunk:a, chunk:shared}
+    // B = {chunk:shared, chunk:b}
+    // intersection = {chunk:shared} (1)
+    // union = {chunk:a, chunk:shared, chunk:b} (3)
+    // Jaccard = 1/3
+    const chunkA = makeChunk('chunk:a', 'pods/default.json', 'pod a');
+    const chunkShared = makeChunk('chunk:shared', 'events/default.json', 'event');
+    const chunkB = makeChunk('chunk:b', 'logs/app.log', 'log b');
+
+    const graph: ResourceRelationshipGraph = { nodes: new Map(), edges: [] };
+    const lexical = makeSearchMockSequence(
+      [{ chunk: chunkA, score: 3.0 }, { chunk: chunkShared, score: 2.0 }],
+      [{ chunk: chunkShared, score: 3.0 }, { chunk: chunkB, score: 2.0 }],
+    );
+
+    const seedA = makeSeed('seed:a', 'kubernetes', 'Pod A crashlooping');
+    const seedB = makeSeed('seed:b', 'kubernetes', 'Pod B crashlooping');
+
+    const overlap = computeChunkOverlap(
+      seedA, seedB, [chunkA, chunkShared, chunkB], graph, lexical,
+    );
+    expect(overlap).toBeCloseTo(1 / 3, 5);
+  });
+
+  it('returns 0 when seeds have completely disjoint chunk sets', () => {
+    const chunkA1 = makeChunk('chunk:a1', 'pods/default.json', 'pod a1');
+    const chunkA2 = makeChunk('chunk:a2', 'events/default.json', 'event a2');
+    const chunkB1 = makeChunk('chunk:b1', 'logs/app.log', 'log b1');
+    const chunkB2 = makeChunk('chunk:b2', 'configmaps/default.json', 'configmap b2');
+
+    const graph: ResourceRelationshipGraph = { nodes: new Map(), edges: [] };
+    const lexical = makeSearchMockSequence(
+      [{ chunk: chunkA1, score: 3.0 }, { chunk: chunkA2, score: 2.0 }],
+      [{ chunk: chunkB1, score: 3.0 }, { chunk: chunkB2, score: 2.0 }],
+    );
+
+    const seedA = makeSeed('seed:a', 'kubernetes', 'Pod A crashlooping');
+    const seedB = makeSeed('seed:b', 'kubernetes', 'Pod B crashlooping');
+
+    const overlap = computeChunkOverlap(
+      seedA, seedB, [chunkA1, chunkA2, chunkB1, chunkB2], graph, lexical,
+    );
+    expect(overlap).toBe(0);
+  });
+
+  it('includes graph-retrieved chunks in the overlap computation', () => {
+    // Graph-retrieved chunks are included in the chunk set for each seed.
+    // When both seeds share a graph chunk, overlap should reflect that.
+    // We simulate this by using a seed source that parseSeedSource can parse
+    // and a chunk with matching identifiers — but since getRelatedChunks
+    // needs a real graph, the easiest path is to verify that graph chunks
+    // retrieved by getRelatedChunks contribute to the set.
+    //
+    // For this test we use empty graph (so no graph chunks) and verify
+    // the lexical contribution is computed correctly — the graph path is
+    // exercised by the BFS tests in resource-graph.test.ts.
+    const sharedChunk = makeChunk('chunk:shared', 'pods/default.json', 'shared content');
+
+    const graph: ResourceRelationshipGraph = { nodes: new Map(), edges: [] };
+    const lexical = makeSearchMockFixed([{ chunk: sharedChunk, score: 3.0 }]);
+
+    const seedA = makeSeed('seed:a', 'kubernetes', 'Pod A crashlooping');
+    const seedB = makeSeed('seed:b', 'kubernetes', 'Pod B crashlooping');
+
+    // Both seeds get the same chunk from lexical → Jaccard = 1.0
+    const overlap = computeChunkOverlap(seedA, seedB, [sharedChunk], graph, lexical);
+    expect(overlap).toBe(1.0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// deduplicateSeeds unit tests
+// ---------------------------------------------------------------------------
+
+describe('deduplicateSeeds', () => {
+  function emptyLexical(): AIInvestigatorDeps['lexicalIndex'] {
+    return {
+      build: vi.fn(),
+      search: vi.fn().mockReturnValue([]),
+      extractQueryIdentifiers: vi.fn().mockReturnValue([]),
+    } as unknown as AIInvestigatorDeps['lexicalIndex'];
+  }
+
+  it('returns an empty array for empty input', () => {
+    const graph: ResourceRelationshipGraph = { nodes: new Map(), edges: [] };
+    const result = deduplicateSeeds([], [], graph, emptyLexical());
+    expect(result).toHaveLength(0);
+  });
+
+  it('returns a single seed unchanged', () => {
+    const graph: ResourceRelationshipGraph = { nodes: new Map(), edges: [] };
+    const seed = makeSeed('seed:a', 'kubernetes', 'Pod A crashlooping');
+    const result = deduplicateSeeds([seed], [], graph, emptyLexical());
+    expect(result).toHaveLength(1);
+    expect(result[0]).toBe(seed);
+  });
+
+  it('does not merge seeds when overlap is below the default threshold (0.8)', () => {
+    // chunkA for seedA, chunkB for seedB → Jaccard = 0 < 0.8 → no merge
+    const chunkA = makeChunk('chunk:a', 'pods/default.json', 'pod a');
+    const chunkB = makeChunk('chunk:b', 'logs/app.log', 'log b');
+
+    const graph: ResourceRelationshipGraph = { nodes: new Map(), edges: [] };
+    const lexical = {
+      build: vi.fn(),
+      search: vi.fn()
+        .mockReturnValueOnce([{ chunk: chunkA, score: 3.0 }])
+        .mockReturnValueOnce([{ chunk: chunkB, score: 3.0 }]),
+      extractQueryIdentifiers: vi.fn().mockReturnValue([]),
+    } as unknown as AIInvestigatorDeps['lexicalIndex'];
+
+    const seedA = makeSeed('seed:a', 'kubernetes', 'Pod A crashlooping');
+    const seedB = makeSeed('seed:b', 'kubernetes', 'Pod B crashlooping');
+
+    const result = deduplicateSeeds([seedA, seedB], [chunkA, chunkB], graph, lexical);
+    expect(result).toHaveLength(2);
+  });
+
+  it('merges two seeds when their chunk overlap exceeds the threshold', () => {
+    // Both seeds get the same chunk → Jaccard = 1.0 > 0.8 → merge
+    const sharedChunk = makeChunk('chunk:shared', 'pods/default.json', 'shared content');
+
+    const graph: ResourceRelationshipGraph = { nodes: new Map(), edges: [] };
+    const lexical = {
+      build: vi.fn(),
+      search: vi.fn().mockReturnValue([{ chunk: sharedChunk, score: 3.0 }]),
+      extractQueryIdentifiers: vi.fn().mockReturnValue([]),
+    } as unknown as AIInvestigatorDeps['lexicalIndex'];
+
+    const seedA = makeSeed('seed:a', 'kubernetes', 'Pod A crashlooping', 90);
+    const seedB = makeSeed('seed:b', 'kubernetes', 'Pod B crashlooping', 70);
+
+    const result = deduplicateSeeds([seedA, seedB], [sharedChunk], graph, lexical);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.id).toMatch(/^seed:merged:/);
+  });
+
+  it('does not merge seeds when overlap equals the threshold exactly (strict >)', () => {
+    // setA = {a,b,c,d,e} (5 chunks), setB = {a,b,c,d} (4 chunks)
+    // intersection = 4, union = 5, Jaccard = 4/5 = 0.8
+    // threshold > 0.8 is NOT satisfied → no merge
+    const chunkA = makeChunk('chunk:a', 'a.json', 'a');
+    const chunkB = makeChunk('chunk:b', 'b.json', 'b');
+    const chunkC = makeChunk('chunk:c', 'c.json', 'c');
+    const chunkD = makeChunk('chunk:d', 'd.json', 'd');
+    const chunkE = makeChunk('chunk:e', 'e.json', 'e');
+
+    const graph: ResourceRelationshipGraph = { nodes: new Map(), edges: [] };
+    const lexical = {
+      build: vi.fn(),
+      search: vi.fn()
+        .mockReturnValueOnce([
+          { chunk: chunkA, score: 5.0 },
+          { chunk: chunkB, score: 4.0 },
+          { chunk: chunkC, score: 3.0 },
+          { chunk: chunkD, score: 2.0 },
+          { chunk: chunkE, score: 1.0 },
+        ])
+        .mockReturnValueOnce([
+          { chunk: chunkA, score: 5.0 },
+          { chunk: chunkB, score: 4.0 },
+          { chunk: chunkC, score: 3.0 },
+          { chunk: chunkD, score: 2.0 },
+        ]),
+      extractQueryIdentifiers: vi.fn().mockReturnValue([]),
+    } as unknown as AIInvestigatorDeps['lexicalIndex'];
+
+    const seedA = makeSeed('seed:a', 'kubernetes', 'Pod A crashlooping');
+    const seedB = makeSeed('seed:b', 'kubernetes', 'Pod B crashlooping');
+
+    const result = deduplicateSeeds(
+      [seedA, seedB],
+      [chunkA, chunkB, chunkC, chunkD, chunkE],
+      graph,
+      lexical,
+    );
+    expect(result).toHaveLength(2);
+  });
+
+  it('merged seed has priority equal to the maximum of the two seeds', () => {
+    const sharedChunk = makeChunk('chunk:shared', 'pods/default.json', 'shared');
+
+    const graph: ResourceRelationshipGraph = { nodes: new Map(), edges: [] };
+    const lexical = {
+      build: vi.fn(),
+      search: vi.fn().mockReturnValue([{ chunk: sharedChunk, score: 3.0 }]),
+      extractQueryIdentifiers: vi.fn().mockReturnValue([]),
+    } as unknown as AIInvestigatorDeps['lexicalIndex'];
+
+    const seedA = makeSeed('seed:a', 'kubernetes', 'Pod A crashlooping', 60);
+    const seedB = makeSeed('seed:b', 'kubernetes', 'Pod B crashlooping', 85);
+
+    const result = deduplicateSeeds([seedA, seedB], [sharedChunk], graph, lexical);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.priority).toBe(85);
+  });
+
+  it('merged seed hypothesis contains both original hypotheses', () => {
+    const sharedChunk = makeChunk('chunk:shared', 'pods/default.json', 'shared');
+
+    const graph: ResourceRelationshipGraph = { nodes: new Map(), edges: [] };
+    const lexical = {
+      build: vi.fn(),
+      search: vi.fn().mockReturnValue([{ chunk: sharedChunk, score: 3.0 }]),
+      extractQueryIdentifiers: vi.fn().mockReturnValue([]),
+    } as unknown as AIInvestigatorDeps['lexicalIndex'];
+
+    const hypothesisA = 'Pod app-pod is in CrashLoopBackOff';
+    const hypothesisB = 'Pod other-pod is in CrashLoopBackOff';
+    const seedA = makeSeed('seed:a', 'kubernetes', hypothesisA, 90);
+    const seedB = makeSeed('seed:b', 'kubernetes', hypothesisB, 70);
+
+    const result = deduplicateSeeds([seedA, seedB], [sharedChunk], graph, lexical);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.hypothesis).toContain(hypothesisA);
+    expect(result[0]!.hypothesis).toContain(hypothesisB);
+  });
+
+  it('merged seed category comes from the first (higher-priority) seed', () => {
+    const sharedChunk = makeChunk('chunk:shared', 'pods/default.json', 'shared');
+
+    const graph: ResourceRelationshipGraph = { nodes: new Map(), edges: [] };
+    const lexical = {
+      build: vi.fn(),
+      search: vi.fn().mockReturnValue([{ chunk: sharedChunk, score: 3.0 }]),
+      extractQueryIdentifiers: vi.fn().mockReturnValue([]),
+    } as unknown as AIInvestigatorDeps['lexicalIndex'];
+
+    // seedA (kubernetes, priority 90) vs seedB (log, priority 70)
+    const seedA = makeSeed('seed:a', 'kubernetes', 'Pod A crashlooping', 90);
+    const seedB = makeSeed('seed:b', 'log', 'Log file has errors', 70);
+
+    const result = deduplicateSeeds([seedA, seedB], [sharedChunk], graph, lexical);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.category).toBe('kubernetes');
+  });
+
+  it('uses a custom threshold when provided (lower threshold merges more aggressively)', () => {
+    // setA = {a, b}, setB = {a, c} → Jaccard = 1/3 ≈ 0.333
+    // threshold=0.8: 0.333 < 0.8 → no merge
+    // threshold=0.2: 0.333 > 0.2 → merge
+    const chunkA = makeChunk('chunk:a', 'a.json', 'a');
+    const chunkB = makeChunk('chunk:b', 'b.json', 'b');
+    const chunkC = makeChunk('chunk:c', 'c.json', 'c');
+
+    const graph: ResourceRelationshipGraph = { nodes: new Map(), edges: [] };
+
+    // First test: high threshold → no merge
+    const lexicalHigh = {
+      build: vi.fn(),
+      search: vi.fn()
+        .mockReturnValueOnce([{ chunk: chunkA, score: 3.0 }, { chunk: chunkB, score: 2.0 }])
+        .mockReturnValueOnce([{ chunk: chunkA, score: 3.0 }, { chunk: chunkC, score: 2.0 }]),
+      extractQueryIdentifiers: vi.fn().mockReturnValue([]),
+    } as unknown as AIInvestigatorDeps['lexicalIndex'];
+
+    const seedA1 = makeSeed('seed:a', 'kubernetes', 'Pod A crashlooping');
+    const seedB1 = makeSeed('seed:b', 'kubernetes', 'Pod B crashlooping');
+    const resultHigh = deduplicateSeeds(
+      [seedA1, seedB1], [chunkA, chunkB, chunkC], graph, lexicalHigh, 0.8,
+    );
+    expect(resultHigh).toHaveLength(2); // no merge
+
+    // Second test: low threshold → merge
+    const lexicalLow = {
+      build: vi.fn(),
+      search: vi.fn()
+        .mockReturnValueOnce([{ chunk: chunkA, score: 3.0 }, { chunk: chunkB, score: 2.0 }])
+        .mockReturnValueOnce([{ chunk: chunkA, score: 3.0 }, { chunk: chunkC, score: 2.0 }]),
+      extractQueryIdentifiers: vi.fn().mockReturnValue([]),
+    } as unknown as AIInvestigatorDeps['lexicalIndex'];
+
+    const seedA2 = makeSeed('seed:a', 'kubernetes', 'Pod A crashlooping');
+    const seedB2 = makeSeed('seed:b', 'kubernetes', 'Pod B crashlooping');
+    const resultLow = deduplicateSeeds(
+      [seedA2, seedB2], [chunkA, chunkB, chunkC], graph, lexicalLow, 0.2,
+    );
+    expect(resultLow).toHaveLength(1); // merged
+  });
+
+  it('handles three seeds where two pairs overlap: merges transitively', () => {
+    // seedA and seedB share chunks → merge into mergedAB
+    // seedC has no overlap with mergedAB → stays separate
+    const sharedChunk = makeChunk('chunk:shared', 'pods/default.json', 'shared');
+    const chunkC = makeChunk('chunk:c', 'logs/app.log', 'log c');
+
+    const graph: ResourceRelationshipGraph = { nodes: new Map(), edges: [] };
+    const lexical = {
+      build: vi.fn(),
+      search: vi.fn()
+        // First pair check: seedA and seedB both get sharedChunk
+        .mockReturnValueOnce([{ chunk: sharedChunk, score: 3.0 }]) // seedA overlap computation
+        .mockReturnValueOnce([{ chunk: sharedChunk, score: 3.0 }]) // seedB overlap computation
+        // Any subsequent calls return empty (no more merges needed)
+        .mockReturnValue([]),
+      extractQueryIdentifiers: vi.fn().mockReturnValue([]),
+    } as unknown as AIInvestigatorDeps['lexicalIndex'];
+
+    const seedA = makeSeed('seed:a', 'kubernetes', 'Pod A crashlooping', 90);
+    const seedB = makeSeed('seed:b', 'kubernetes', 'Pod B crashlooping', 80);
+    const seedC = makeSeed('seed:c', 'log', 'Log file has errors', 70);
+
+    const result = deduplicateSeeds(
+      [seedA, seedB, seedC], [sharedChunk, chunkC], graph, lexical,
+    );
+    // seedA + seedB merged → 2 seeds total (merged + seedC)
+    expect(result).toHaveLength(2);
+    expect(result.some((s) => s.id.startsWith('seed:merged:'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// investigateWithAI — seed deduplication integration tests
+// ---------------------------------------------------------------------------
+
+describe('investigateWithAI — seed deduplication', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('makes one LLM call when two seeds have chunk overlap above the threshold (2.10)', async () => {
+    // Both seeds retrieve the same chunk → Jaccard = 1.0 > 0.8 → merge → 1 LLM call
+    const sharedChunk = makeChunk('chunk:shared', 'pods/default.json', 'shared content');
+    const mockInvestigateSeed = vi.fn().mockResolvedValue({ findings: [] });
+
+    const deps: AIInvestigatorDeps = {
+      llmClient: {
+        investigateSeed: mockInvestigateSeed,
+      } as unknown as AIInvestigatorDeps['llmClient'],
+      chunkIndex: [sharedChunk],
+      resourceGraph: { nodes: new Map(), edges: [] },
+      lexicalIndex: {
+        build: vi.fn(),
+        // Always returns the same chunk → both seeds get the same chunk set
+        search: vi.fn().mockReturnValue([{ chunk: sharedChunk, score: 3.0 }]),
+        extractQueryIdentifiers: vi.fn().mockReturnValue([]),
+      } as unknown as AIInvestigatorDeps['lexicalIndex'],
+    };
+
+    const seeds: InvestigationSeed[] = [
+      makeSeed('seed:k8s:0', 'kubernetes', 'Pod app-pod is in CrashLoopBackOff', 90),
+      makeSeed('seed:k8s:1', 'kubernetes', 'Pod other-pod is in CrashLoopBackOff', 80),
+    ];
+
+    await investigateWithAI(makeContext(), seeds, deps);
+
+    // Seeds merged → only 1 LLM call instead of 2
+    expect(mockInvestigateSeed).toHaveBeenCalledTimes(1);
+  });
+
+  it('makes two separate LLM calls when seeds have low chunk overlap', async () => {
+    // seedA gets chunkA, seedB gets chunkB → Jaccard = 0 < 0.8 → no merge → 2 LLM calls
+    const chunkA = makeChunk('chunk:a', 'pods/a.json', 'pod a content');
+    const chunkB = makeChunk('chunk:b', 'pods/b.json', 'pod b content');
+    const mockInvestigateSeed = vi.fn().mockResolvedValue({ findings: [] });
+
+    const deps: AIInvestigatorDeps = {
+      llmClient: {
+        investigateSeed: mockInvestigateSeed,
+      } as unknown as AIInvestigatorDeps['llmClient'],
+      chunkIndex: [chunkA, chunkB],
+      resourceGraph: { nodes: new Map(), edges: [] },
+      lexicalIndex: {
+        build: vi.fn(),
+        search: vi.fn()
+          // Overlap computation for the pair: seedA gets chunkA, seedB gets chunkB
+          .mockReturnValueOnce([{ chunk: chunkA, score: 3.0 }])
+          .mockReturnValueOnce([{ chunk: chunkB, score: 3.0 }])
+          // Investigation: both seeds → empty (irrelevant for the call-count assertion)
+          .mockReturnValue([]),
+        extractQueryIdentifiers: vi.fn().mockReturnValue([]),
+      } as unknown as AIInvestigatorDeps['lexicalIndex'],
+    };
+
+    const seeds: InvestigationSeed[] = [
+      makeSeed('seed:k8s:0', 'kubernetes', 'Pod app-pod is in CrashLoopBackOff', 90),
+      makeSeed('seed:k8s:1', 'kubernetes', 'Pod other-pod is in CrashLoopBackOff', 80),
+    ];
+
+    await investigateWithAI(makeContext(), seeds, deps);
+
+    // No merge → 2 separate LLM calls
+    expect(mockInvestigateSeed).toHaveBeenCalledTimes(2);
+  });
+
+  it('combined seed prompt contains both original hypotheses', async () => {
+    // When seeds are merged, the single LLM prompt should include both hypothesis texts
+    const sharedChunk = makeChunk('chunk:shared', 'pods/default.json', 'shared content');
+
+    let capturedUserPrompt = '';
+    const mockInvestigateSeed = vi.fn().mockImplementation(
+      async (_system: string, user: string) => {
+        capturedUserPrompt = user;
+        return { findings: [] };
+      },
+    );
+
+    const deps: AIInvestigatorDeps = {
+      llmClient: {
+        investigateSeed: mockInvestigateSeed,
+      } as unknown as AIInvestigatorDeps['llmClient'],
+      chunkIndex: [sharedChunk],
+      resourceGraph: { nodes: new Map(), edges: [] },
+      lexicalIndex: {
+        build: vi.fn(),
+        search: vi.fn().mockReturnValue([{ chunk: sharedChunk, score: 3.0 }]),
+        extractQueryIdentifiers: vi.fn().mockReturnValue([]),
+      } as unknown as AIInvestigatorDeps['lexicalIndex'],
+    };
+
+    const hypothesisA = 'Pod app-pod is in CrashLoopBackOff';
+    const hypothesisB = 'Pod other-pod is in CrashLoopBackOff';
+
+    const seeds: InvestigationSeed[] = [
+      makeSeed('seed:k8s:0', 'kubernetes', hypothesisA, 90),
+      makeSeed('seed:k8s:1', 'kubernetes', hypothesisB, 80),
+    ];
+
+    await investigateWithAI(makeContext(), seeds, deps);
+
+    // One merged call was made
+    expect(mockInvestigateSeed).toHaveBeenCalledTimes(1);
+    // The prompt should contain both original hypotheses
+    expect(capturedUserPrompt).toContain(hypothesisA);
+    expect(capturedUserPrompt).toContain(hypothesisB);
+  });
+
+  it('deduplication runs after maxSeeds slicing — only top seeds are considered for merging', async () => {
+    // 3 seeds given, maxSeeds=2; top 2 (priority 90 and 80) are considered.
+    // Both top seeds have 100% chunk overlap → merge → 1 LLM call.
+    // The third seed (priority 70) is never reached.
+    const sharedChunk = makeChunk('chunk:shared', 'pods/default.json', 'shared content');
+    const mockInvestigateSeed = vi.fn().mockResolvedValue({ findings: [] });
+
+    const deps: AIInvestigatorDeps = {
+      llmClient: {
+        investigateSeed: mockInvestigateSeed,
+      } as unknown as AIInvestigatorDeps['llmClient'],
+      chunkIndex: [sharedChunk],
+      resourceGraph: { nodes: new Map(), edges: [] },
+      lexicalIndex: {
+        build: vi.fn(),
+        search: vi.fn().mockReturnValue([{ chunk: sharedChunk, score: 3.0 }]),
+        extractQueryIdentifiers: vi.fn().mockReturnValue([]),
+      } as unknown as AIInvestigatorDeps['lexicalIndex'],
+    };
+
+    const seeds: InvestigationSeed[] = [
+      makeSeed('seed:k8s:0', 'kubernetes', 'Pod A failing', 90),
+      makeSeed('seed:k8s:1', 'kubernetes', 'Pod B failing', 80),
+      makeSeed('seed:k8s:2', 'kubernetes', 'Pod C failing', 70),
+    ];
+
+    // maxSeeds=2: only top 2 seeds considered; both merge → 1 LLM call
+    await investigateWithAI(makeContext(), seeds, deps, 2);
+
+    expect(mockInvestigateSeed).toHaveBeenCalledTimes(1);
+  });
+
+  it('merged finding ids use the merged seed category', async () => {
+    // Verify that merged seeds produce findings with the correct id prefix
+    const sharedChunk = makeChunk('chunk:shared', 'pods/default.json', 'shared');
+    const mockInvestigateSeed = vi.fn().mockResolvedValue({ findings: [VALID_AI_FINDING] });
+
+    const deps: AIInvestigatorDeps = {
+      llmClient: {
+        investigateSeed: mockInvestigateSeed,
+      } as unknown as AIInvestigatorDeps['llmClient'],
+      chunkIndex: [sharedChunk],
+      resourceGraph: { nodes: new Map(), edges: [] },
+      lexicalIndex: {
+        build: vi.fn(),
+        search: vi.fn().mockReturnValue([{ chunk: sharedChunk, score: 3.0 }]),
+        extractQueryIdentifiers: vi.fn().mockReturnValue([]),
+      } as unknown as AIInvestigatorDeps['lexicalIndex'],
+    };
+
+    const seeds: InvestigationSeed[] = [
+      makeSeed('seed:k8s:0', 'kubernetes', 'Pod app-pod is in CrashLoopBackOff', 90),
+      makeSeed('seed:k8s:1', 'kubernetes', 'Pod other-pod is in CrashLoopBackOff', 80),
+    ];
+
+    const result = await investigateWithAI(makeContext(), seeds, deps);
+
+    // The merged seed's category is 'kubernetes' (from the first/higher-priority seed)
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]!.id).toMatch(/^finding:ai:kubernetes:/);
   });
 });

@@ -1,4 +1,4 @@
-import type { Finding } from '../types/index.js';
+import type { Evidence, Finding, FindingSeverity } from '../types/index.js';
 import type { InvestigatorContext } from './types.js';
 import type {
   EvidenceAssessment,
@@ -6,16 +6,11 @@ import type {
   HypothesisCategory,
   HypothesisSet,
 } from './hypothesis-types.js';
+import { matchTemplate } from './hypothesis-templates.js';
+import type { HypothesisTemplate } from './hypothesis-templates.js';
 
 // ---------------------------------------------------------------------------
-// Internal types
-// ---------------------------------------------------------------------------
-
-/** Broad classification of an observed symptom, used to select hypothesis templates. */
-type SymptomType = 'crashloop' | 'imagepull' | 'not-ready' | 'pending' | 'generic';
-
-// ---------------------------------------------------------------------------
-// Helpers — symptom detection
+// Helpers — symptom detection (now template-driven)
 // ---------------------------------------------------------------------------
 
 /**
@@ -35,62 +30,24 @@ function findingTextCorpus(finding: Finding): string {
 }
 
 /**
- * Infers the {@link SymptomType} from the findings in a group.
- *
- * Detection considers titles, reasoning summaries, and evidence notes.
- * The first matching finding wins; if no pattern matches, `'generic'` is
- * returned.
+ * Finds the matching template for a group of findings by building a combined
+ * text corpus and matching against the template registry.
  */
-function detectSymptomType(findings: Finding[]): SymptomType {
+function detectTemplate(findings: Finding[]): HypothesisTemplate {
   for (const finding of findings) {
-    const lower = findingTextCorpus(finding);
-
-    if (
-      lower.includes('crashloopbackoff') ||
-      lower.includes('crashloop') ||
-      lower.includes('back-off restarting failed container')
-    ) {
-      return 'crashloop';
-    }
-
-    if (
-      lower.includes('imagepullbackoff') ||
-      lower.includes('errimagepull') ||
-      lower.includes('image pull') ||
-      lower.includes('failed to pull image') ||
-      lower.includes('back-off pulling image')
-    ) {
-      return 'imagepull';
-    }
-
-    if (
-      lower.includes('not ready') ||
-      lower.includes('notready') ||
-      lower.includes('readiness probe failed') ||
-      lower.includes('readiness condition is false')
-    ) {
-      return 'not-ready';
-    }
-
-    if (
-      lower.includes('pending pod') ||
-      lower.includes('containercreating') ||
-      lower.includes('volume mount failure') ||
-      lower.includes('failed to mount') ||
-      lower.includes('failedmount') ||
-      lower.includes('failedscheduling') ||
-      lower.includes('provisionfailed') ||
-      lower.includes('provisioningfailed')
-    ) {
-      return 'pending';
+    const corpus = findingTextCorpus(finding);
+    const template = matchTemplate(corpus);
+    // If we got a non-generic match, use it immediately (first match wins)
+    if (template.id !== 'generic') {
+      return template;
     }
   }
-
-  return 'generic';
+  // No specific match found — return the generic fallback
+  return matchTemplate('');
 }
 
 // ---------------------------------------------------------------------------
-// Helpers — symptom key / description derivation
+// Helpers — symptom key / description derivation (template-driven)
 // ---------------------------------------------------------------------------
 
 /**
@@ -112,37 +69,26 @@ function primaryComponentKey(finding: Finding): string {
 }
 
 /**
- * Builds a concise, stable symptom key from a component identifier and the
- * inferred symptom type.
+ * Builds a concise, stable symptom key from a component identifier and
+ * the matched template.
  *
- * Format: `{symptom-type}:{namespace}/{name}` or `{symptom-type}:{name}`,
+ * Format: `{symptomKeyPrefix}:{namespace}/{name}` or `{symptomKeyPrefix}:{name}`,
  * e.g. `pod-crashloop:default/app-pod`.
  */
-function buildSymptomKey(componentKey: string, symptomType: SymptomType): string {
+function buildSymptomKey(componentKey: string, template: HypothesisTemplate): string {
   // Extract the meaningful suffix from a component path like "Pod/default/app-pod"
   const slashIdx = componentKey.indexOf('/');
   const suffix = slashIdx !== -1 ? componentKey.slice(slashIdx + 1) : componentKey;
-
-  switch (symptomType) {
-    case 'crashloop':
-      return `pod-crashloop:${suffix}`;
-    case 'imagepull':
-      return `pod-imagepull:${suffix}`;
-    case 'not-ready':
-      return `pod-not-ready:${suffix}`;
-    case 'pending':
-      return `pod-pending:${suffix}`;
-    default:
-      return `symptom:${suffix}`;
-  }
+  return `${template.symptomKeyPrefix}:${suffix}`;
 }
 
 /**
- * Builds a human-readable description of the symptom.
+ * Builds a human-readable description of the symptom using the template's
+ * description template string with placeholder substitution.
  */
 function buildSymptomDescription(
   componentKey: string,
-  symptomType: SymptomType,
+  template: HypothesisTemplate,
   findings: Finding[],
 ): string {
   // Try to parse "Kind/namespace/name" → namespace + name
@@ -150,19 +96,16 @@ function buildSymptomDescription(
   const name = parts[parts.length - 1] ?? componentKey;
   const namespace = parts.length >= 3 ? parts[parts.length - 2] : 'unknown';
 
-  switch (symptomType) {
-    case 'crashloop':
-      return `Pod '${name}' is in CrashLoopBackOff in namespace '${namespace}'`;
-    case 'imagepull':
-      return `Pod '${name}' cannot pull its container image in namespace '${namespace}'`;
-    case 'not-ready':
-      return `Pod '${name}' is running but not ready in namespace '${namespace}'`;
-    case 'pending':
-      return `Pod '${name}' is stuck in Pending/ContainerCreating in namespace '${namespace}'`;
-    default:
-      // Fall back to the first finding's title as the description
-      return findings[0]?.title ?? componentKey;
+  const descTemplate = template.symptomDescriptionTemplate;
+
+  // For the generic template, the {title} placeholder falls back to finding title
+  if (descTemplate === '{title}') {
+    return findings[0]?.title ?? componentKey;
   }
+
+  return descTemplate
+    .replace(/\{name\}/g, name)
+    .replace(/\{namespace\}/g, namespace);
 }
 
 // ---------------------------------------------------------------------------
@@ -179,7 +122,7 @@ function emptyEvidenceAssessment(): EvidenceAssessment {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers — hypothesis builder
+// Helpers — hypothesis builder (template-driven)
 // ---------------------------------------------------------------------------
 
 /**
@@ -207,214 +150,35 @@ function buildHypothesis(
   };
 }
 
-/** Returns stable, de-duplicated source finding ids for a symptom group. */
-function sourceFindingIds(findings: Finding[]): string[] {
-  return Array.from(new Set(findings.map((finding) => finding.id)));
-}
-
-// ---------------------------------------------------------------------------
-// Hypothesis templates per symptom type
-// ---------------------------------------------------------------------------
-
 /**
- * Generates the full set of competing hypotheses for a CrashLoopBackOff
- * symptom.  Five candidates are returned:
- * 1. `missing-secret`  — a required Secret/key is absent
- * 2. `config-error`    — a ConfigMap or env-var is misconfigured
- * 3. `dns-failure`     — startup depends on a hostname that cannot be resolved
- * 4. `oom-kill`        — the container exceeds its memory limit
- * 5. `generic-crash`   — unclassified application bug
+ * Generates hypotheses from a matched template.
+ *
+ * This single function replaces all the per-symptom procedural generator
+ * functions (generateCrashLoopHypotheses, generateImagePullHypotheses, etc.).
+ * The template data drives hypothesis construction — no code changes needed
+ * to add new symptom types.
  */
-function generateCrashLoopHypotheses(
+function generateHypothesesFromTemplateData(
+  template: HypothesisTemplate,
   symptomKey: string,
   symptomDescription: string,
   findings: Finding[],
 ): Hypothesis[] {
   const sourceIds = findings.map((f) => f.id);
+  // For the generic template, de-duplicate source IDs
+  const ids = template.id === 'generic'
+    ? Array.from(new Set(sourceIds))
+    : sourceIds;
 
-  return [
+  return template.hypotheses.map((def) =>
     buildHypothesis(
-      `${symptomKey}:missing-secret`,
+      `${symptomKey}:${def.idSuffix}`,
       symptomDescription,
-      'A required Kubernetes Secret or key is absent, causing the container to fail on startup',
-      'missing-secret',
-      sourceIds,
+      def.rootCause,
+      def.category,
+      ids,
     ),
-    buildHypothesis(
-      `${symptomKey}:config-error`,
-      symptomDescription,
-      'A ConfigMap value or environment variable is misconfigured, causing the application to exit at startup',
-      'config-error',
-      sourceIds,
-    ),
-    buildHypothesis(
-      `${symptomKey}:dns-failure`,
-      symptomDescription,
-      'A dependency hostname required during startup cannot be resolved, causing the application to fail and restart',
-      'dns-failure',
-      sourceIds,
-    ),
-    buildHypothesis(
-      `${symptomKey}:oom-kill`,
-      symptomDescription,
-      'The container is being killed by the OOM killer because it exceeds its memory limit',
-      'oom-kill',
-      sourceIds,
-    ),
-    buildHypothesis(
-      `${symptomKey}:generic-crash`,
-      symptomDescription,
-      'The application has an unclassified bug causing it to crash immediately on startup',
-      'generic-crash',
-      sourceIds,
-    ),
-  ];
-}
-
-/**
- * Generates the full set of competing hypotheses for an ImagePullBackOff
- * symptom.  Three candidates are returned:
- * 1. `image-pull-failure` (bad-tag)            — image tag not found in registry
- * 2. `image-pull-failure` (auth-failure)       — imagePullSecret missing/invalid
- * 3. `image-pull-failure` (registry-unavailable) — registry unreachable from cluster
- */
-function generateImagePullHypotheses(
-  symptomKey: string,
-  symptomDescription: string,
-  findings: Finding[],
-): Hypothesis[] {
-  const sourceIds = findings.map((f) => f.id);
-
-  return [
-    buildHypothesis(
-      `${symptomKey}:image-pull-failure:bad-tag`,
-      symptomDescription,
-      'The image tag does not exist in the container registry (wrong, misspelled, or deleted tag)',
-      'image-pull-failure',
-      sourceIds,
-    ),
-    buildHypothesis(
-      `${symptomKey}:image-pull-failure:auth-failure`,
-      symptomDescription,
-      'Registry authentication failure — pull credentials are invalid, expired, or have insufficient registry permissions',
-      'image-pull-failure',
-      sourceIds,
-    ),
-    buildHypothesis(
-      `${symptomKey}:image-pull-failure:registry-unavailable`,
-      symptomDescription,
-      'The container registry is unavailable or unreachable from the cluster network',
-      'image-pull-failure',
-      sourceIds,
-    ),
-  ];
-}
-
-/**
- * Generates the full set of competing hypotheses for a not-ready symptom.
- * Three candidates are returned:
- * 1. `connectivity-failure` — a required dependency is unavailable
- * 2. `dns-failure`          — DNS resolution is failing
- * 3. `readiness-failure`    — the readiness probe is misconfigured
- */
-function generateNotReadyHypotheses(
-  symptomKey: string,
-  symptomDescription: string,
-  findings: Finding[],
-): Hypothesis[] {
-  const sourceIds = findings.map((f) => f.id);
-
-  return [
-    buildHypothesis(
-      `${symptomKey}:connectivity-failure`,
-      symptomDescription,
-      'A required dependency (database, cache, or external service) is unavailable, blocking readiness',
-      'connectivity-failure',
-      sourceIds,
-    ),
-    buildHypothesis(
-      `${symptomKey}:dns-failure`,
-      symptomDescription,
-      'DNS resolution is failing for a hostname the application depends on, preventing startup',
-      'dns-failure',
-      sourceIds,
-    ),
-    buildHypothesis(
-      `${symptomKey}:readiness-failure`,
-      symptomDescription,
-      'The readiness probe is misconfigured — wrong port, path, or timing parameters cause it to always fail',
-      'readiness-failure',
-      sourceIds,
-    ),
-  ];
-}
-
-/**
- * Generates the full set of competing hypotheses for a Pending Pod symptom.
- * Three candidates are returned:
- * 1. `volume-mount-failure` — PVC cannot provision because StorageClass is missing
- * 2. `missing-secret`      — A volume or secret referenced in the pod spec is absent
- * 3. `config-error`        — Pod spec has a misconfigured volume reference
- */
-function generatePendingPodHypotheses(
-  symptomKey: string,
-  symptomDescription: string,
-  findings: Finding[],
-): Hypothesis[] {
-  const sourceIds = findings.map((f) => f.id);
-
-  return [
-    buildHypothesis(
-      `${symptomKey}:volume-mount-failure`,
-      symptomDescription,
-      'A PersistentVolumeClaim cannot be provisioned because the referenced StorageClass is missing or the storage provisioner is unavailable',
-      'volume-mount-failure',
-      sourceIds,
-    ),
-    buildHypothesis(
-      `${symptomKey}:missing-secret`,
-      symptomDescription,
-      'A volume, Secret, or ConfigMap referenced in the pod spec is absent, preventing the container from starting',
-      'missing-secret',
-      sourceIds,
-    ),
-    buildHypothesis(
-      `${symptomKey}:config-error`,
-      symptomDescription,
-      'The pod spec has a misconfigured volume reference, resource request, or node selector that prevents scheduling',
-      'config-error',
-      sourceIds,
-    ),
-  ];
-}
-
-/**
- * Generates a minimal set of generic hypotheses when no specific symptom type
- * can be detected from the finding titles.
- */
-function generateGenericHypotheses(
-  symptomKey: string,
-  symptomDescription: string,
-  findings: Finding[],
-): Hypothesis[] {
-  const sourceIds = sourceFindingIds(findings);
-
-  return [
-    buildHypothesis(
-      `${symptomKey}:generic-crash`,
-      symptomDescription,
-      'The application has an unclassified bug or configuration issue causing degraded behaviour',
-      'generic-crash',
-      sourceIds,
-    ),
-    buildHypothesis(
-      `${symptomKey}:config-error`,
-      symptomDescription,
-      'A configuration value or environment variable is incorrect or missing',
-      'config-error',
-      sourceIds,
-    ),
-  ];
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -448,9 +212,10 @@ export function groupFindingsBySymptom(findings: Finding[]): Map<string, Finding
 /**
  * Generates all competing hypotheses for a single symptom group.
  *
- * The symptom type is inferred from the finding titles.  Each hypothesis
- * starts with `confidence: 0.0` and empty evidence assessments — the scorer
- * (step 4) will fill these in after the evidence collector (step 3) runs.
+ * Uses the declarative template registry to select the matching template and
+ * generate hypothesis candidates. Each hypothesis starts with
+ * `confidence: 0.0` and empty evidence assessments — the scorer (step 4)
+ * will fill these in after the evidence collector (step 3) runs.
  *
  * @param symptomKey - A short stable key for this symptom, e.g.
  *   `"pod-crashloop:default/app-pod"`.
@@ -466,25 +231,14 @@ export function generateHypothesesForSymptom(
 ): Hypothesis[] {
   if (findings.length === 0) return [];
 
-  const symptomType = detectSymptomType(findings);
+  const template = detectTemplate(findings);
 
   // Build the description from the first finding when the key is external
   // (called directly from tests); for internal use, buildSymptomDescription
   // provides a richer version derived from the component key.
   const symptomDescription = findings[0]?.title ?? symptomKey;
 
-  switch (symptomType) {
-    case 'crashloop':
-      return generateCrashLoopHypotheses(symptomKey, symptomDescription, findings);
-    case 'imagepull':
-      return generateImagePullHypotheses(symptomKey, symptomDescription, findings);
-    case 'not-ready':
-      return generateNotReadyHypotheses(symptomKey, symptomDescription, findings);
-    case 'pending':
-      return generatePendingPodHypotheses(symptomKey, symptomDescription, findings);
-    default:
-      return generateGenericHypotheses(symptomKey, symptomDescription, findings);
-  }
+  return generateHypothesesFromTemplateData(template, symptomKey, symptomDescription, findings);
 }
 
 /**
@@ -507,7 +261,7 @@ export function generateHypothesesForSymptom(
  */
 export function generateAllHypotheses(
   findings: Finding[],
-  context: InvestigatorContext,
+  _context: InvestigatorContext,
 ): HypothesisSet[] {
   if (findings.length === 0) return [];
 
@@ -515,22 +269,20 @@ export function generateAllHypotheses(
   const sets: HypothesisSet[] = [];
 
   for (const [componentKey, groupFindings] of groups) {
-    const symptomType = detectSymptomType(groupFindings);
-    const symptomKey = buildSymptomKey(componentKey, symptomType);
+    const template = detectTemplate(groupFindings);
+    const symptomKey = buildSymptomKey(componentKey, template);
     const symptomDescription = buildSymptomDescription(
       componentKey,
-      symptomType,
+      template,
       groupFindings,
     );
 
-    // Pass the rich description into hypothesis generation by using a slightly
-    // different internal path: override the per-finding title with the
-    // component-aware description by wrapping the call.
-    const hypotheses = generateHypothesesForSymptomInternal(
+    // Generate hypotheses using the matched template data
+    const hypotheses = generateHypothesesFromTemplateData(
+      template,
       symptomKey,
       symptomDescription,
       groupFindings,
-      context,
     );
 
     sets.push({
@@ -545,34 +297,235 @@ export function generateAllHypotheses(
 }
 
 // ---------------------------------------------------------------------------
-// Internal helper — avoids repeating symptom-type detection
+// Cross-symptom hypothesis correlation (7.5)
 // ---------------------------------------------------------------------------
 
 /**
- * Like {@link generateHypothesesForSymptom} but accepts a pre-computed
- * `symptomDescription` so the component-aware description from
- * {@link buildSymptomDescription} is used in the hypothesis `symptom` field.
+ * Minimum number of symptom sets that must converge on the same root-cause
+ * category and namespace before a cluster-wide meta-finding is emitted.
  */
-function generateHypothesesForSymptomInternal(
-  symptomKey: string,
-  symptomDescription: string,
-  findings: Finding[],
-  _context: InvestigatorContext,
-): Hypothesis[] {
-  if (findings.length === 0) return [];
+const MIN_CONVERGENCE_COUNT = 2;
 
-  const symptomType = detectSymptomType(findings);
+/**
+ * Confidence boost applied per additional converging symptom set beyond the
+ * first. Capped at {@link MAX_CONVERGENCE_BOOST}.
+ *
+ * With `CONVERGENCE_BOOST_PER_SET = 0.08`:
+ * - 2 sets → +0.08
+ * - 3 sets → +0.16
+ * - 4 sets → +0.24
+ * - 5+ sets → capped at +0.25
+ */
+const CONVERGENCE_BOOST_PER_SET = 0.08;
 
-  switch (symptomType) {
-    case 'crashloop':
-      return generateCrashLoopHypotheses(symptomKey, symptomDescription, findings);
-    case 'imagepull':
-      return generateImagePullHypotheses(symptomKey, symptomDescription, findings);
-    case 'not-ready':
-      return generateNotReadyHypotheses(symptomKey, symptomDescription, findings);
-    case 'pending':
-      return generatePendingPodHypotheses(symptomKey, symptomDescription, findings);
-    default:
-      return generateGenericHypotheses(symptomKey, symptomDescription, findings);
+/** Maximum total confidence boost applied by convergence. */
+const MAX_CONVERGENCE_BOOST = 0.25;
+
+/**
+ * Human-readable label for each hypothesis category, used in meta-finding
+ * titles produced by {@link correlateAcrossSymptoms}.
+ */
+const CATEGORY_READABLE: Record<HypothesisCategory, string> = {
+  'dns-failure': 'DNS failure',
+  'missing-secret': 'missing secret',
+  'config-error': 'configuration error',
+  'oom-kill': 'OOM kill',
+  'image-pull-failure': 'image pull failure',
+  'connectivity-failure': 'connectivity failure',
+  'bad-db-endpoint': 'bad database endpoint',
+  'readiness-failure': 'readiness probe failure',
+  'generic-crash': 'application crash',
+  'missing-service': 'missing service',
+  'volume-mount-failure': 'volume mount failure',
+};
+
+/**
+ * Base severity for each hypothesis category, reflected in cluster-wide
+ * meta-findings produced by {@link correlateAcrossSymptoms}.
+ */
+const META_SEVERITY_BY_CATEGORY: Record<HypothesisCategory, FindingSeverity> = {
+  'missing-secret': 'critical',
+  'oom-kill': 'critical',
+  'image-pull-failure': 'critical',
+  'volume-mount-failure': 'critical',
+  'dns-failure': 'high',
+  'connectivity-failure': 'high',
+  'bad-db-endpoint': 'high',
+  'config-error': 'medium',
+  'readiness-failure': 'medium',
+  'missing-service': 'medium',
+  'generic-crash': 'medium',
+};
+
+/**
+ * Recommended actions for cluster-wide meta-findings, tailored to namespace-
+ * scope investigation.
+ */
+const META_RECOMMENDED_ACTION: Record<HypothesisCategory, string> = {
+  'dns-failure':
+    'Investigate namespace-wide DNS resolution. Check CoreDNS pod logs (`kubectl logs -n kube-system -l k8s-app=kube-dns`), verify Service resources exist for all referenced hostnames, and confirm kube-dns ConfigMap is correct.',
+  'missing-secret':
+    'A shared Secret is missing or was deleted from this namespace. Check `kubectl get secrets -n <namespace>` and verify the Secret is defined in the deployment manifest or Helm chart.',
+  'config-error':
+    'A shared ConfigMap or environment variable is misconfigured in this namespace. Review all ConfigMap data and Pod environment variable references for incorrect or missing values.',
+  'oom-kill':
+    'Multiple pods are being OOM-killed. Review container memory limits for pods in this namespace. Consider increasing memory limits or profiling application memory usage.',
+  'image-pull-failure':
+    'Multiple pods cannot pull their container images. Verify imagePullSecrets, registry credentials, and image tag availability for all affected pods in this namespace.',
+  'connectivity-failure':
+    'Multiple pods are experiencing connectivity failures. Check NetworkPolicy resources, Endpoints health, and network infrastructure for this namespace.',
+  'bad-db-endpoint':
+    'Multiple pods cannot reach the database endpoint. Verify the connection string, hostname resolution, and database service availability in this namespace.',
+  'readiness-failure':
+    'Multiple pods are failing readiness probes. Review readiness probe configuration (port, path, timing) and application startup dependencies shared across pods in this namespace.',
+  'generic-crash':
+    'Multiple pods are crashing. Review application logs across all affected pods to identify a shared root cause (shared library, shared ConfigMap, shared dependency).',
+  'missing-service':
+    'Multiple pods reference a missing Service. Verify that the required Service is defined in this namespace and that its selector matches the correct pod labels.',
+  'volume-mount-failure':
+    'Multiple pods cannot mount their volumes. Check PVC status (`kubectl get pvc -n <namespace>`), StorageClass availability, and storage provisioner health in this namespace.',
+};
+
+/**
+ * Extracts the namespace portion from a symptom key.
+ *
+ * Symptom keys have the format `{symptom-type}:{namespace}/{name}`, e.g.
+ * `"pod-crashloop:default/app-pod"`. Returns `null` when the key does not
+ * include a namespace/name pair (no slash after the colon).
+ */
+function extractNamespaceFromSymptomKey(symptomKey: string): string | null {
+  const colonIdx = symptomKey.indexOf(':');
+  if (colonIdx === -1) return null;
+  const suffix = symptomKey.slice(colonIdx + 1); // e.g. "default/app-pod"
+  const slashIdx = suffix.indexOf('/');
+  if (slashIdx === -1) return null;
+  return suffix.slice(0, slashIdx); // e.g. "default"
+}
+
+/**
+ * Extracts the resource-name portion from a symptom key.
+ *
+ * Returns the segment after the namespace separator, or the full suffix when
+ * no namespace is present.
+ */
+function extractNameFromSymptomKey(symptomKey: string): string {
+  const colonIdx = symptomKey.indexOf(':');
+  if (colonIdx === -1) return symptomKey;
+  const suffix = symptomKey.slice(colonIdx + 1); // e.g. "default/app-pod"
+  const slashIdx = suffix.indexOf('/');
+  if (slashIdx === -1) return suffix;
+  return suffix.slice(slashIdx + 1); // e.g. "app-pod"
+}
+
+/**
+ * Detects when N symptom groups converge on the same root-cause category in
+ * the same namespace and produces a cluster-wide meta-finding for each such
+ * convergence.
+ *
+ * A convergence group is formed when two or more {@link HypothesisSet}s with
+ * a non-null, positive-confidence `topHypothesis` share the same
+ * `topHypothesis.category` **and** belong to the same Kubernetes namespace
+ * (extracted from the `symptomKey`).
+ *
+ * The meta-finding's confidence is boosted proportionally to the number of
+ * converging symptom groups: each additional set beyond the first adds
+ * {@link CONVERGENCE_BOOST_PER_SET} to the base confidence (the average of
+ * the individual top-hypothesis confidences), capped at 1.0.
+ *
+ * @param hypothesisSets - Scored hypothesis sets (from the hypothesis layer,
+ *   after ranking). Sets without a `topHypothesis` or with zero confidence
+ *   are ignored.
+ * @returns An array of meta-findings — one per convergence group — ready to
+ *   merge into the final finding list. Returns an empty array when no
+ *   convergence is detected.
+ */
+export function correlateAcrossSymptoms(hypothesisSets: HypothesisSet[]): Finding[] {
+  // ── 1. Filter to only scored sets ────────────────────────────────────────
+  const scoredSets = hypothesisSets.filter(
+    (s) => s.topHypothesis !== null && s.topHypothesis.confidence > 0,
+  );
+
+  if (scoredSets.length < MIN_CONVERGENCE_COUNT) return [];
+
+  // ── 2. Group by (namespace, category) ────────────────────────────────────
+  const groups = new Map<
+    string,
+    { namespace: string; category: HypothesisCategory; sets: HypothesisSet[] }
+  >();
+
+  for (const set of scoredSets) {
+    const namespace = extractNamespaceFromSymptomKey(set.symptomKey);
+    if (namespace === null) continue; // Cannot determine namespace — skip
+
+    const category = set.topHypothesis!.category;
+    const key = `${namespace}::${category}`;
+
+    const existing = groups.get(key);
+    if (existing !== undefined) {
+      existing.sets.push(set);
+    } else {
+      groups.set(key, { namespace, category, sets: [set] });
+    }
   }
+
+  // ── 3. Emit a meta-finding for each convergence group ────────────────────
+  const metaFindings: Finding[] = [];
+  let counter = 0;
+
+  for (const { namespace, category, sets } of groups.values()) {
+    if (sets.length < MIN_CONVERGENCE_COUNT) continue;
+
+    const count = sets.length;
+
+    // Compute boosted confidence from the average of individual top hypotheses
+    const avgConfidence =
+      sets.reduce((sum, s) => sum + s.topHypothesis!.confidence, 0) / count;
+    const boost = Math.min(MAX_CONVERGENCE_BOOST, (count - 1) * CONVERGENCE_BOOST_PER_SET);
+    const finalConfidence =
+      Math.round(Math.min(1.0, avgConfidence + boost) * 10_000) / 10_000;
+
+    // Collect affected pod components (deduplicated)
+    const affectedComponents: string[] = [];
+    const evidenceItems: Evidence[] = [];
+
+    for (const set of sets) {
+      const podName = extractNameFromSymptomKey(set.symptomKey);
+      const podComponent = `Pod/${namespace}/${podName}`;
+      if (!affectedComponents.includes(podComponent)) {
+        affectedComponents.push(podComponent);
+      }
+      evidenceItems.push({
+        path: set.symptomKey,
+        note: set.symptomDescription,
+        artifactType: 'kubernetes-resource',
+      });
+    }
+
+    const readableCategory = CATEGORY_READABLE[category] ?? category;
+    counter += 1;
+
+    metaFindings.push({
+      id: `finding:meta:cluster-wide:${category}:${namespace}:${counter}`,
+      title: `Cluster-wide ${readableCategory} affecting ${count} pods in namespace '${namespace}'`,
+      severity: META_SEVERITY_BY_CATEGORY[category] ?? 'medium',
+      confidence: finalConfidence,
+      affectedComponents,
+      reasoningSummary:
+        `${count} pods in namespace '${namespace}' independently converge on the same root cause: ` +
+        `${readableCategory}. Cross-symptom convergence across ${count} independent symptom groups ` +
+        `significantly increases diagnostic confidence (base avg: ${Math.round(avgConfidence * 100)}%, ` +
+        `convergence boost: +${Math.round(boost * 100)}%). ` +
+        `Investigate a namespace-level ${readableCategory} condition shared by all affected pods.`,
+      evidence: evidenceItems,
+      contradictionsChecked: [
+        `No cross-namespace contradictions found — all ${count} affected pods are in namespace '${namespace}'`,
+      ],
+      recommendedAction:
+        META_RECOMMENDED_ACTION[category] ??
+        `Investigate the cluster-wide ${readableCategory} condition affecting all pods in namespace '${namespace}'.`,
+      missingEvidence: [],
+    });
+  }
+
+  return metaFindings;
 }

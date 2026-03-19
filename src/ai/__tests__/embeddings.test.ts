@@ -12,6 +12,8 @@ function makeConfig(overrides: Partial<AIConfig> = {}): AIConfig {
     apiKey: 'test-key',
     model: 'gpt-4o',
     embeddingModel: 'text-embedding-3-small',
+    embeddingBackend: 'openai',
+    embeddingUrl: 'http://localhost:8080',
     enabled: true,
     ...overrides,
   };

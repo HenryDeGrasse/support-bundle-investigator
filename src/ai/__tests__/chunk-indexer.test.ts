@@ -222,17 +222,35 @@ describe('buildChunkIndex', () => {
     expect(analyzerChunks).toHaveLength(3);
   });
 
-  it('produces multiple log chunks for large log files', () => {
-    // 55 lines → should produce 2 chunks with chunkSize=50, overlap=10
-    const lines = Array.from({ length: 55 }, (_, i) => ({
-      lineNumber: i + 1,
-      content: `Line ${i + 1}`,
-      level: 'info' as const,
-    }));
-    const logFile: LogFile = { path: '/logs/app.log', lines, errorCount: 0, warningCount: 0, importance: 0 };
+  it('produces multiple log chunks for log files with errors (preamble + error-cluster + summary)', () => {
+    // Log file with errors: error-aware chunking produces preamble + error-cluster + summary
+    const lines = [
+      // Lines 1-20: INFO (preamble zone)
+      ...Array.from({ length: 20 }, (_, i) => ({
+        lineNumber: i + 1,
+        content: `INFO: startup line ${i + 1}`,
+        level: 'info' as const,
+      })),
+      // Lines 21-30: INFO (healthy region)
+      ...Array.from({ length: 10 }, (_, i) => ({
+        lineNumber: 21 + i,
+        content: `INFO: normal line ${21 + i}`,
+        level: 'info' as const,
+      })),
+      // Line 31: ERROR (triggers error-cluster chunk)
+      { lineNumber: 31, content: 'ERROR: connection refused', level: 'error' as const },
+      // Lines 32-55: INFO (healthy tail)
+      ...Array.from({ length: 24 }, (_, i) => ({
+        lineNumber: 32 + i,
+        content: `INFO: tail line ${32 + i}`,
+        level: 'info' as const,
+      })),
+    ];
+    const logFile: LogFile = { path: '/logs/app.log', lines, errorCount: 1, warningCount: 0, importance: 0.5 };
     const ctx = makeContext({ logs: [logFile] });
     const chunks = buildChunkIndex(ctx);
     const logChunks = chunks.filter((c) => c.artifactCategory === 'log');
+    // preamble + error-cluster + summary = 3 chunks
     expect(logChunks.length).toBeGreaterThan(1);
   });
 });
@@ -933,5 +951,122 @@ describe('identifiersFromHelmRelease', () => {
   it('does not include empty strings', () => {
     const ids = identifiersFromHelmRelease(makeHelmRelease({ appVersion: '', chartVersion: '' }));
     expect(ids).not.toContain('');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// augmentLogChunk — meaningful log summary (2.8)
+// ---------------------------------------------------------------------------
+
+describe('augmentLogChunk — meaningful log summary (2.8)', () => {
+  it('error-cluster chunk summary includes primary error lines', () => {
+    const lines = [
+      ...Array.from({ length: 20 }, (_, i) => ({
+        lineNumber: i + 1,
+        content: `INFO: startup line ${i + 1}`,
+        level: 'info' as const,
+      })),
+      {
+        lineNumber: 21,
+        content: 'ERROR: connection refused to postgres:5432',
+        level: 'error' as const,
+      },
+      ...Array.from({ length: 10 }, (_, i) => ({
+        lineNumber: 22 + i,
+        content: `INFO: tail line ${22 + i}`,
+        level: 'info' as const,
+      })),
+    ];
+    const logFile: LogFile = {
+      path: '/logs/app.log',
+      lines,
+      errorCount: 1,
+      warningCount: 0,
+      importance: 0.5,
+    };
+    const ctx = makeContext({ logs: [logFile] });
+    const chunks = buildChunkIndex(ctx);
+    const errorChunk = chunks.find(
+      (c) => c.artifactCategory === 'log' && c.metadata?.['chunkType'] === 'error-cluster',
+    );
+    expect(errorChunk).toBeDefined();
+    // Summary must include the actual error content, not just the path description
+    expect(errorChunk!.summary).toContain('connection refused');
+  });
+
+  it('error-cluster chunk summary is not a bare path/line-range description', () => {
+    const lines = [
+      ...Array.from({ length: 20 }, (_, i) => ({
+        lineNumber: i + 1,
+        content: `INFO: startup ${i + 1}`,
+        level: 'info' as const,
+      })),
+      {
+        lineNumber: 21,
+        content: 'ERROR: disk full on /dev/sda1',
+        level: 'error' as const,
+      },
+    ];
+    const logFile: LogFile = {
+      path: '/logs/app.log',
+      lines,
+      errorCount: 1,
+      warningCount: 0,
+      importance: 0.5,
+    };
+    const ctx = makeContext({ logs: [logFile] });
+    const chunks = buildChunkIndex(ctx);
+    const errorChunk = chunks.find(
+      (c) => c.artifactCategory === 'log' && c.metadata?.['chunkType'] === 'error-cluster',
+    );
+    expect(errorChunk).toBeDefined();
+    // Must NOT be just "Log chunk from X (lines N–M)" with nothing else
+    const isBarePath = /^Log chunk from .+ \(lines \d+[–-]\d+\)$/.test(
+      errorChunk!.summary.trim(),
+    );
+    expect(isBarePath).toBe(false);
+    // And it must include actual error content
+    expect(errorChunk!.summary).toContain('disk full');
+  });
+
+  it('preamble chunk summary includes actual log content', () => {
+    const logFile = makeLogFile('/logs/app.log', 1);
+    const ctx = makeContext({ logs: [logFile] });
+    const chunks = buildChunkIndex(ctx);
+    const preambleChunk = chunks.find(
+      (c) => c.artifactCategory === 'log' && c.metadata?.['chunkType'] === 'preamble',
+    );
+    expect(preambleChunk).toBeDefined();
+    // Preamble summary should include actual content, not just a bare path description
+    const isBarePath = /^Log chunk from .+ \(lines \d+[–-]\d+\)$/.test(
+      preambleChunk!.summary.trim(),
+    );
+    expect(isBarePath).toBe(false);
+  });
+
+  it('log chunk summary includes at least part of the chunk content', () => {
+    const logFile = makeLogFile('/logs/app.log', 0);
+    const ctx = makeContext({ logs: [logFile] });
+    const chunks = buildChunkIndex(ctx);
+    const logChunk = chunks.find((c) => c.artifactCategory === 'log');
+    expect(logChunk).toBeDefined();
+    // The summary should contain actual log content (the first line includes a recognisable phrase)
+    expect(logChunk!.summary).toContain('INFO');
+  });
+
+  it('log chunk summary is still a string when content is empty', () => {
+    // Edge case: even with empty content the summary must remain a non-empty string
+    const logFile: LogFile = {
+      path: '/logs/empty.log',
+      lines: [{ lineNumber: 1, content: '', level: 'info' }],
+      errorCount: 0,
+      warningCount: 0,
+      importance: 0,
+    };
+    const ctx = makeContext({ logs: [logFile] });
+    const chunks = buildChunkIndex(ctx);
+    for (const chunk of chunks) {
+      expect(chunk.summary).toBeTruthy();
+    }
   });
 });

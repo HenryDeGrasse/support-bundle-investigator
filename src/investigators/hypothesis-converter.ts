@@ -1,5 +1,6 @@
 import type { Evidence, Finding, FindingSeverity } from '../types/index.js';
 import type { HypothesisCategory, Hypothesis, HypothesisSet } from './hypothesis-types.js';
+import { computeConfidenceQuality } from './verifier.js';
 
 // ---------------------------------------------------------------------------
 // Severity mapping
@@ -374,7 +375,7 @@ export function convertHypothesisToFinding(hypothesis: Hypothesis, rank: number)
           `No contradicting evidence found for [${hypothesis.category}] hypothesis in the available bundle data — hypothesis could not be ruled out`,
         ];
 
-  return {
+  const finding: Finding = {
     id: `finding:hypothesis:${hypothesis.category}:${rank}`,
     title: hypothesis.rootCause,
     severity: deriveSeverity(hypothesis.category, hypothesis.confidence),
@@ -389,6 +390,8 @@ export function convertHypothesisToFinding(hypothesis: Hypothesis, rank: number)
     ]),
     recommendedAction: RECOMMENDED_ACTION_BY_CATEGORY[hypothesis.category],
   };
+  finding.confidenceQuality = computeConfidenceQuality(finding);
+  return finding;
 }
 
 /**

@@ -90,6 +90,49 @@ function ensureBuilt(projectRoot: string): void {
 }
 
 // ---------------------------------------------------------------------------
+// ASCII art banner
+// ---------------------------------------------------------------------------
+
+/**
+ * Prints the RAT ASCII art banner to stdout.
+ *
+ *      _ __       _      _____
+ *     |  _ \    / \   |_   _|
+ *     | |_) |  / _ \    | |
+ *     |  _ <  / ___ \   | |
+ *     |_| \_\/_/   \_\  |_|
+ *
+ *           (\,/)
+ *           oo   '''//,        _
+ *         ,/_;~,        \,    / '
+ *         "'   \    (    \    !
+ *               ',|  \   |__.'
+ *               '~  '~----''
+ *
+ *   Replicated AI Troubleshooting
+ */
+function printBanner(): void {
+  console.log('');
+  // Block letters
+  console.log(`     _ __       _      _____`);
+  console.log(`    |  _ \\    / \\   |_   _|`);
+  console.log(`    | |_) |  / _ \\    | |  `);
+  console.log(`    |  _ <  / ___ \\   | |  `);
+  console.log(`    |_| \\_\\/_/   \\_\\  |_|  `);
+  console.log('');
+  // Rat face
+  console.log(`          (\\,/)`);
+  console.log(`          oo   '''//,        _`);
+  console.log(`        ,/_;~,        \\,    / '`);
+  console.log(`        "'   \\    (    \\    !`);
+  console.log(`              ',|  \\   |__.'`);
+  console.log(`              '~  '~----''`);
+  console.log('');
+  console.log('  Replicated AI Troubleshooting');
+  console.log('');
+}
+
+// ---------------------------------------------------------------------------
 // Bundle discovery
 // ---------------------------------------------------------------------------
 
@@ -146,10 +189,7 @@ async function selectBundle(bundles: string[]): Promise<string | null> {
     output: process.stdout,
   });
 
-  console.log('');
-  console.log('  RAT - Replicated AI Troubleshooting');
-  console.log('  ====================================');
-  console.log('');
+  printBanner();
   console.log('  Found support bundles:');
   console.log('');
 
@@ -238,10 +278,7 @@ async function main(): Promise<void> {
   const bundles = await findBundles(scanDir);
 
   if (bundles.length === 0) {
-    console.log('');
-    console.log('  RAT - Replicated AI Troubleshooting');
-    console.log('  ====================================');
-    console.log('');
+    printBanner();
     console.log(`  No .tar.gz support bundles found in: ./${DEFAULT_BUNDLE_DIR}/`);
     console.log('');
     console.log('  To get started:');
@@ -269,10 +306,7 @@ async function main(): Promise<void> {
       output: process.stdout,
     });
 
-    console.log('');
-    console.log('  RAT - Replicated AI Troubleshooting');
-    console.log('  ====================================');
-    console.log('');
+    printBanner();
     console.log(`  Found: ${name}`);
 
     bundlePath = await new Promise<string | null>((resolve) => {
