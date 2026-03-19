@@ -19,6 +19,10 @@ import * as path from 'path';
 import * as readline from 'readline';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
+import { loadDotEnv } from './env-loader.js';
+
+// Load .env before anything reads process.env
+loadDotEnv();
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -234,15 +238,14 @@ async function main(): Promise<void> {
   const bundles = await findBundles(scanDir);
 
   if (bundles.length === 0) {
-    const bundlesDir = path.join(projectRoot, DEFAULT_BUNDLE_DIR);
     console.log('');
     console.log('  RAT - Replicated AI Troubleshooting');
     console.log('  ====================================');
     console.log('');
-    console.log(`  No .tar.gz support bundles found in: ${path.resolve(scanDir)}`);
+    console.log(`  No .tar.gz support bundles found in: ./${DEFAULT_BUNDLE_DIR}/`);
     console.log('');
     console.log('  To get started:');
-    console.log(`    1. Place your support bundle .tar.gz file in: ${bundlesDir}/`);
+    console.log(`    1. Place your support bundle .tar.gz file in the ./${DEFAULT_BUNDLE_DIR}/ directory`);
     console.log('    2. Run: rat');
     console.log('');
     console.log('  How to get a support bundle:');

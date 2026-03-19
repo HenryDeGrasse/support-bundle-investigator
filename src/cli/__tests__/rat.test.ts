@@ -51,7 +51,7 @@ describe('RAT CLI binary', () => {
       );
 
       expect(proc.stdout).toContain('No .tar.gz support bundles found');
-      expect(proc.stdout).toContain('bundles/');
+      expect(proc.stdout).toContain('./bundles/');
     },
   );
 

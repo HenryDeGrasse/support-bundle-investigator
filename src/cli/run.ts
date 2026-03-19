@@ -15,7 +15,11 @@
  * (`src/index.ts`) can re-export `runCli` without triggering execution.
  */
 
+import { loadDotEnv } from './env-loader.js';
 import { runCli } from './runner.js';
+
+// Load .env before anything reads process.env
+loadDotEnv();
 
 runCli(process.argv, {
   loadTUI: () => import('../tui/index.js'),
