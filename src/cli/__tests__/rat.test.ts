@@ -18,10 +18,10 @@ describe('RAT CLI binary', () => {
   it.skipIf(!binExists)(
     'rat binary loads without ESM errors',
     () => {
-      // Run with a non-existent directory and --no-build to skip auto-build
+      // Run with --no-build and --no-embedding-setup to skip async probes
       const proc = spawnSync(
         process.execPath,
-        [ratBin, '--no-build', '/tmp/nonexistent-rat-dir-' + Date.now()],
+        [ratBin, '--no-build', '--no-embedding-setup', '/tmp/nonexistent-rat-dir-' + Date.now()],
         {
           cwd: repoRoot,
           encoding: 'utf-8',
@@ -42,7 +42,7 @@ describe('RAT CLI binary', () => {
     () => {
       const proc = spawnSync(
         process.execPath,
-        [ratBin, '--no-build', '/tmp/nonexistent-rat-dir-' + Date.now()],
+        [ratBin, '--no-build', '--no-embedding-setup', '/tmp/nonexistent-rat-dir-' + Date.now()],
         {
           cwd: repoRoot,
           encoding: 'utf-8',
@@ -60,7 +60,7 @@ describe('RAT CLI binary', () => {
     () => {
       const proc = spawnSync(
         process.execPath,
-        [ratBin, '--no-build', '/tmp/nonexistent-rat-dir-' + Date.now()],
+        [ratBin, '--no-build', '--no-embedding-setup', '/tmp/nonexistent-rat-dir-' + Date.now()],
         {
           cwd: repoRoot,
           encoding: 'utf-8',
