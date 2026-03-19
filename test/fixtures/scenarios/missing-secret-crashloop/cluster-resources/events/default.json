@@ -1,62 +1,66 @@
-[
-  {
-    "apiVersion": "v1",
-    "kind": "Event",
-    "metadata": {
-      "name": "app-pod.17a2b3c4d5e6f700",
-      "namespace": "default",
-      "creationTimestamp": "2024-01-15T13:30:10Z"
+{
+  "apiVersion": "v1",
+  "kind": "EventList",
+  "items": [
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "app-pod.17a2b3c4d5e6f700",
+        "namespace": "default",
+        "creationTimestamp": "2024-01-15T13:30:10Z"
+      },
+      "involvedObject": {
+        "kind": "Pod",
+        "name": "app-pod",
+        "namespace": "default"
+      },
+      "reason": "FailedMount",
+      "message": "MountVolume.SetUp failed for volume \"app-credentials\" : secret \"app-credentials\" not found",
+      "type": "Warning",
+      "count": 8,
+      "firstTimestamp": "2024-01-15T13:30:10Z",
+      "lastTimestamp": "2024-01-15T13:55:10Z"
     },
-    "involvedObject": {
-      "kind": "Pod",
-      "name": "app-pod",
-      "namespace": "default"
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "app-pod.17a2b3c4d5e6f701",
+        "namespace": "default",
+        "creationTimestamp": "2024-01-15T13:30:05Z"
+      },
+      "involvedObject": {
+        "kind": "Pod",
+        "name": "app-pod",
+        "namespace": "default"
+      },
+      "reason": "BackOff",
+      "message": "Back-off restarting failed container app in pod app-pod_default(uid)",
+      "type": "Warning",
+      "count": 8,
+      "firstTimestamp": "2024-01-15T13:30:05Z",
+      "lastTimestamp": "2024-01-15T13:55:05Z"
     },
-    "reason": "FailedMount",
-    "message": "MountVolume.SetUp failed for volume \"app-credentials\" : secret \"app-credentials\" not found",
-    "type": "Warning",
-    "count": 8,
-    "firstTimestamp": "2024-01-15T13:30:10Z",
-    "lastTimestamp": "2024-01-15T13:55:10Z"
-  },
-  {
-    "apiVersion": "v1",
-    "kind": "Event",
-    "metadata": {
-      "name": "app-pod.17a2b3c4d5e6f701",
-      "namespace": "default",
-      "creationTimestamp": "2024-01-15T13:30:05Z"
-    },
-    "involvedObject": {
-      "kind": "Pod",
-      "name": "app-pod",
-      "namespace": "default"
-    },
-    "reason": "BackOff",
-    "message": "Back-off restarting failed container app in pod app-pod_default(uid)",
-    "type": "Warning",
-    "count": 8,
-    "firstTimestamp": "2024-01-15T13:30:05Z",
-    "lastTimestamp": "2024-01-15T13:55:05Z"
-  },
-  {
-    "apiVersion": "v1",
-    "kind": "Event",
-    "metadata": {
-      "name": "app-pod.17a2b3c4d5e6f702",
-      "namespace": "default",
-      "creationTimestamp": "2024-01-15T13:55:02Z"
-    },
-    "involvedObject": {
-      "kind": "Pod",
-      "name": "app-pod",
-      "namespace": "default"
-    },
-    "reason": "BackOff",
-    "message": "Back-off restarting failed container app in pod app-pod_default(uid)",
-    "type": "Warning",
-    "count": 1,
-    "firstTimestamp": "2024-01-15T13:55:02Z",
-    "lastTimestamp": "2024-01-15T13:55:02Z"
-  }
-]
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "app-pod.17a2b3c4d5e6f702",
+        "namespace": "default",
+        "creationTimestamp": "2024-01-15T13:55:02Z"
+      },
+      "involvedObject": {
+        "kind": "Pod",
+        "name": "app-pod",
+        "namespace": "default"
+      },
+      "reason": "BackOff",
+      "message": "Back-off restarting failed container app in pod app-pod_default(uid)",
+      "type": "Warning",
+      "count": 1,
+      "firstTimestamp": "2024-01-15T13:55:02Z",
+      "lastTimestamp": "2024-01-15T13:55:02Z"
+    }
+  ]
+}

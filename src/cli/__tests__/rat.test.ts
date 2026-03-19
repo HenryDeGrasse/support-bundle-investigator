@@ -18,11 +18,10 @@ describe('RAT CLI binary', () => {
   it.skipIf(!binExists)(
     'rat binary loads without ESM errors',
     () => {
-      // Run with --help-like scenario: no stdin, non-existent directory
-      // It should print "no bundles found" and exit, not crash
+      // Run with a non-existent directory and --no-build to skip auto-build
       const proc = spawnSync(
         process.execPath,
-        [ratBin, '/tmp/nonexistent-rat-dir-' + Date.now()],
+        [ratBin, '--no-build', '/tmp/nonexistent-rat-dir-' + Date.now()],
         {
           cwd: repoRoot,
           encoding: 'utf-8',
@@ -43,7 +42,7 @@ describe('RAT CLI binary', () => {
     () => {
       const proc = spawnSync(
         process.execPath,
-        [ratBin, '/tmp/nonexistent-rat-dir-' + Date.now()],
+        [ratBin, '--no-build', '/tmp/nonexistent-rat-dir-' + Date.now()],
         {
           cwd: repoRoot,
           encoding: 'utf-8',
@@ -52,7 +51,24 @@ describe('RAT CLI binary', () => {
       );
 
       expect(proc.stdout).toContain('No .tar.gz support bundles found');
-      expect(proc.stdout).toContain('Usage');
+      expect(proc.stdout).toContain('bundles/');
+    },
+  );
+
+  it.skipIf(!binExists)(
+    'rat mentions how to get a support bundle',
+    () => {
+      const proc = spawnSync(
+        process.execPath,
+        [ratBin, '--no-build', '/tmp/nonexistent-rat-dir-' + Date.now()],
+        {
+          cwd: repoRoot,
+          encoding: 'utf-8',
+          timeout: 10_000,
+        },
+      );
+
+      expect(proc.stdout).toContain('kubectl support-bundle');
     },
   );
 });

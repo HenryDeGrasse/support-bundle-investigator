@@ -3,6 +3,7 @@ import * as path from 'path';
 import type { Finding, FindingSeverity } from '../types/index.js';
 import type { InvestigationReport, SpecRecommendation } from './types.js';
 import { isAIFinding } from './report-builder.js';
+import { cleanEvidencePath, humanizeTitle } from './display-helpers.js';
 
 // ---------------------------------------------------------------------------
 // Severity helpers
@@ -617,7 +618,7 @@ function buildEvidenceTable(finding: Finding): string {
     .map(
       (ev) => `
               <tr>
-                <td class="evidence-path">${escapeHtml(ev.path)}</td>
+                <td class="evidence-path">${escapeHtml(cleanEvidencePath(ev.path))}</td>
                 <td class="evidence-note">${escapeHtml(ev.note)}</td>
               </tr>`,
     )
@@ -669,7 +670,7 @@ function buildAffectedComponents(finding: Finding): string {
   }
 
   const chips = finding.affectedComponents
-    .map((c) => `<span class="component-chip">${escapeHtml(c)}</span>`)
+    .map((c) => `<span class="component-chip">${escapeHtml(cleanEvidencePath(c))}</span>`)
     .join(' ');
 
   return `
@@ -703,7 +704,7 @@ function buildFindings(findings: Finding[]): string {
             <div class="finding-header">
               <span class="finding-index">Finding ${idx + 1}</span>
               <span class="severity-badge ${severityClass(finding.severity)}">${severityLabel(finding.severity)}</span>
-              <span class="finding-title">${escapeHtml(finding.title)}</span>
+              <span class="finding-title">${escapeHtml(humanizeTitle(finding.title))}</span>
               ${aiBadge}
             </div>
             <div class="finding-body">
@@ -842,7 +843,7 @@ function buildAllEvidenceReferences(
     .map(
       (ev) => `
                   <tr>
-                    <td class="evidence-path">${escapeHtml(ev.path)}</td>
+                    <td class="evidence-path">${escapeHtml(cleanEvidencePath(ev.path))}</td>
                     <td class="evidence-note">${escapeHtml(ev.note)}</td>
                   </tr>`,
     )

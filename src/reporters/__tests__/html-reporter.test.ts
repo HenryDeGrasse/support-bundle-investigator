@@ -247,6 +247,17 @@ describe('generateHtmlReport — finding rendering', () => {
     expect(result).toContain('CrashLoopBackOff: Pod app-pod');
   });
 
+  it('humanizes legacy hypothesis titles in the output', () => {
+    const finding = makeFinding({
+      title: '[Hypothesis] DNS failure for db.internal (symptom: Pod app-pod is not ready)',
+    });
+    const report = makeReport({ findings: [finding] });
+    const result = generateHtmlReport(report);
+    expect(result).toContain('DNS failure for db.internal');
+    expect(result).not.toContain('[Hypothesis]');
+    expect(result).not.toContain('(symptom:');
+  });
+
   it('renders the finding reasoning summary', () => {
     const finding = makeFinding({
       reasoningSummary: 'Unique reasoning summary text for test.',
@@ -278,6 +289,20 @@ describe('generateHtmlReport — finding rendering', () => {
     const result = generateHtmlReport(report);
     expect(result).toContain('frontend');
     expect(result).toContain('backend');
+  });
+
+  it('cleans absolute paths in affected components', () => {
+    const finding = makeFinding({
+      affectedComponents: [
+        '/var/folders/26/x/T/sbi-bundle-AB/wrong-db/logs/app/app-pod.log',
+        'Pod/default/app-pod',
+      ],
+    });
+    const report = makeReport({ findings: [finding] });
+    const result = generateHtmlReport(report);
+    expect(result).toContain('logs/app/app-pod.log');
+    expect(result).toContain('Pod/default/app-pod');
+    expect(result).not.toContain('/var/folders/26/x/T');
   });
 
   it('does not render Affected Components when array is empty', () => {
@@ -393,6 +418,21 @@ describe('generateHtmlReport — evidence table', () => {
     const report = makeReport({ findings: [finding] });
     const result = generateHtmlReport(report);
     expect(result).toContain('logs/app/current.log');
+  });
+
+  it('cleans absolute evidence paths in the table', () => {
+    const finding = makeFinding({
+      evidence: [
+        {
+          path: '/tmp/sbi-bundle-XYZ/bad-image/cluster-resources/pods/default/app-pod.yaml',
+          note: 'pod status',
+        },
+      ],
+    });
+    const report = makeReport({ findings: [finding] });
+    const result = generateHtmlReport(report);
+    expect(result).toContain('cluster-resources/pods/default/app-pod.yaml');
+    expect(result).not.toContain('/tmp/sbi-bundle-XYZ');
   });
 
   it('renders the evidence note in the table', () => {

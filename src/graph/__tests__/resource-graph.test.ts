@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   buildResourceGraph,
   getNeighborhood,
+  getNeighborhoodWithDepth,
   getRelatedChunks,
   parseSeedSource,
 } from '../resource-graph.js';
@@ -305,6 +306,83 @@ describe('getNeighborhood', () => {
 });
 
 // ---------------------------------------------------------------------------
+// getNeighborhoodWithDepth
+// ---------------------------------------------------------------------------
+
+describe('getNeighborhoodWithDepth', () => {
+  it('returns just the source node with depth 0 at depth=0', () => {
+    const pod = makePod('my-pod', 'default', { secretNames: ['my-secret'] });
+    const graph = buildResourceGraph([pod], []);
+
+    const result = getNeighborhoodWithDepth(graph, 'Pod', 'my-pod', 'default', 0);
+    expect(result).toHaveLength(1);
+    expect(result[0]?.node.name).toBe('my-pod');
+    expect(result[0]?.depth).toBe(0);
+  });
+
+  it('returns direct neighbors with depth 1 at depth=1', () => {
+    const pod = makePod('my-pod', 'default', { secretNames: ['my-secret'] });
+    const graph = buildResourceGraph([pod], []);
+
+    const result = getNeighborhoodWithDepth(graph, 'Pod', 'my-pod', 'default', 1);
+    const podEntry = result.find((e) => e.node.name === 'my-pod');
+    const secretEntry = result.find((e) => e.node.name === 'my-secret');
+    expect(podEntry?.depth).toBe(0);
+    expect(secretEntry?.depth).toBe(1);
+  });
+
+  it('returns two-hop neighbors with depth 2 for owner → pod → secret', () => {
+    const pod = makePod('app-pod', 'default', {
+      secretNames: ['app-secret'],
+      ownerKind: 'ReplicaSet',
+      ownerName: 'app-rs',
+    });
+    const rs = makeDeployment('app-rs');
+    rs.kind = 'ReplicaSet';
+    const graph = buildResourceGraph([pod, rs], []);
+
+    // From ReplicaSet: pod is depth-1, secret is depth-2
+    const result = getNeighborhoodWithDepth(graph, 'ReplicaSet', 'app-rs', 'default', 2);
+    const rsEntry = result.find((e) => e.node.name === 'app-rs');
+    const podEntry = result.find((e) => e.node.name === 'app-pod');
+    const secretEntry = result.find((e) => e.node.name === 'app-secret');
+    expect(rsEntry?.depth).toBe(0);
+    expect(podEntry?.depth).toBe(1);
+    expect(secretEntry?.depth).toBe(2);
+  });
+
+  it('returns empty array for an unknown node', () => {
+    const graph = buildResourceGraph([], []);
+    const result = getNeighborhoodWithDepth(graph, 'Pod', 'nonexistent', 'default', 2);
+    expect(result).toHaveLength(0);
+  });
+
+  it('does not revisit nodes — each node appears exactly once', () => {
+    const graph = buildResourceGraph([], []);
+    graph.nodes.set('Pod:default/pod-a', { kind: 'Pod', name: 'pod-a', namespace: 'default' });
+    graph.nodes.set('ConfigMap:default/cm-a', { kind: 'ConfigMap', name: 'cm-a', namespace: 'default' });
+    graph.edges.push({
+      sourceKind: 'Pod', sourceName: 'pod-a', sourceNamespace: 'default',
+      targetKind: 'ConfigMap', targetName: 'cm-a', targetNamespace: 'default',
+      relationshipType: 'references-configmap',
+    });
+    graph.edges.push({
+      sourceKind: 'ConfigMap', sourceName: 'cm-a', sourceNamespace: 'default',
+      targetKind: 'Pod', targetName: 'pod-a', targetNamespace: 'default',
+      relationshipType: 'references-configmap',
+    });
+
+    const result = getNeighborhoodWithDepth(graph, 'Pod', 'pod-a', 'default', 10);
+    const podEntries = result.filter((e) => e.node.name === 'pod-a');
+    const cmEntries = result.filter((e) => e.node.name === 'cm-a');
+    expect(podEntries).toHaveLength(1);
+    expect(cmEntries).toHaveLength(1);
+    expect(podEntries[0]?.depth).toBe(0);
+    expect(cmEntries[0]?.depth).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // parseSeedSource
 // ---------------------------------------------------------------------------
 
@@ -385,7 +463,7 @@ describe('getRelatedChunks', () => {
     };
 
     const result = getRelatedChunks(graph, seed, chunkIndex);
-    const ids = result.map((c) => c.id);
+    const ids = result.map((c) => c.chunk.id);
     expect(ids).toContain('chunk-pod');
     expect(ids).toContain('chunk-secret'); // neighbor via graph edge
     expect(ids).not.toContain('chunk-unrelated');
@@ -410,7 +488,7 @@ describe('getRelatedChunks', () => {
     };
 
     const result = getRelatedChunks(graph, seed, chunkIndex);
-    const ids = result.map((c) => c.id);
+    const ids = result.map((c) => c.chunk.id);
     expect(ids).toContain('chunk-pod');
     expect(ids).toContain('chunk-secret');
     expect(ids).not.toContain('chunk-same-namespace-noise');
@@ -444,7 +522,7 @@ describe('getRelatedChunks', () => {
 
     const result = getRelatedChunks(graph, seed, chunkIndex);
     expect(result).toHaveLength(1);
-    expect(result[0]?.artifactId).toBe(logPath);
+    expect(result[0]?.chunk.artifactId).toBe(logPath);
   });
 
   it('returns empty array for unrecognised seed source', () => {
@@ -478,5 +556,404 @@ describe('getRelatedChunks', () => {
 
     const result = getRelatedChunks(graph, seed, chunkIndex);
     expect(result).toHaveLength(1);
+  });
+
+  // ── Hop-distance scoring tests ──────────────────────────────────────────
+
+  it('scores the seed pod chunk as 1.0 (depth-0)', () => {
+    const pod = makePod('app-pod', 'default');
+    const graph = buildResourceGraph([pod], []);
+
+    // A chunk whose metadata identifies it as the Pod resource itself
+    const podChunk: IndexedChunk = {
+      id: 'chunk-pod',
+      artifactId: 'cluster-resources/pod/default/app-pod.json',
+      content: 'name: app-pod',
+      startLine: 1,
+      endLine: 5,
+      summary: 'Pod app-pod',
+      identifiers: ['app-pod'],
+      namespace: 'default',
+      artifactCategory: 'kubernetes-resource',
+      metadata: { kind: 'Pod', name: 'app-pod', namespace: 'default' },
+    };
+
+    const seed = {
+      id: 'seed:pod:0',
+      hypothesis: 'Pod app-pod is crashing',
+      source: 'pod:default/app-pod',
+      category: 'kubernetes' as const,
+      priority: 90,
+    };
+
+    const result = getRelatedChunks(graph, seed, [podChunk]);
+    const sc = result.find((r) => r.chunk.id === 'chunk-pod');
+    expect(sc).toBeDefined();
+    expect(sc?.score).toBe(1.0);
+  });
+
+  it('scores depth-1 neighbor chunks as 0.7', () => {
+    const pod = makePod('app-pod', 'default', { secretNames: ['db-secret'] });
+    const secret = makeSecret('db-secret', 'default');
+    const graph = buildResourceGraph([pod, secret], []);
+
+    const secretChunk: IndexedChunk = {
+      id: 'chunk-secret',
+      artifactId: 'cluster-resources/secret/default/db-secret.json',
+      content: 'name: db-secret',
+      startLine: 1,
+      endLine: 5,
+      summary: 'Secret db-secret',
+      identifiers: ['db-secret'],
+      namespace: 'default',
+      artifactCategory: 'kubernetes-resource',
+      metadata: { kind: 'Secret', name: 'db-secret', namespace: 'default' },
+    };
+
+    const seed = {
+      id: 'seed:pod:0',
+      hypothesis: 'Pod app-pod is crashing',
+      source: 'pod:default/app-pod',
+      category: 'kubernetes' as const,
+      priority: 90,
+    };
+
+    const result = getRelatedChunks(graph, seed, [secretChunk]);
+    const sc = result.find((r) => r.chunk.id === 'chunk-secret');
+    expect(sc).toBeDefined();
+    expect(sc?.score).toBe(0.7);
+  });
+
+  it('scores depth-2 neighbor chunks as 0.4', () => {
+    // Deployment → ReplicaSet → Pod chain.
+    // From the Pod seed, the Deployment is at depth-2.
+    const pod = makePod('app-pod', 'default', {
+      ownerKind: 'ReplicaSet',
+      ownerName: 'app-rs',
+    });
+    const rs = makeDeployment('app-rs');
+    rs.kind = 'ReplicaSet';
+    const deploy = makeDeployment('app-deploy');
+    // RS owned by Deployment via ownerReferences
+    (rs.metadata as unknown as Record<string, unknown>)['ownerReferences'] = [
+      { kind: 'Deployment', name: 'app-deploy', apiVersion: 'apps/v1' },
+    ];
+    const graph = buildResourceGraph([pod, rs, deploy], []);
+
+    const deployChunk: IndexedChunk = {
+      id: 'chunk-deploy',
+      artifactId: 'cluster-resources/deployment/default/app-deploy.json',
+      content: 'name: app-deploy',
+      startLine: 1,
+      endLine: 5,
+      summary: 'Deployment app-deploy',
+      identifiers: ['app-deploy'],
+      namespace: 'default',
+      artifactCategory: 'kubernetes-resource',
+      metadata: { kind: 'Deployment', name: 'app-deploy', namespace: 'default' },
+    };
+
+    const seed = {
+      id: 'seed:pod:0',
+      hypothesis: 'Pod app-pod is crashing',
+      source: 'pod:default/app-pod',
+      category: 'kubernetes' as const,
+      priority: 90,
+    };
+
+    const result = getRelatedChunks(graph, seed, [deployChunk]);
+    const sc = result.find((r) => r.chunk.id === 'chunk-deploy');
+    expect(sc).toBeDefined();
+    expect(sc?.score).toBe(0.4);
+  });
+
+  it('scores log chunks matched by direct path as 1.0', () => {
+    const graph = buildResourceGraph([], []);
+    const logPath = 'logs/default/app-pod/app.log';
+
+    const logChunk: IndexedChunk = {
+      id: `${logPath}:1-50`,
+      artifactId: logPath,
+      content: 'some log content',
+      startLine: 1,
+      endLine: 50,
+      summary: 'Log chunk',
+      identifiers: [],
+      artifactCategory: 'log',
+    };
+
+    const seed = {
+      id: 'seed:log:0',
+      hypothesis: 'Log file has errors',
+      source: `log:${logPath}`,
+      category: 'log' as const,
+      priority: 45,
+    };
+
+    const result = getRelatedChunks(graph, seed, [logChunk]);
+    expect(result).toHaveLength(1);
+    expect(result[0]?.score).toBe(1.0);
+  });
+
+  it('takes the best (highest) score when a chunk qualifies via multiple depths', () => {
+    // chunk-multi has identifier 'app-pod' (depth-0) AND 'db-secret' (depth-1)
+    // It should receive the higher score (1.0) not the lower one (0.7)
+    const pod = makePod('app-pod', 'default', { secretNames: ['db-secret'] });
+    const graph = buildResourceGraph([pod], []);
+
+    const multiChunk: IndexedChunk = {
+      id: 'chunk-multi',
+      artifactId: 'logs/default/app-pod/app.log',
+      content: 'app-pod connected to db-secret',
+      startLine: 1,
+      endLine: 5,
+      summary: 'Multi-identifier chunk',
+      identifiers: ['app-pod', 'db-secret'],
+      artifactCategory: 'log',
+    };
+
+    const seed = {
+      id: 'seed:pod:0',
+      hypothesis: 'Pod app-pod is crashing',
+      source: 'pod:default/app-pod',
+      category: 'kubernetes' as const,
+      priority: 90,
+    };
+
+    const result = getRelatedChunks(graph, seed, [multiChunk]);
+    const sc = result.find((r) => r.chunk.id === 'chunk-multi');
+    expect(sc).toBeDefined();
+    expect(sc?.score).toBe(1.0); // best of depth-0 (1.0) and depth-1 (0.7)
+  });
+
+  // ── Analyzer seed — entity extraction + graph walk ──────────────────────
+
+  it('Analyzer seed extracts entity names from hypothesis and walks Pod graph neighborhood', () => {
+    const pod = makePod('app-pod', 'default', { secretNames: ['db-secret'] });
+    const graph = buildResourceGraph([pod], []);
+
+    const podChunk: IndexedChunk = {
+      id: 'chunk-pod',
+      artifactId: 'cluster-resources/pod/default/app-pod.json',
+      content: 'name: app-pod',
+      startLine: 1,
+      endLine: 5,
+      summary: 'Pod app-pod',
+      identifiers: ['app-pod'],
+      namespace: 'default',
+      artifactCategory: 'kubernetes-resource',
+      metadata: { kind: 'Pod', name: 'app-pod', namespace: 'default' },
+    };
+    const secretChunk: IndexedChunk = {
+      id: 'chunk-secret',
+      artifactId: 'cluster-resources/secret/default/db-secret.json',
+      content: 'name: db-secret',
+      startLine: 1,
+      endLine: 5,
+      summary: 'Secret db-secret',
+      identifiers: ['db-secret'],
+      namespace: 'default',
+      artifactCategory: 'kubernetes-resource',
+      metadata: { kind: 'Secret', name: 'db-secret', namespace: 'default' },
+    };
+
+    const seed = {
+      id: 'seed:analyzer:0',
+      hypothesis: 'Pod app-pod is crashing due to missing credentials',
+      source: 'analyzer:check-app-pod',
+      category: 'kubernetes' as const,
+      priority: 80,
+    };
+
+    const result = getRelatedChunks(graph, seed, [podChunk, secretChunk]);
+    const ids = result.map((c) => c.chunk.id);
+    // Pod itself is depth-0
+    expect(ids).toContain('chunk-pod');
+    // db-secret is a direct graph neighbor of app-pod (depth-1)
+    expect(ids).toContain('chunk-secret');
+  });
+
+  it('Analyzer seed extracts entity names from analyzer chunk content (not just hypothesis)', () => {
+    const pod = makePod('app-pod', 'default');
+    const graph = buildResourceGraph([pod], []);
+
+    // Analyzer chunk whose content mentions 'app-pod' in the message
+    const analyzerChunk: IndexedChunk = {
+      id: 'analyzer:check-app',
+      artifactId: 'check-app',
+      content: "[ERROR] App Pod Failing\nPod 'app-pod' in namespace 'default' is in CrashLoopBackOff.",
+      startLine: 1,
+      endLine: 2,
+      summary: 'Analyzer: App Pod Failing',
+      identifiers: ['check-app', 'error'],
+      artifactCategory: 'analyzer',
+      metadata: { name: 'check-app', category: 'analyzer' },
+    };
+    const podChunk: IndexedChunk = {
+      id: 'chunk-pod',
+      artifactId: 'cluster-resources/pod/default/app-pod.json',
+      content: 'name: app-pod',
+      startLine: 1,
+      endLine: 5,
+      summary: 'Pod app-pod',
+      identifiers: ['app-pod'],
+      namespace: 'default',
+      artifactCategory: 'kubernetes-resource',
+      metadata: { kind: 'Pod', name: 'app-pod', namespace: 'default' },
+    };
+
+    const seed = {
+      id: 'seed:analyzer:0',
+      hypothesis: 'App Pod Failing',
+      source: 'analyzer:check-app',
+      category: 'kubernetes' as const,
+      priority: 80,
+    };
+
+    const result = getRelatedChunks(graph, seed, [analyzerChunk, podChunk]);
+    const ids = result.map((c) => c.chunk.id);
+    // Analyzer chunk matched directly
+    expect(ids).toContain('analyzer:check-app');
+    // Pod chunk found via entity name extracted from analyzer content
+    expect(ids).toContain('chunk-pod');
+  });
+
+  it('Analyzer seed fallback: finds unhealthy pods when no entity names resolve to graph nodes', () => {
+    // Generic hypothesis with no specific resource names
+    const pod = makePod('crash-pod', 'default', { secretNames: ['some-secret'] });
+    const graph = buildResourceGraph([pod], []);
+
+    // Chunk for the pod with CrashLoopBackOff identifier
+    const crashPodChunk: IndexedChunk = {
+      id: 'chunk-crash-pod',
+      artifactId: 'cluster-resources/pod/default/crash-pod.json',
+      content: 'name: crash-pod, reason: CrashLoopBackOff',
+      startLine: 1,
+      endLine: 5,
+      summary: 'Pod crash-pod (CrashLoopBackOff)',
+      identifiers: ['crash-pod', 'CrashLoopBackOff', 'default'],
+      namespace: 'default',
+      artifactCategory: 'kubernetes-resource',
+      metadata: { kind: 'Pod', name: 'crash-pod', namespace: 'default' },
+    };
+    const secretChunk: IndexedChunk = {
+      id: 'chunk-secret',
+      artifactId: 'cluster-resources/secret/default/some-secret.json',
+      content: 'name: some-secret',
+      startLine: 1,
+      endLine: 5,
+      summary: 'Secret some-secret',
+      identifiers: ['some-secret'],
+      namespace: 'default',
+      artifactCategory: 'kubernetes-resource',
+      metadata: { kind: 'Secret', name: 'some-secret', namespace: 'default' },
+    };
+
+    // Seed with a generic hypothesis that contains no specific resource names
+    const seed = {
+      id: 'seed:analyzer:0',
+      hypothesis: 'Health check failed',
+      source: 'analyzer:health-check',
+      category: 'kubernetes' as const,
+      priority: 80,
+    };
+
+    const result = getRelatedChunks(graph, seed, [crashPodChunk, secretChunk]);
+    const ids = result.map((c) => c.chunk.id);
+    // Fallback: crash-pod is an unhealthy pod (has CrashLoopBackOff) → walked
+    expect(ids).toContain('chunk-crash-pod');
+    // Its graph neighbor (some-secret) should also be reached
+    expect(ids).toContain('chunk-secret');
+  });
+
+  // ── Log seed — pod resolution + graph walk ──────────────────────────────
+
+  it('Log seed resolves pod from filename and walks graph neighborhood', () => {
+    const pod = makePod('app-pod', 'default', { secretNames: ['db-secret'] });
+    const graph = buildResourceGraph([pod], []);
+
+    const logChunk: IndexedChunk = {
+      id: 'logs/default/app-pod/app.log:1-50',
+      artifactId: 'logs/default/app-pod/app.log',
+      content: 'Error: secret not found',
+      startLine: 1,
+      endLine: 50,
+      summary: 'Log chunk from app-pod',
+      identifiers: ['app-pod'],
+      artifactCategory: 'log',
+    };
+    const secretChunk: IndexedChunk = {
+      id: 'chunk-secret',
+      artifactId: 'cluster-resources/secret/default/db-secret.json',
+      content: 'name: db-secret',
+      startLine: 1,
+      endLine: 5,
+      summary: 'Secret db-secret',
+      identifiers: ['db-secret'],
+      namespace: 'default',
+      artifactCategory: 'kubernetes-resource',
+      metadata: { kind: 'Secret', name: 'db-secret', namespace: 'default' },
+    };
+
+    // Log path where filename (without extension) matches pod name
+    const seed = {
+      id: 'seed:log:0',
+      hypothesis: 'Log file has errors',
+      source: 'log:logs/default/app-pod/app.log',
+      category: 'log' as const,
+      priority: 45,
+    };
+
+    const result = getRelatedChunks(graph, seed, [logChunk, secretChunk]);
+    const ids = result.map((c) => c.chunk.id);
+    // Direct log path match
+    expect(ids).toContain('logs/default/app-pod/app.log:1-50');
+    // Pod neighbor via graph walk (log path → pod 'app-pod' → secret 'db-secret')
+    expect(ids).toContain('chunk-secret');
+  });
+
+  it('Log seed resolves pod from parent directory for container-scoped log paths', () => {
+    // Paths like 'cluster-resources/pods/logs/<ns>/<pod>/<container>.log'
+    const pod = makePod('web-pod', 'default', { configMapNames: ['web-config'] });
+    const graph = buildResourceGraph([pod], []);
+
+    const logChunk: IndexedChunk = {
+      id: 'cluster-resources/pods/logs/default/web-pod/web.log:1-50',
+      artifactId: 'cluster-resources/pods/logs/default/web-pod/web.log',
+      content: 'Startup log output',
+      startLine: 1,
+      endLine: 50,
+      summary: 'Log chunk from web container',
+      identifiers: ['web-pod'],
+      artifactCategory: 'log',
+    };
+    const configChunk: IndexedChunk = {
+      id: 'chunk-config',
+      artifactId: 'cluster-resources/configmap/default/web-config.json',
+      content: 'name: web-config',
+      startLine: 1,
+      endLine: 5,
+      summary: 'ConfigMap web-config',
+      identifiers: ['web-config'],
+      namespace: 'default',
+      artifactCategory: 'kubernetes-resource',
+      metadata: { kind: 'ConfigMap', name: 'web-config', namespace: 'default' },
+    };
+
+    // Log path where the PARENT directory (web-pod) matches the pod name
+    const seed = {
+      id: 'seed:log:0',
+      hypothesis: 'Log file has errors',
+      source: 'log:cluster-resources/pods/logs/default/web-pod/web.log',
+      category: 'log' as const,
+      priority: 45,
+    };
+
+    const result = getRelatedChunks(graph, seed, [logChunk, configChunk]);
+    const ids = result.map((c) => c.chunk.id);
+    // Direct log path match
+    expect(ids).toContain('cluster-resources/pods/logs/default/web-pod/web.log:1-50');
+    // ConfigMap neighbor reached via pod's graph neighborhood
+    expect(ids).toContain('chunk-config');
   });
 });

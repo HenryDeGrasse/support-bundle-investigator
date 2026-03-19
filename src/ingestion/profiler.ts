@@ -20,7 +20,6 @@ function zeroCounts(): Record<ArtifactCategory, number> {
     log: 0,
     'kubernetes-resource': 0,
     event: 0,
-    config: 0,
     'cluster-info': 0,
     'helm-release': 0,
     unknown: 0,

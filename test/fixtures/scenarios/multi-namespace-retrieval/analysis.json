@@ -1,0 +1,58 @@
+[
+  {
+    "name": "web-app-dns-failure",
+    "insight": {
+      "severity": "error",
+      "primary": "Web Application DNS Resolution Failure",
+      "detail": "Pod 'web-app-pod' in namespace 'default' cannot resolve 'wrong-host.internal'. The ConfigMap 'db-config' in namespace 'database' sets DB_HOST=wrong-host.internal which does not resolve in cluster DNS. Update DB_HOST to point to the correct service endpoint 'postgres-service.database.svc.cluster.local'."
+    }
+  },
+  {
+    "name": "grafana-dns-failure",
+    "insight": {
+      "severity": "error",
+      "primary": "Grafana Data Source DNS Resolution Failure",
+      "detail": "Pod 'grafana-pod' in namespace 'monitoring' cannot reach datasource at 'wrong-host.internal:5432'. The datasource configuration references the same wrong hostname from 'db-config'. Readiness probe is failing."
+    }
+  },
+  {
+    "name": "postgres-auth-failure",
+    "insight": {
+      "severity": "error",
+      "primary": "PostgreSQL Authentication Failure",
+      "detail": "Pod 'postgres-primary-pod' in namespace 'database' is rejecting connections with 'password authentication failed for user postgres'. The Secret 'postgres-auth-secret' contains an incorrect password. Verify the POSTGRES_PASSWORD value matches the initialized database password."
+    }
+  },
+  {
+    "name": "alertmanager-oom",
+    "insight": {
+      "severity": "error",
+      "primary": "Alertmanager OOMKilled",
+      "detail": "Pod 'alertmanager-pod' in namespace 'monitoring' is being OOM-killed repeatedly. Container memory limit is 128Mi but runtime usage peaks at 256Mi. Increase memory limit or reduce retention period."
+    }
+  },
+  {
+    "name": "postgres-pvc-bound",
+    "insight": {
+      "severity": "pass",
+      "primary": "PostgreSQL PVC Bound",
+      "detail": "PersistentVolumeClaim 'postgres-data-pvc' in namespace 'database' is Bound to a 20Gi volume on StorageClass 'standard'."
+    }
+  },
+  {
+    "name": "cache-pod-healthy",
+    "insight": {
+      "severity": "pass",
+      "primary": "Cache Pod Healthy",
+      "detail": "Pod 'cache-pod' in namespace 'default' is Running and Ready. Redis container is accepting connections normally."
+    }
+  },
+  {
+    "name": "prometheus-healthy",
+    "insight": {
+      "severity": "pass",
+      "primary": "Prometheus Pod Healthy",
+      "detail": "Pod 'prometheus-pod' in namespace 'monitoring' is Running and Ready. Scrape targets are reachable."
+    }
+  }
+]

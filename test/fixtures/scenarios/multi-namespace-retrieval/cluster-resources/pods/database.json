@@ -1,0 +1,200 @@
+{
+  "apiVersion": "v1",
+  "kind": "PodList",
+  "items": [
+    {
+      "apiVersion": "v1",
+      "kind": "Pod",
+      "metadata": {
+        "name": "postgres-primary-pod",
+        "namespace": "database",
+        "labels": { "app": "postgres", "role": "primary" },
+        "creationTimestamp": "2024-03-15T07:45:00Z"
+      },
+      "spec": {
+        "containers": [
+          {
+            "name": "postgres",
+            "image": "postgres:15.4",
+            "ports": [{ "containerPort": 5432 }],
+            "env": [
+              { "name": "POSTGRES_PASSWORD", "valueFrom": { "secretKeyRef": { "name": "postgres-auth-secret", "key": "password" } } },
+              { "name": "POSTGRES_DB", "value": "appdb" },
+              { "name": "PGDATA", "value": "/var/lib/postgresql/data/pgdata" }
+            ],
+            "volumeMounts": [
+              { "name": "postgres-data", "mountPath": "/var/lib/postgresql/data" }
+            ],
+            "resources": {
+              "limits": { "memory": "512Mi", "cpu": "1000m" },
+              "requests": { "memory": "256Mi", "cpu": "250m" }
+            },
+            "readinessProbe": {
+              "exec": { "command": ["pg_isready", "-U", "postgres"] },
+              "initialDelaySeconds": 10,
+              "periodSeconds": 5
+            }
+          }
+        ],
+        "volumes": [
+          {
+            "name": "postgres-data",
+            "persistentVolumeClaim": { "claimName": "postgres-data-pvc" }
+          }
+        ]
+      },
+      "status": {
+        "phase": "Running",
+        "conditions": [
+          {
+            "type": "Ready",
+            "status": "False",
+            "reason": "ContainersNotReady",
+            "message": "containers with unready status: [postgres]",
+            "lastTransitionTime": "2024-03-15T07:50:00Z"
+          },
+          {
+            "type": "ContainersReady",
+            "status": "False",
+            "reason": "ContainersNotReady",
+            "message": "containers with unready status: [postgres]",
+            "lastTransitionTime": "2024-03-15T07:50:00Z"
+          },
+          {
+            "type": "PodScheduled",
+            "status": "True",
+            "lastTransitionTime": "2024-03-15T07:45:05Z"
+          }
+        ],
+        "containerStatuses": [
+          {
+            "name": "postgres",
+            "ready": false,
+            "restartCount": 5,
+            "state": {
+              "running": {
+                "startedAt": "2024-03-15T07:45:20Z"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Pod",
+      "metadata": {
+        "name": "postgres-replica-pod",
+        "namespace": "database",
+        "labels": { "app": "postgres", "role": "replica" },
+        "creationTimestamp": "2024-03-15T07:46:00Z"
+      },
+      "spec": {
+        "containers": [
+          {
+            "name": "postgres",
+            "image": "postgres:15.4",
+            "ports": [{ "containerPort": 5432 }],
+            "env": [
+              { "name": "POSTGRES_PASSWORD", "valueFrom": { "secretKeyRef": { "name": "postgres-auth-secret", "key": "password" } } },
+              { "name": "POSTGRES_DB", "value": "appdb" },
+              { "name": "PGDATA", "value": "/var/lib/postgresql/data/pgdata" },
+              { "name": "REPLICATION_PRIMARY_HOST", "value": "postgres-service.database.svc.cluster.local" }
+            ],
+            "volumeMounts": [
+              { "name": "postgres-data", "mountPath": "/var/lib/postgresql/data" }
+            ]
+          }
+        ],
+        "volumes": [
+          {
+            "name": "postgres-data",
+            "persistentVolumeClaim": { "claimName": "postgres-data-pvc" }
+          }
+        ]
+      },
+      "status": {
+        "phase": "Running",
+        "conditions": [
+          {
+            "type": "Ready",
+            "status": "True",
+            "lastTransitionTime": "2024-03-15T07:47:00Z"
+          },
+          {
+            "type": "ContainersReady",
+            "status": "True",
+            "lastTransitionTime": "2024-03-15T07:47:00Z"
+          },
+          {
+            "type": "PodScheduled",
+            "status": "True",
+            "lastTransitionTime": "2024-03-15T07:46:05Z"
+          }
+        ],
+        "containerStatuses": [
+          {
+            "name": "postgres",
+            "ready": true,
+            "restartCount": 0,
+            "state": {
+              "running": {
+                "startedAt": "2024-03-15T07:46:30Z"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Pod",
+      "metadata": {
+        "name": "migration-pod",
+        "namespace": "database",
+        "labels": { "app": "migration", "job": "db-migrate" },
+        "creationTimestamp": "2024-03-15T08:10:00Z"
+      },
+      "spec": {
+        "containers": [
+          {
+            "name": "migrate",
+            "image": "mycompany/db-migrator:v1.3.0",
+            "env": [
+              { "name": "DB_HOST", "valueFrom": { "configMapKeyRef": { "name": "db-config", "key": "DB_HOST" } } },
+              { "name": "DB_PORT", "value": "5432" },
+              { "name": "DB_PASSWORD", "valueFrom": { "secretKeyRef": { "name": "postgres-auth-secret", "key": "password" } } }
+            ]
+          }
+        ],
+        "restartPolicy": "Never"
+      },
+      "status": {
+        "phase": "Failed",
+        "conditions": [
+          {
+            "type": "Ready",
+            "status": "False",
+            "reason": "PodFailed",
+            "message": "container migrate terminated with exit code 1",
+            "lastTransitionTime": "2024-03-15T08:10:45Z"
+          }
+        ],
+        "containerStatuses": [
+          {
+            "name": "migrate",
+            "ready": false,
+            "restartCount": 0,
+            "state": {
+              "terminated": {
+                "reason": "Error",
+                "exitCode": 1,
+                "message": "migration failed: password authentication failed for user postgres"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

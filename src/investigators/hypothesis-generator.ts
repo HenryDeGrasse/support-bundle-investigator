@@ -12,7 +12,7 @@ import type {
 // ---------------------------------------------------------------------------
 
 /** Broad classification of an observed symptom, used to select hypothesis templates. */
-type SymptomType = 'crashloop' | 'imagepull' | 'not-ready' | 'generic';
+type SymptomType = 'crashloop' | 'imagepull' | 'not-ready' | 'pending' | 'generic';
 
 // ---------------------------------------------------------------------------
 // Helpers — symptom detection
@@ -71,6 +71,19 @@ function detectSymptomType(findings: Finding[]): SymptomType {
     ) {
       return 'not-ready';
     }
+
+    if (
+      lower.includes('pending pod') ||
+      lower.includes('containercreating') ||
+      lower.includes('volume mount failure') ||
+      lower.includes('failed to mount') ||
+      lower.includes('failedmount') ||
+      lower.includes('failedscheduling') ||
+      lower.includes('provisionfailed') ||
+      lower.includes('provisioningfailed')
+    ) {
+      return 'pending';
+    }
   }
 
   return 'generic';
@@ -117,6 +130,8 @@ function buildSymptomKey(componentKey: string, symptomType: SymptomType): string
       return `pod-imagepull:${suffix}`;
     case 'not-ready':
       return `pod-not-ready:${suffix}`;
+    case 'pending':
+      return `pod-pending:${suffix}`;
     default:
       return `symptom:${suffix}`;
   }
@@ -142,6 +157,8 @@ function buildSymptomDescription(
       return `Pod '${name}' cannot pull its container image in namespace '${namespace}'`;
     case 'not-ready':
       return `Pod '${name}' is running but not ready in namespace '${namespace}'`;
+    case 'pending':
+      return `Pod '${name}' is stuck in Pending/ContainerCreating in namespace '${namespace}'`;
     default:
       // Fall back to the first finding's title as the description
       return findings[0]?.title ?? componentKey;
@@ -333,6 +350,45 @@ function generateNotReadyHypotheses(
 }
 
 /**
+ * Generates the full set of competing hypotheses for a Pending Pod symptom.
+ * Three candidates are returned:
+ * 1. `volume-mount-failure` — PVC cannot provision because StorageClass is missing
+ * 2. `missing-secret`      — A volume or secret referenced in the pod spec is absent
+ * 3. `config-error`        — Pod spec has a misconfigured volume reference
+ */
+function generatePendingPodHypotheses(
+  symptomKey: string,
+  symptomDescription: string,
+  findings: Finding[],
+): Hypothesis[] {
+  const sourceIds = findings.map((f) => f.id);
+
+  return [
+    buildHypothesis(
+      `${symptomKey}:volume-mount-failure`,
+      symptomDescription,
+      'A PersistentVolumeClaim cannot be provisioned because the referenced StorageClass is missing or the storage provisioner is unavailable',
+      'volume-mount-failure',
+      sourceIds,
+    ),
+    buildHypothesis(
+      `${symptomKey}:missing-secret`,
+      symptomDescription,
+      'A volume, Secret, or ConfigMap referenced in the pod spec is absent, preventing the container from starting',
+      'missing-secret',
+      sourceIds,
+    ),
+    buildHypothesis(
+      `${symptomKey}:config-error`,
+      symptomDescription,
+      'The pod spec has a misconfigured volume reference, resource request, or node selector that prevents scheduling',
+      'config-error',
+      sourceIds,
+    ),
+  ];
+}
+
+/**
  * Generates a minimal set of generic hypotheses when no specific symptom type
  * can be detected from the finding titles.
  */
@@ -424,6 +480,8 @@ export function generateHypothesesForSymptom(
       return generateImagePullHypotheses(symptomKey, symptomDescription, findings);
     case 'not-ready':
       return generateNotReadyHypotheses(symptomKey, symptomDescription, findings);
+    case 'pending':
+      return generatePendingPodHypotheses(symptomKey, symptomDescription, findings);
     default:
       return generateGenericHypotheses(symptomKey, symptomDescription, findings);
   }
@@ -512,6 +570,8 @@ function generateHypothesesForSymptomInternal(
       return generateImagePullHypotheses(symptomKey, symptomDescription, findings);
     case 'not-ready':
       return generateNotReadyHypotheses(symptomKey, symptomDescription, findings);
+    case 'pending':
+      return generatePendingPodHypotheses(symptomKey, symptomDescription, findings);
     default:
       return generateGenericHypotheses(symptomKey, symptomDescription, findings);
   }

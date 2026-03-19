@@ -1,0 +1,41 @@
+2024-03-15T07:40:30Z INFO  Starting Prometheus v2.48.0
+2024-03-15T07:40:30Z INFO  Loading configuration file /etc/prometheus/prometheus.yml
+2024-03-15T07:40:31Z INFO  Completed loading of configuration file
+2024-03-15T07:40:31Z INFO  Server is ready to receive web requests.
+2024-03-15T07:40:32Z INFO  TSDB started successfully. Storage path: /prometheus
+2024-03-15T07:40:35Z INFO  Scrape target discovery: found 12 targets
+2024-03-15T07:40:45Z INFO  Scrape completed: kubernetes-pods 10/12 up (2 unreachable)
+2024-03-15T07:41:00Z INFO  Scrape completed: kubernetes-pods 10/12 up
+2024-03-15T07:41:00Z INFO  Alert rule evaluation: 0 firing, 3 pending
+2024-03-15T07:41:15Z INFO  Scrape completed: postgres 0/1 up (postgres-service.database.svc.cluster.local:5432 unreachable)
+2024-03-15T07:41:30Z INFO  Scrape completed: kubernetes-pods 10/12 up
+2024-03-15T07:42:00Z INFO  Alert firing: PostgresAuthFailure — postgres-primary-pod auth errors detected
+2024-03-15T07:42:00Z INFO  Sending alert to alertmanager: http://alertmanager-pod.monitoring.svc.cluster.local:9093
+2024-03-15T07:42:15Z INFO  Scrape completed: kubernetes-pods 10/12 up
+2024-03-15T07:42:30Z INFO  Alert firing: AlertmanagerDown — alertmanager-pod not reachable
+2024-03-15T07:43:00Z INFO  Scrape completed: kubernetes-pods 10/12 up
+2024-03-15T07:43:00Z INFO  TSDB head compaction in progress
+2024-03-15T07:43:30Z INFO  Scrape completed: kubernetes-pods 10/12 up
+2024-03-15T07:44:00Z INFO  Scrape completed: kubernetes-pods 10/12 up
+2024-03-15T07:44:00Z INFO  Alert firing: WebAppDown — web-app-pod readiness failures
+2024-03-15T07:44:30Z INFO  Scrape completed: kubernetes-pods 10/12 up
+2024-03-15T07:45:00Z INFO  Scrape completed: kubernetes-pods 10/12 up
+2024-03-15T07:45:00Z INFO  TSDB compaction complete, blocks merged: 2
+2024-03-15T07:46:00Z INFO  Scrape completed: kubernetes-pods 10/12 up
+2024-03-15T07:46:30Z INFO  Remote write: 0 samples queued
+2024-03-15T07:47:00Z INFO  Scrape completed: kubernetes-pods 10/12 up
+2024-03-15T07:48:00Z INFO  Scrape completed: kubernetes-pods 10/12 up
+2024-03-15T07:49:00Z INFO  Scrape completed: kubernetes-pods 10/12 up
+2024-03-15T07:50:00Z INFO  Rule group evaluation complete: 0 errors
+2024-03-15T07:50:00Z INFO  Scrape completed: kubernetes-pods 10/12 up
+2024-03-15T07:51:00Z INFO  Scrape completed: kubernetes-pods 10/12 up
+2024-03-15T07:52:00Z INFO  Scrape completed: kubernetes-pods 10/12 up
+2024-03-15T07:53:00Z INFO  Scrape completed: kubernetes-pods 10/12 up
+2024-03-15T07:54:00Z INFO  Scrape completed: kubernetes-pods 10/12 up
+2024-03-15T07:55:00Z INFO  Scrape completed: kubernetes-pods 10/12 up
+2024-03-15T07:56:00Z INFO  Scrape completed: kubernetes-pods 10/12 up
+2024-03-15T07:57:00Z INFO  Scrape completed: kubernetes-pods 10/12 up
+2024-03-15T07:58:00Z INFO  Prometheus serving queries: avg 2ms, p99 12ms
+2024-03-15T07:59:00Z INFO  Scrape completed: kubernetes-pods 10/12 up
+2024-03-15T08:00:00Z INFO  TSDB head compaction triggered
+2024-03-15T08:01:00Z INFO  Scrape completed: kubernetes-pods 10/12 up

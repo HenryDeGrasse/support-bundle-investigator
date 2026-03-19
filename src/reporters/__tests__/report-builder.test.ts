@@ -51,7 +51,6 @@ function makeMinimalProfile(): BundleProfile {
     log: 0,
     'kubernetes-resource': 0,
     event: 0,
-    config: 0,
     'cluster-info': 0,
     'helm-release': 0,
     unknown: 0,
@@ -242,6 +241,16 @@ describe('buildReport — executive summary', () => {
     const report = buildReport(makePipelineResult([finding]));
     expect(report.executiveSummary).toContain('Restart the deployment immediately.');
   });
+
+  it('executive summary humanizes legacy hypothesis titles', () => {
+    const finding = makeFinding({
+      title: '[Hypothesis] DNS failure for db.internal (symptom: Pod app-pod is not ready)',
+    });
+    const report = buildReport(makePipelineResult([finding]));
+    expect(report.executiveSummary).toContain('Most significant: DNS failure for db.internal');
+    expect(report.executiveSummary).not.toContain('[Hypothesis]');
+    expect(report.executiveSummary).not.toContain('(symptom:');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -281,6 +290,20 @@ describe('buildReport — evidence references', () => {
     const ref = report.evidenceReferences[0]!;
     expect(ref.path).toBe('cluster-resources/pods/default/app.yaml');
     expect(ref.note).toBe('CrashLoopBackOff');
+  });
+
+  it('cleans absolute evidence paths before storing evidence references', () => {
+    const finding = makeFinding({
+      evidence: [
+        {
+          path: '/var/folders/26/x/T/sbi-bundle-AB/wrong-db/logs/app/app-pod.log',
+          note: 'DNS failure',
+          artifactType: 'log',
+        },
+      ],
+    });
+    const report = buildReport(makePipelineResult([finding]));
+    expect(report.evidenceReferences[0]!.path).toBe('logs/app/app-pod.log');
   });
 
   it('evidence references is empty when findings have no evidence', () => {

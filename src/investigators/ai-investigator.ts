@@ -25,6 +25,7 @@ import type { EmbeddingClient } from '../ai/embeddings.js';
 import type { VectorStore } from '../ai/vector-store.js';
 import { validateAIFindings } from '../ai/schemas.js';
 import { getRelatedChunks } from '../graph/resource-graph.js';
+import type { GraphScoredChunk } from '../graph/resource-graph.js';
 import { buildInvestigationPrompt } from '../ai/prompts.js';
 
 // ---------------------------------------------------------------------------
@@ -127,51 +128,77 @@ function nextEdgeId(counter: Counter): string {
 }
 
 // ---------------------------------------------------------------------------
-// Chunk merging (graph-first, deduplicated)
+// Chunk merging — Reciprocal Rank Fusion (RRF)
 // ---------------------------------------------------------------------------
 
 /**
- * Merges graph neighborhood, lexical search, and semantic search chunks into a
- * single deduplicated array.
+ * A ranked list of chunks from a single retrieval system.
  *
- * Priority order (highest → lowest):
- * 1. **Graph chunks** — deterministic, 100% precision floor. Always included first.
- * 2. **Lexical chunks** — exact identifier matching. Appended in score order.
- * 3. **Semantic chunks** — cosine-similarity expansion. Appended last, skipping
- *    any already present from graph/lexical retrieval.
+ * Each entry represents the output of one retrieval system (graph, lexical, or
+ * semantic). The `chunks` array must already be sorted in descending relevance
+ * order — the position of a chunk in the array determines its rank contribution
+ * to the RRF score.
  *
- * Total is capped at {@link MAX_CHUNKS_PER_SEED}.
+ * An optional parallel `scores` array (same length as `chunks`) may carry the
+ * raw retrieval scores (hop-distance, BM25, cosine similarity), but is not used
+ * by `mergeChunks` itself — rank within the list is what counts for RRF.
  */
-function mergeChunks(
-  graphChunks: IndexedChunk[],
-  lexicalChunks: IndexedChunk[],
-  semanticChunks: IndexedChunk[] = [],
-): IndexedChunk[] {
-  const seen = new Set<string>();
-  const merged: IndexedChunk[] = [];
+export interface RetrievalList {
+  chunks: IndexedChunk[];
+  scores?: number[];
+}
 
-  for (const chunk of graphChunks) {
-    if (!seen.has(chunk.id) && merged.length < MAX_CHUNKS_PER_SEED) {
-      seen.add(chunk.id);
-      merged.push(chunk);
+/**
+ * RRF constant `k` — controls how strongly top-ranked chunks are boosted.
+ *
+ * A value of 60 is the standard from the RRF paper (Cormack et al., 2009).
+ * Higher `k` → flatter curve (top ranks matter less); lower → steeper boost.
+ */
+const RRF_K = 60;
+
+/**
+ * Merges multiple ranked chunk lists into a single deduplicated list using
+ * Reciprocal Rank Fusion (RRF).
+ *
+ * Algorithm:
+ * 1. For every chunk in every retrieval list, accumulate an RRF score:
+ *    `score += 1 / (k + rank)` where `rank` is 1-based position in the list.
+ * 2. Chunks missing from a system contribute nothing from that system (no
+ *    penalty — just no boost from that source).
+ * 3. Sort by descending RRF score. Ties are broken by chunk ID (lexicographic)
+ *    for determinism.
+ * 4. Cap the merged list at {@link MAX_CHUNKS_PER_SEED}.
+ *
+ * @param retrievalLists - One entry per retrieval system, each containing a
+ *   ranked `chunks` array (already sorted best-first).
+ * @returns Merged, deduplicated chunk array capped at {@link MAX_CHUNKS_PER_SEED}.
+ */
+export function mergeChunks(retrievalLists: RetrievalList[]): IndexedChunk[] {
+  // Accumulate RRF scores: chunkId → { chunk, rrfScore }
+  const scoreMap = new Map<string, { chunk: IndexedChunk; rrfScore: number }>();
+
+  for (const { chunks } of retrievalLists) {
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i]!;
+      const rank = i + 1; // 1-based
+      const contribution = 1 / (RRF_K + rank);
+
+      const existing = scoreMap.get(chunk.id);
+      if (existing !== undefined) {
+        existing.rrfScore += contribution;
+      } else {
+        scoreMap.set(chunk.id, { chunk, rrfScore: contribution });
+      }
     }
   }
 
-  for (const chunk of lexicalChunks) {
-    if (!seen.has(chunk.id) && merged.length < MAX_CHUNKS_PER_SEED) {
-      seen.add(chunk.id);
-      merged.push(chunk);
-    }
-  }
+  // Sort by descending RRF score; break ties by chunk ID for determinism
+  const sorted = [...scoreMap.values()].sort((a, b) => {
+    if (b.rrfScore !== a.rrfScore) return b.rrfScore - a.rrfScore;
+    return a.chunk.id.localeCompare(b.chunk.id);
+  });
 
-  for (const chunk of semanticChunks) {
-    if (!seen.has(chunk.id) && merged.length < MAX_CHUNKS_PER_SEED) {
-      seen.add(chunk.id);
-      merged.push(chunk);
-    }
-  }
-
-  return merged;
+  return sorted.slice(0, MAX_CHUNKS_PER_SEED).map(({ chunk }) => chunk);
 }
 
 // ---------------------------------------------------------------------------
@@ -361,20 +388,28 @@ export async function investigateWithAI(
       // Emit per-seed progress for TUI
       onSeedProgress?.(seedIdx + 1, seedTotal, seed.hypothesis);
       // ── Step 1: Graph retrieval (deterministic precision floor) ───────────
-      const graphChunks = getRelatedChunks(resourceGraph, seed, chunkIndex);
+      // Returns GraphScoredChunk[] sorted by hop-distance score (1.0 / 0.7 / 0.4)
+      const graphScoredChunks: GraphScoredChunk[] = getRelatedChunks(resourceGraph, seed, chunkIndex);
+      // Sort by score descending so highest-precision chunks fill context first
+      const graphSorted = graphScoredChunks.sort((a, b) => b.score - a.score);
+      const graphChunks = graphSorted.map((sc) => sc.chunk);
+      const graphScores = graphSorted.map((sc) => sc.score);
 
       // ── Step 2: Lexical retrieval (supplementary evidence) ────────────────
       const lexicalResults = lexicalIndex.search(seed.hypothesis, LEXICAL_TOP_K);
       const lexicalChunks = lexicalResults.map((r) => r.chunk);
+      const lexicalScores = lexicalResults.map((r) => r.score);
 
       // ── Step 2b: Semantic retrieval (expansion layer, lower priority) ─────
       let semanticChunks: IndexedChunk[] = [];
+      let semanticScores: number[] = [];
       if (embeddingClient !== undefined && vectorStore !== undefined) {
         try {
           const queryEmbedding = await embeddingClient.embedSingle(seed.hypothesis);
           if (queryEmbedding.length > 0) {
             const semanticResults = vectorStore.query(queryEmbedding, SEMANTIC_TOP_K);
             semanticChunks = semanticResults.map((r) => r.chunk);
+            semanticScores = semanticResults.map((r) => r.score);
           }
         } catch (semanticError) {
           // Semantic expansion failure is non-fatal — continue with graph + lexical
@@ -385,8 +420,13 @@ export async function investigateWithAI(
         }
       }
 
-      // ── Step 3: Merge & deduplicate ───────────────────────────────────────
-      const mergedChunks = mergeChunks(graphChunks, lexicalChunks, semanticChunks);
+      // ── Step 3: Merge & deduplicate via RRF ──────────────────────────────
+      const retrievalLists: RetrievalList[] = [
+        { chunks: graphChunks, scores: graphScores },
+        { chunks: lexicalChunks, scores: lexicalScores },
+        { chunks: semanticChunks, scores: semanticScores },
+      ];
+      const mergedChunks = mergeChunks(retrievalLists);
 
       // ── Verbose retrieval stats ───────────────────────────────────────────
       if (verbose) {

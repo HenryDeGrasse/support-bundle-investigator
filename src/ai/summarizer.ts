@@ -1,4 +1,5 @@
 import type { K8sResource, K8sEvent, AnalyzerResult } from '../types/index.js';
+import type { HelmRelease } from '../parsers/index.js';
 import { extractPodStatus, getContainerErrors } from '../parsers/index.js';
 
 // ---------------------------------------------------------------------------
@@ -387,6 +388,41 @@ export function summarizeAnalyzer(result: AnalyzerResult): string {
 
   if (result.uri) {
     lines.push(`Reference: ${result.uri}`);
+  }
+
+  return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// Public: summarizeHelmRelease
+// ---------------------------------------------------------------------------
+
+/**
+ * Produces a human-readable summary of a Helm release.
+ *
+ * Includes release name, namespace, chart, chart version, app version,
+ * status, and last updated timestamp.  Does not include raw values — those
+ * are high-signal but potentially large and are better indexed separately.
+ */
+export function summarizeHelmRelease(release: HelmRelease): string {
+  const lines: string[] = [
+    `HelmRelease: ${release.name} (namespace: ${release.namespace})`,
+    `Chart: ${release.chart}@${release.chartVersion}`,
+    `Status: ${release.status}`,
+    `Revision: ${release.revision}`,
+  ];
+
+  if (release.appVersion) {
+    lines.push(`AppVersion: ${release.appVersion}`);
+  }
+
+  if (release.updatedAt) {
+    lines.push(`UpdatedAt: ${release.updatedAt}`);
+  }
+
+  const valueKeys = Object.keys(release.values);
+  if (valueKeys.length > 0) {
+    lines.push(`ValuesKeys: ${valueKeys.join(', ')}`);
   }
 
   return lines.join('\n');

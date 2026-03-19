@@ -1,0 +1,63 @@
+{
+  "apiVersion": "apps/v1",
+  "kind": "DeploymentList",
+  "items": [
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "web-app",
+        "namespace": "default",
+        "labels": { "app": "web-app" },
+        "creationTimestamp": "2024-03-15T07:59:00Z"
+      },
+      "spec": {
+        "replicas": 2,
+        "selector": { "matchLabels": { "app": "web-app" } },
+        "template": {
+          "metadata": { "labels": { "app": "web-app", "version": "v2.1.0" } },
+          "spec": {
+            "containers": [
+              {
+                "name": "web-app",
+                "image": "mycompany/web-app:v2.1.0",
+                "ports": [{ "containerPort": 8080 }],
+                "envFrom": [
+                  { "configMapRef": { "name": "web-app-config" } },
+                  { "secretRef": { "name": "web-app-secret" } }
+                ],
+                "env": [
+                  { "name": "DB_HOST", "valueFrom": { "configMapKeyRef": { "name": "db-config", "key": "DB_HOST" } } },
+                  { "name": "DB_PORT", "value": "5432" }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "status": {
+        "replicas": 1,
+        "updatedReplicas": 1,
+        "readyReplicas": 0,
+        "availableReplicas": 0,
+        "conditions": [
+          {
+            "type": "Available",
+            "status": "False",
+            "reason": "MinimumReplicasUnavailable",
+            "message": "Deployment does not have minimum availability.",
+            "lastUpdateTime": "2024-03-15T08:05:00Z",
+            "lastTransitionTime": "2024-03-15T08:05:00Z"
+          },
+          {
+            "type": "Progressing",
+            "status": "True",
+            "reason": "ReplicaSetUpdated",
+            "lastUpdateTime": "2024-03-15T08:00:00Z",
+            "lastTransitionTime": "2024-03-15T08:00:00Z"
+          }
+        ]
+      }
+    }
+  ]
+}

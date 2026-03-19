@@ -19,7 +19,8 @@ export { chunkLogFile, chunkResource, chunkAnalyzer } from './chunker.js';
 export {
   buildResourceGraph,
   getNeighborhood,
+  getNeighborhoodWithDepth,
   getRelatedChunks,
   parseSeedSource,
 } from './resource-graph.js';
-export type { ResourceNode, ResourceEdge, ResourceRelationshipGraph, RelationshipType } from './resource-graph.js';
+export type { ResourceNode, ResourceEdge, ResourceRelationshipGraph, RelationshipType, GraphScoredChunk } from './resource-graph.js';

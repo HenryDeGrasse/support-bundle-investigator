@@ -105,6 +105,14 @@ describe('humanizeTitle', () => {
       ),
     ).toBe('DNS Resolution Failures in logs/app/app-pod.log');
   });
+
+  it('preserves the original preposition when cleaning absolute paths', () => {
+    expect(
+      humanizeTitle(
+        'Missing resource logs from /tmp/sbi-bundle-AB/pvc-pending/logs/app/worker.log',
+      ),
+    ).toBe('Missing resource logs from logs/app/worker.log');
+  });
 });
 
 // ---------------------------------------------------------------------------

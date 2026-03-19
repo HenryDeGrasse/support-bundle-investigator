@@ -99,7 +99,6 @@ export function confidenceBar(confidence: number): string {
  * | `'kubernetes-resource'`| K8S  |
  * | `'event'`              | EVT  |
  * | `'analyzer'`           | ANL  |
- * | `'config'`             | CFG  |
  * | `'helm-release'`       | HLM  |
  * | default / undefined    | ---  |
  *
@@ -116,8 +115,6 @@ export function evidenceIcon(artifactType?: string): string {
       return 'EVT';
     case 'analyzer':
       return 'ANL';
-    case 'config':
-      return 'CFG';
     case 'helm-release':
       return 'HLM';
     default:

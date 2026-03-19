@@ -1,0 +1,294 @@
+{
+  "apiVersion": "v1",
+  "kind": "EventList",
+  "items": [
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "alertmanager-pod.oomkilled-1",
+        "namespace": "monitoring",
+        "creationTimestamp": "2024-03-15T07:57:55Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "alertmanager-pod", "namespace": "monitoring" },
+      "reason": "OOMKilling",
+      "message": "Memory cgroup out of memory: Killed process 1 (alertmanager) total-vm:524288kB, anon-rss:131072kB, file-rss:0kB, shmem-rss:0kB, UID:65534 pgtables:512kB oom_score_adj:1000",
+      "type": "Warning",
+      "count": 7,
+      "firstTimestamp": "2024-03-15T07:45:00Z",
+      "lastTimestamp": "2024-03-15T07:57:55Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "alertmanager-pod.backoff-1",
+        "namespace": "monitoring",
+        "creationTimestamp": "2024-03-15T07:58:10Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "alertmanager-pod", "namespace": "monitoring" },
+      "reason": "BackOff",
+      "message": "Back-off restarting failed container alertmanager in pod alertmanager-pod_monitoring",
+      "type": "Warning",
+      "count": 7,
+      "firstTimestamp": "2024-03-15T07:45:30Z",
+      "lastTimestamp": "2024-03-15T08:30:00Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "grafana-pod.unhealthy-1",
+        "namespace": "monitoring",
+        "creationTimestamp": "2024-03-15T08:05:30Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "grafana-pod", "namespace": "monitoring" },
+      "reason": "Unhealthy",
+      "message": "Readiness probe failed: Get \"http://10.244.3.15:3000/api/health\": dial tcp 10.244.3.15:3000: connect: connection refused",
+      "type": "Warning",
+      "count": 14,
+      "firstTimestamp": "2024-03-15T08:05:30Z",
+      "lastTimestamp": "2024-03-15T08:30:00Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "grafana-pod.backoff-1",
+        "namespace": "monitoring",
+        "creationTimestamp": "2024-03-15T08:06:00Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "grafana-pod", "namespace": "monitoring" },
+      "reason": "BackOff",
+      "message": "Back-off restarting failed container grafana in pod grafana-pod_monitoring: database connection to wrong-host.internal:5432 failed",
+      "type": "Warning",
+      "count": 4,
+      "firstTimestamp": "2024-03-15T08:06:00Z",
+      "lastTimestamp": "2024-03-15T08:25:00Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "prometheus-pod.pulled-1",
+        "namespace": "monitoring",
+        "creationTimestamp": "2024-03-15T07:40:10Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "prometheus-pod", "namespace": "monitoring" },
+      "reason": "Pulled",
+      "message": "Successfully pulled image \"prom/prometheus:v2.48.0\" in 4.2s",
+      "type": "Normal",
+      "count": 1,
+      "firstTimestamp": "2024-03-15T07:40:10Z",
+      "lastTimestamp": "2024-03-15T07:40:10Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "prometheus-pod.started-1",
+        "namespace": "monitoring",
+        "creationTimestamp": "2024-03-15T07:40:30Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "prometheus-pod", "namespace": "monitoring" },
+      "reason": "Started",
+      "message": "Started container prometheus",
+      "type": "Normal",
+      "count": 1,
+      "firstTimestamp": "2024-03-15T07:40:30Z",
+      "lastTimestamp": "2024-03-15T07:40:30Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "alertmanager-pod.pulled-1",
+        "namespace": "monitoring",
+        "creationTimestamp": "2024-03-15T07:42:10Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "alertmanager-pod", "namespace": "monitoring" },
+      "reason": "Pulled",
+      "message": "Successfully pulled image \"prom/alertmanager:v0.26.0\" in 3.1s",
+      "type": "Normal",
+      "count": 1,
+      "firstTimestamp": "2024-03-15T07:42:10Z",
+      "lastTimestamp": "2024-03-15T07:42:10Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "alertmanager-pod.started-1",
+        "namespace": "monitoring",
+        "creationTimestamp": "2024-03-15T07:42:30Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "alertmanager-pod", "namespace": "monitoring" },
+      "reason": "Started",
+      "message": "Started container alertmanager",
+      "type": "Normal",
+      "count": 1,
+      "firstTimestamp": "2024-03-15T07:42:30Z",
+      "lastTimestamp": "2024-03-15T07:42:30Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "grafana-pod.pulled-1",
+        "namespace": "monitoring",
+        "creationTimestamp": "2024-03-15T07:55:10Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "grafana-pod", "namespace": "monitoring" },
+      "reason": "Pulled",
+      "message": "Successfully pulled image \"grafana/grafana:10.2.0\" in 3.8s",
+      "type": "Normal",
+      "count": 1,
+      "firstTimestamp": "2024-03-15T07:55:10Z",
+      "lastTimestamp": "2024-03-15T07:55:10Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "grafana-pod.started-1",
+        "namespace": "monitoring",
+        "creationTimestamp": "2024-03-15T07:55:20Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "grafana-pod", "namespace": "monitoring" },
+      "reason": "Started",
+      "message": "Started container grafana",
+      "type": "Normal",
+      "count": 1,
+      "firstTimestamp": "2024-03-15T07:55:20Z",
+      "lastTimestamp": "2024-03-15T07:55:20Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "grafana-pod.failed-dns-1",
+        "namespace": "monitoring",
+        "creationTimestamp": "2024-03-15T07:56:00Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "grafana-pod", "namespace": "monitoring" },
+      "reason": "Failed",
+      "message": "Grafana database migration failed: failed to connect to 'host=wrong-host.internal user=grafana database=grafana': dial error (dial tcp: lookup wrong-host.internal on 10.96.0.10:53: no such host)",
+      "type": "Warning",
+      "count": 2,
+      "firstTimestamp": "2024-03-15T07:56:00Z",
+      "lastTimestamp": "2024-03-15T08:05:00Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "alertmanager-pod.scheduled",
+        "namespace": "monitoring",
+        "creationTimestamp": "2024-03-15T07:42:01Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "alertmanager-pod", "namespace": "monitoring" },
+      "reason": "Scheduled",
+      "message": "Successfully assigned monitoring/alertmanager-pod to worker-node-2",
+      "type": "Normal",
+      "count": 1,
+      "firstTimestamp": "2024-03-15T07:42:01Z",
+      "lastTimestamp": "2024-03-15T07:42:01Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "prometheus-pod.scheduled",
+        "namespace": "monitoring",
+        "creationTimestamp": "2024-03-15T07:40:01Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "prometheus-pod", "namespace": "monitoring" },
+      "reason": "Scheduled",
+      "message": "Successfully assigned monitoring/prometheus-pod to worker-node-1",
+      "type": "Normal",
+      "count": 1,
+      "firstTimestamp": "2024-03-15T07:40:01Z",
+      "lastTimestamp": "2024-03-15T07:40:01Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "grafana-pod.scheduled",
+        "namespace": "monitoring",
+        "creationTimestamp": "2024-03-15T07:55:01Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "grafana-pod", "namespace": "monitoring" },
+      "reason": "Scheduled",
+      "message": "Successfully assigned monitoring/grafana-pod to worker-node-2",
+      "type": "Normal",
+      "count": 1,
+      "firstTimestamp": "2024-03-15T07:55:01Z",
+      "lastTimestamp": "2024-03-15T07:55:01Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "prometheus-data-pvc.bound",
+        "namespace": "monitoring",
+        "creationTimestamp": "2024-03-14T11:01:00Z"
+      },
+      "involvedObject": { "kind": "PersistentVolumeClaim", "name": "prometheus-data-pvc", "namespace": "monitoring" },
+      "reason": "Bound",
+      "message": "Successfully bound to PersistentVolume pvc-def456 with 50Gi on StorageClass standard",
+      "type": "Normal",
+      "count": 1,
+      "firstTimestamp": "2024-03-14T11:01:00Z",
+      "lastTimestamp": "2024-03-14T11:01:00Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "alertmanager-pod.unhealthy-1",
+        "namespace": "monitoring",
+        "creationTimestamp": "2024-03-15T07:43:30Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "alertmanager-pod", "namespace": "monitoring" },
+      "reason": "Unhealthy",
+      "message": "Liveness probe failed: Get \"http://10.244.3.12:9093/-/healthy\": context deadline exceeded (Client.Timeout exceeded while awaiting headers)",
+      "type": "Warning",
+      "count": 7,
+      "firstTimestamp": "2024-03-15T07:43:30Z",
+      "lastTimestamp": "2024-03-15T07:57:00Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "alertmanager-pod.oomkilled-2",
+        "namespace": "monitoring",
+        "creationTimestamp": "2024-03-15T08:10:00Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "alertmanager-pod", "namespace": "monitoring" },
+      "reason": "OOMKilling",
+      "message": "Container alertmanager exceeded memory limit 128Mi (actual usage: 247Mi). OOMKilled. Increase memory limit or reduce --data.retention.",
+      "type": "Warning",
+      "count": 3,
+      "firstTimestamp": "2024-03-15T07:58:00Z",
+      "lastTimestamp": "2024-03-15T08:10:00Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "grafana-pod.unhealthy-2",
+        "namespace": "monitoring",
+        "creationTimestamp": "2024-03-15T08:20:00Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "grafana-pod", "namespace": "monitoring" },
+      "reason": "Unhealthy",
+      "message": "Readiness probe failed: HTTP probe failed with statuscode: 503 — database not available at wrong-host.internal",
+      "type": "Warning",
+      "count": 8,
+      "firstTimestamp": "2024-03-15T08:20:00Z",
+      "lastTimestamp": "2024-03-15T08:30:00Z"
+    }
+  ]
+}

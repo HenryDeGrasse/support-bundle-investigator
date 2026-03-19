@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import type { InvestigatorContext, InvestigationSeed } from '../types.js';
-import type { BundleProfile, K8sResource } from '../../types/index.js';
+import type { BundleProfile, K8sResource, K8sEvent } from '../../types/index.js';
 import type { LogFile, LogLine } from '../../parsers/index.js';
-import { classifyLogLevel } from '../../parsers/index.js';
+import { classifyLogLevel, extractTimestamps } from '../../parsers/index.js';
 import { investigateLog } from '../log-investigator.js';
 
 // ---------------------------------------------------------------------------
@@ -11,7 +11,10 @@ import { investigateLog } from '../log-investigator.js';
 
 function makeLine(content: string, lineNumber: number): LogLine {
   const level = classifyLogLevel(content);
-  return { lineNumber, content, level };
+  const ts = extractTimestamps(content);
+  const line: LogLine = { lineNumber, content, level };
+  if (ts !== null) line.timestamp = ts;
+  return line;
 }
 
 function makeLogFile(path: string, rawLines: string[]): LogFile {
@@ -42,7 +45,6 @@ function makeProfile(): BundleProfile {
       log: 0,
       'kubernetes-resource': 0,
       event: 0,
-      config: 0,
       'cluster-info': 0,
       'helm-release': 0,
       unknown: 0,
@@ -255,9 +257,10 @@ describe('investigateLog — DNS resolution failures', () => {
       expect(f.evidence.every((e) => e.artifactType === 'log')).toBe(true);
     });
 
-    it('affectedComponents includes the log file path', () => {
+    it('affectedComponents uses Pod/<namespace>/<pod-name> when log maps to a known pod', () => {
       const f = result.findings.find((f) => f.title.toLowerCase().includes('dns'))!;
-      expect(f.affectedComponents.some((c) => c.includes('app-pod.log'))).toBe(true);
+      // dnsFailureLog path is 'pods/default/app/app-pod.log', dbPod is 'app-pod' in 'default'
+      expect(f.affectedComponents).toContain('Pod/default/app-pod');
     });
 
     it('affectedComponents includes the failing hostname', () => {
@@ -827,5 +830,413 @@ describe('investigateLog — non-pod resources ignored in hostname extraction', 
     expect(dnsFindings).toHaveLength(1);
     // Lower confidence — no pod env var correlation
     expect(dnsFindings[0]!.confidence).toBeLessThan(0.85);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 10 — Pod-based affectedComponents and clean evidence paths
+// ---------------------------------------------------------------------------
+
+describe('investigateLog — Pod-based affectedComponents and clean paths', () => {
+  it('affectedComponents uses Pod/<namespace>/<pod-name> when log path maps to a known pod', () => {
+    const podResource: K8sResource = {
+      apiVersion: 'v1',
+      kind: 'Pod',
+      metadata: { name: 'app-pod', namespace: 'default' },
+      spec: {},
+      status: {},
+    };
+    // Log basename 'app-pod' matches the pod resource name
+    const logFile = makeLogFile('logs/app/app-pod.log', [
+      '2024-01-15T10:00:00Z ERROR dial tcp: lookup db.internal: no such host',
+      '2024-01-15T10:00:01Z ERROR dial tcp: lookup db.internal: no such host',
+    ]);
+    const context = makeContext({ logs: [logFile], resources: [podResource] });
+    const result = investigateLog(context, noSeeds);
+    const f = result.findings.find((f) => f.title.toLowerCase().includes('dns'))!;
+    expect(f).toBeDefined();
+    expect(f.affectedComponents).toContain('Pod/default/app-pod');
+    // Should not include the raw file path as a component
+    expect(f.affectedComponents.some((c) => c.includes('.log'))).toBe(false);
+  });
+
+  it('affectedComponents falls back to cleaned path when no pod name matches', () => {
+    // Log basename is 'unknown-pod', no matching Pod resource exists
+    const logFile = makeLogFile('logs/app/unknown-pod.log', [
+      '2024-01-15T10:00:00Z ERROR dial tcp: lookup db.internal: no such host',
+      '2024-01-15T10:00:01Z ERROR dial tcp: lookup db.internal: no such host',
+    ]);
+    const context = makeContext({ logs: [logFile] });
+    const result = investigateLog(context, noSeeds);
+    const f = result.findings.find((f) => f.title.toLowerCase().includes('dns'))!;
+    expect(f).toBeDefined();
+    // No Pod component — should fall back to path-based component
+    expect(f.affectedComponents.some((c) => c.startsWith('Pod/'))).toBe(false);
+    expect(f.affectedComponents.some((c) => c.includes('unknown-pod.log'))).toBe(true);
+  });
+
+  it('finding title uses bundle-relative path, not absolute temp path', () => {
+    // Simulate an absolute extraction path as would appear in a real bundle run
+    const absPath =
+      '/var/folders/tmp/sbi-bundle-XYZ/bad-image-tag/logs/app/app-pod.log';
+    const logFile = makeLogFile(absPath, [
+      '2024-01-15T10:00:00Z ERROR dial tcp: lookup db.internal: no such host',
+      '2024-01-15T10:00:01Z ERROR dial tcp: lookup db.internal: no such host',
+    ]);
+    const context = makeContext({ logs: [logFile] });
+    const result = investigateLog(context, noSeeds);
+    const f = result.findings.find((f) => f.title.toLowerCase().includes('dns'))!;
+    expect(f).toBeDefined();
+    // Title must not start with '/' or contain the temp directory prefix
+    expect(f.title).not.toMatch(/\/var\/folders|\/tmp\//);
+    // Title should contain the bundle-relative portion
+    expect(f.title).toContain('logs/app/app-pod.log');
+  });
+
+  it('evidence paths are bundle-relative (do not start with /)', () => {
+    // Simulate an absolute extraction path
+    const absPath =
+      '/var/folders/tmp/sbi-bundle-XYZ/bad-image-tag/logs/app/app-pod.log';
+    const logFile = makeLogFile(absPath, [
+      '2024-01-15T10:00:00Z ERROR dial tcp: lookup db.internal: no such host',
+      '2024-01-15T10:00:01Z ERROR dial tcp: lookup db.internal: no such host',
+    ]);
+    const context = makeContext({ logs: [logFile] });
+    const result = investigateLog(context, noSeeds);
+    for (const finding of result.findings) {
+      for (const ev of finding.evidence) {
+        expect(ev.path).not.toMatch(/^\//);
+      }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 11 — Init container log path (issue 1.4)
+// ---------------------------------------------------------------------------
+
+describe('resolveLogPodComponent — init container log path (pods/logs/<ns>/<pod>/<container>.log)', () => {
+  const podResource: K8sResource = {
+    apiVersion: 'v1',
+    kind: 'Pod',
+    metadata: { name: 'app-pod', namespace: 'default' },
+    spec: {},
+    status: {},
+  };
+
+  it('returns Pod/<ns>/<pod> for init container log at cluster-resources/pods/logs/<ns>/<pod>/<container>.log', () => {
+    // The filename is 'init-setup' (container name), not the pod name 'app-pod'.
+    // resolveLogPodComponent must use the parent directory (pod name) when the
+    // filename itself does not match any known pod.
+    const logFile = makeLogFile(
+      'cluster-resources/pods/logs/default/app-pod/init-setup.log',
+      [
+        '2024-01-15T10:00:00Z ERROR dial tcp: lookup db.internal: no such host',
+        '2024-01-15T10:00:01Z ERROR dial tcp: lookup db.internal: no such host',
+      ],
+    );
+    const context = makeContext({ logs: [logFile], resources: [podResource] });
+    const result = investigateLog(context, noSeeds);
+    const f = result.findings.find((f) => f.title.toLowerCase().includes('dns'))!;
+    expect(f).toBeDefined();
+    // Must resolve by parent directory (app-pod), not filename (init-setup)
+    expect(f.affectedComponents).toContain('Pod/default/app-pod');
+    // Must not leak the container name into the Pod component
+    expect(f.affectedComponents.some((c) => c.includes('init-setup'))).toBe(false);
+  });
+
+  it('still resolves by filename for old path format logs/app/app-pod.log (backwards compat)', () => {
+    // Old-style path where the filename encodes the pod name
+    const logFile = makeLogFile('logs/app/app-pod.log', [
+      '2024-01-15T10:00:00Z ERROR dial tcp: lookup db.internal: no such host',
+      '2024-01-15T10:00:01Z ERROR dial tcp: lookup db.internal: no such host',
+    ]);
+    const context = makeContext({ logs: [logFile], resources: [podResource] });
+    const result = investigateLog(context, noSeeds);
+    const f = result.findings.find((f) => f.title.toLowerCase().includes('dns'))!;
+    expect(f).toBeDefined();
+    // Should still resolve correctly via filename match
+    expect(f.affectedComponents).toContain('Pod/default/app-pod');
+  });
+
+  it('uses the namespace from the matching Pod resource (not from path segments)', () => {
+    // Pod is in 'production' namespace even though path says 'default'
+    const prodPod: K8sResource = {
+      apiVersion: 'v1',
+      kind: 'Pod',
+      metadata: { name: 'app-pod', namespace: 'production' },
+      spec: {},
+      status: {},
+    };
+    const logFile = makeLogFile(
+      'cluster-resources/pods/logs/default/app-pod/init-setup.log',
+      [
+        '2024-01-15T10:00:00Z ERROR dial tcp: lookup db.internal: no such host',
+        '2024-01-15T10:00:01Z ERROR dial tcp: lookup db.internal: no such host',
+      ],
+    );
+    const context = makeContext({ logs: [logFile], resources: [prodPod] });
+    const result = investigateLog(context, noSeeds);
+    const f = result.findings.find((f) => f.title.toLowerCase().includes('dns'))!;
+    expect(f).toBeDefined();
+    // Namespace comes from the Pod resource metadata, not the path
+    expect(f.affectedComponents).toContain('Pod/production/app-pod');
+  });
+
+  it('falls back to cleaned path when parent directory also does not match any pod', () => {
+    // Neither filename ('mystery-container') nor parent dir ('ghost-pod') matches
+    const logFile = makeLogFile(
+      'cluster-resources/pods/logs/default/ghost-pod/mystery-container.log',
+      [
+        '2024-01-15T10:00:00Z ERROR dial tcp: lookup db.internal: no such host',
+        '2024-01-15T10:00:01Z ERROR dial tcp: lookup db.internal: no such host',
+      ],
+    );
+    const context = makeContext({ logs: [logFile], resources: [podResource] });
+    const result = investigateLog(context, noSeeds);
+    const f = result.findings.find((f) => f.title.toLowerCase().includes('dns'))!;
+    expect(f).toBeDefined();
+    // Should fall back to path-based component (no Pod match)
+    expect(f.affectedComponents.some((c) => c.startsWith('Pod/'))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 12 — Temporal event correlation
+// ---------------------------------------------------------------------------
+
+describe('investigateLog — temporal event correlation', () => {
+  /** Pod resource whose name matches the log file basename. */
+  const appPod: K8sResource = {
+    apiVersion: 'v1',
+    kind: 'Pod',
+    metadata: { name: 'app-pod', namespace: 'default' },
+    spec: {
+      containers: [
+        {
+          name: 'app',
+          image: 'myapp:v1',
+          env: [{ name: 'DB_HOST', value: 'db.internal' }],
+        },
+      ],
+    },
+    status: {},
+  };
+
+  /**
+   * BackOff event on app-pod around the same time as the DNS failure log lines.
+   * firstTimestamp is within the 10-minute window of the log error at 10:00:05.
+   */
+  const backOffEvent: K8sEvent = {
+    type: 'Warning',
+    reason: 'BackOff',
+    message: 'Back-off restarting failed container',
+    involvedObject: { kind: 'Pod', name: 'app-pod', namespace: 'default' },
+    firstTimestamp: '2024-01-15T10:00:05Z',
+    lastTimestamp: '2024-01-15T10:00:10Z',
+  };
+
+  /** Event on a different pod — must NOT appear in app-pod's findings. */
+  const otherPodEvent: K8sEvent = {
+    type: 'Warning',
+    reason: 'Failed',
+    message: 'Something failed on other pod',
+    involvedObject: { kind: 'Pod', name: 'other-pod', namespace: 'default' },
+    firstTimestamp: '2024-01-15T10:00:05Z',
+    lastTimestamp: '2024-01-15T10:00:10Z',
+  };
+
+  /** Event far outside the time window of the DNS errors — should be excluded. */
+  const farFutureEvent: K8sEvent = {
+    type: 'Warning',
+    reason: 'OOMKilled',
+    message: 'OOMKilled',
+    involvedObject: { kind: 'Pod', name: 'app-pod', namespace: 'default' },
+    firstTimestamp: '2024-01-15T12:00:00Z', // 2 hours after the errors
+    lastTimestamp: '2024-01-15T12:00:00Z',
+  };
+
+  // ── DNS findings with events ──────────────────────────────────────────────
+
+  describe('DNS failure findings enriched with pod events', () => {
+    const context = makeContext({
+      logs: [dnsFailureLog],
+      resources: [appPod],
+      events: [backOffEvent, otherPodEvent],
+    });
+    const result = investigateLog(context, noSeeds);
+    const f = result.findings.find((fi) => fi.title.toLowerCase().includes('dns'))!;
+
+    it('produces a DNS finding', () => {
+      expect(f).toBeDefined();
+    });
+
+    it('includes event evidence alongside log evidence', () => {
+      const eventEv = f.evidence.filter((e) => e.artifactType === 'event');
+      expect(eventEv.length).toBeGreaterThan(0);
+    });
+
+    it('event evidence has artifactType "event"', () => {
+      const eventEv = f.evidence.filter((e) => e.artifactType === 'event');
+      for (const ev of eventEv) {
+        expect(ev.artifactType).toBe('event');
+      }
+    });
+
+    it('event evidence note references the reason and pod name', () => {
+      const eventEv = f.evidence.filter((e) => e.artifactType === 'event');
+      expect(
+        eventEv.some(
+          (e) => e.note.includes('BackOff') || e.note.includes('app-pod'),
+        ),
+      ).toBe(true);
+    });
+
+    it('event evidence path includes the event reason', () => {
+      const eventEv = f.evidence.filter((e) => e.artifactType === 'event');
+      expect(eventEv.some((e) => e.path.includes('BackOff'))).toBe(true);
+    });
+
+    it('does not include events from other pods', () => {
+      const eventEv = f.evidence.filter((e) => e.artifactType === 'event');
+      expect(eventEv.every((e) => !e.path.includes('other-pod'))).toBe(true);
+    });
+
+    it('still has the original log evidence', () => {
+      const logEv = f.evidence.filter((e) => e.artifactType === 'log');
+      expect(logEv.length).toBeGreaterThan(0);
+    });
+  });
+
+  // ── Connection-timeout findings with events ───────────────────────────────
+
+  describe('connection-timeout findings enriched with pod events', () => {
+    const connContext = makeContext({
+      logs: [connTimeoutLog],
+      resources: [appPod],
+      events: [backOffEvent],
+    });
+    const connResult = investigateLog(connContext, noSeeds);
+    const cf = connResult.findings.find((fi) =>
+      fi.title.toLowerCase().includes('connection'),
+    )!;
+
+    it('produces a connection finding', () => {
+      expect(cf).toBeDefined();
+    });
+
+    it('includes event evidence', () => {
+      const eventEv = cf.evidence.filter((e) => e.artifactType === 'event');
+      expect(eventEv.length).toBeGreaterThan(0);
+    });
+  });
+
+  // ── Missing-resource findings with events ─────────────────────────────────
+
+  describe('missing-resource findings enriched with pod events', () => {
+    /**
+     * Event whose timestamp is within ±5 minutes of the missing-secret log
+     * errors (which occur at 2024-01-15T13:30:02Z).
+     */
+    const secretFailEvent: K8sEvent = {
+      type: 'Warning',
+      reason: 'BackOff',
+      message: 'Back-off restarting failed container',
+      involvedObject: { kind: 'Pod', name: 'app-pod', namespace: 'default' },
+      firstTimestamp: '2024-01-15T13:30:02Z',
+      lastTimestamp: '2024-01-15T13:30:02Z',
+    };
+
+    const mrContext = makeContext({
+      logs: [missingSecretLog],
+      resources: [secretPod],
+      events: [secretFailEvent],
+    });
+    const mrResult = investigateLog(mrContext, noSeeds);
+    const mrf = mrResult.findings.find((fi) =>
+      fi.title.toLowerCase().includes('missing'),
+    )!;
+
+    it('produces a missing-resource finding', () => {
+      expect(mrf).toBeDefined();
+    });
+
+    it('includes event evidence', () => {
+      const eventEv = mrf.evidence.filter((e) => e.artifactType === 'event');
+      expect(eventEv.length).toBeGreaterThan(0);
+    });
+  });
+
+  // ── No events → no event evidence ────────────────────────────────────────
+
+  it('produces no event evidence when context.events is empty', () => {
+    const context = makeContext({ logs: [dnsFailureLog], resources: [appPod], events: [] });
+    const result = investigateLog(context, noSeeds);
+    const f = result.findings.find((fi) => fi.title.toLowerCase().includes('dns'))!;
+    expect(f).toBeDefined();
+    const eventEv = f.evidence.filter((e) => e.artifactType === 'event');
+    expect(eventEv).toHaveLength(0);
+  });
+
+  // ── Events outside the time window are excluded ───────────────────────────
+
+  it('excludes events outside the ±5-minute time window', () => {
+    const context = makeContext({
+      logs: [dnsFailureLog],
+      resources: [appPod],
+      events: [backOffEvent, farFutureEvent],
+    });
+    const result = investigateLog(context, noSeeds);
+    const f = result.findings.find((fi) => fi.title.toLowerCase().includes('dns'))!;
+    expect(f).toBeDefined();
+    const eventEv = f.evidence.filter((e) => e.artifactType === 'event');
+    // farFutureEvent (12:00) is 2 hours away from errors (~10:00), outside ±5 min
+    expect(eventEv.every((e) => !e.path.includes('OOMKilled'))).toBe(true);
+    // backOffEvent (10:00:05) should still be included
+    expect(eventEv.some((e) => e.path.includes('BackOff'))).toBe(true);
+  });
+
+  // ── No matching pod → no event evidence ──────────────────────────────────
+
+  it('produces no event evidence when log path does not map to a known pod', () => {
+    // logFile basename is 'ghost-pod' but no pod resource with that name exists
+    const ghostLog = makeLogFile('logs/app/ghost-pod.log', [
+      '2024-01-15T10:00:05Z ERROR dial tcp: lookup db.internal: no such host',
+      '2024-01-15T10:00:06Z ERROR dial tcp: lookup db.internal: no such host',
+    ]);
+    const context = makeContext({
+      logs: [ghostLog],
+      resources: [],
+      events: [backOffEvent],
+    });
+    const result = investigateLog(context, noSeeds);
+    const f = result.findings.find((fi) => fi.title.toLowerCase().includes('dns'))!;
+    expect(f).toBeDefined();
+    // No pod match → no event evidence
+    const eventEv = f.evidence.filter((e) => e.artifactType === 'event');
+    expect(eventEv).toHaveLength(0);
+  });
+
+  // ── At most 5 event evidence items ───────────────────────────────────────
+
+  it('adds at most 5 event evidence items per finding', () => {
+    const manyEvents: K8sEvent[] = Array.from({ length: 10 }, (_, i) => ({
+      type: 'Warning' as const,
+      reason: `Event${i}`,
+      message: `Event number ${i}`,
+      involvedObject: { kind: 'Pod', name: 'app-pod', namespace: 'default' },
+      firstTimestamp: `2024-01-15T10:00:0${i < 9 ? i : '9'}Z`,
+      lastTimestamp: `2024-01-15T10:00:0${i < 9 ? i : '9'}Z`,
+    }));
+    const context = makeContext({
+      logs: [dnsFailureLog],
+      resources: [appPod],
+      events: manyEvents,
+    });
+    const result = investigateLog(context, noSeeds);
+    const f = result.findings.find((fi) => fi.title.toLowerCase().includes('dns'))!;
+    expect(f).toBeDefined();
+    const eventEv = f.evidence.filter((e) => e.artifactType === 'event');
+    expect(eventEv.length).toBeLessThanOrEqual(5);
   });
 });

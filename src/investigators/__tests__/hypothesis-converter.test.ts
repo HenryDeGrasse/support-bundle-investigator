@@ -36,7 +36,6 @@ function makeProfile(): BundleProfile {
       log: 0,
       'kubernetes-resource': 0,
       event: 0,
-      config: 0,
       'cluster-info': 0,
       'helm-release': 0,
       unknown: 0,
@@ -220,10 +219,10 @@ describe('convertHypothesisToFinding — high-confidence hypothesis produces cor
     expect(finding.id).toBe('finding:hypothesis:missing-secret:1');
   });
 
-  it('title includes the root cause and symptom', () => {
-    expect(finding.title).toContain('[Hypothesis]');
-    expect(finding.title).toContain(hypothesis.rootCause);
-    expect(finding.title).toContain(hypothesis.symptom);
+  it('title is the hypothesis rootCause without machine prefixes/suffixes', () => {
+    expect(finding.title).toBe(hypothesis.rootCause);
+    expect(finding.title).not.toContain('[Hypothesis]');
+    expect(finding.title).not.toContain('(symptom:');
   });
 
   it('confidence matches the hypothesis confidence', () => {

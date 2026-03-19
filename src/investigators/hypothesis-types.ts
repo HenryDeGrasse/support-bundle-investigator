@@ -17,6 +17,7 @@ import type { Evidence } from '../types/index.js';
  * - `readiness-failure`    — A Pod is not passing its readiness probe
  * - `generic-crash`        — The application crashed for an unclassified reason
  * - `missing-service`      — A required Kubernetes Service is absent or has no endpoints
+ * - `volume-mount-failure`  — A PVC cannot be provisioned or a volume cannot be mounted (e.g. missing StorageClass)
  */
 export type HypothesisCategory =
   | 'missing-secret'
@@ -28,7 +29,8 @@ export type HypothesisCategory =
   | 'connectivity-failure'
   | 'readiness-failure'
   | 'generic-crash'
-  | 'missing-service';
+  | 'missing-service'
+  | 'volume-mount-failure';
 
 // ---------------------------------------------------------------------------
 // EvidenceAssessment

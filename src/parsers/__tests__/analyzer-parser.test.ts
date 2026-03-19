@@ -285,7 +285,7 @@ describe('parseAnalyzerJson', () => {
 
 describe('parseAnalyzerFile', () => {
   it('reads and parses the bad-image-tag scenario analyzer file', async () => {
-    const filePath = path.join(FIXTURES_DIR, 'bad-image-tag', 'analyzers', 'output.json');
+    const filePath = path.join(FIXTURES_DIR, 'bad-image-tag', 'analysis.json');
     const results = await parseAnalyzerFile(filePath);
 
     expect(results.length).toBeGreaterThan(0);
@@ -295,7 +295,7 @@ describe('parseAnalyzerFile', () => {
   });
 
   it('reads and parses the wrong-db-endpoint scenario — maps warn severity', async () => {
-    const filePath = path.join(FIXTURES_DIR, 'wrong-db-endpoint', 'analyzers', 'output.json');
+    const filePath = path.join(FIXTURES_DIR, 'wrong-db-endpoint', 'analysis.json');
     const results = await parseAnalyzerFile(filePath);
 
     expect(results.length).toBeGreaterThan(0);
@@ -309,8 +309,7 @@ describe('parseAnalyzerFile', () => {
     const filePath = path.join(
       FIXTURES_DIR,
       'missing-secret-crashloop',
-      'analyzers',
-      'output.json',
+      'analysis.json',
     );
     const results = await parseAnalyzerFile(filePath);
 
@@ -370,7 +369,7 @@ describe('mergeAnalyzerResults', () => {
     const scenarios = ['bad-image-tag', 'missing-secret-crashloop', 'wrong-db-endpoint'];
     const resultSets = await Promise.all(
       scenarios.map((s) =>
-        parseAnalyzerFile(path.join(FIXTURES_DIR, s, 'analyzers', 'output.json')),
+        parseAnalyzerFile(path.join(FIXTURES_DIR, s, 'analysis.json')),
       ),
     );
 

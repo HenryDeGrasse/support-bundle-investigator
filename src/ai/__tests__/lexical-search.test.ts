@@ -436,7 +436,7 @@ describe('LexicalSearchIndex — scoring priority', () => {
     expect(results[0]!.score).toBeGreaterThan(results[1]!.score);
   });
 
-  it('identifier score is 3x the content score for a single-term query', () => {
+  it('identifier score is strictly greater than the content score for a single-term query', () => {
     const identifierChunk = makeChunk({
       id: 'with-identifier',
       content: 'unrelated yaml',
@@ -459,9 +459,8 @@ describe('LexicalSearchIndex — scoring priority', () => {
     const idResult = results.find((r) => r.chunk.id === 'with-identifier')!;
     const ctResult = results.find((r) => r.chunk.id === 'with-content')!;
 
-    // identifier weight (3.0) should be strictly greater than content weight (1.0)
+    // identifier weight (3.0) should be strictly greater than BM25 content score
     expect(idResult.score).toBeGreaterThan(ctResult.score);
-    expect(idResult.score / ctResult.score).toBeCloseTo(3.0, 0);
   });
 
   it('namespace match scores between identifier and content', () => {
@@ -509,28 +508,31 @@ describe('LexicalSearchIndex — scoring priority', () => {
     }
   });
 
-  it('identifier hits win deterministic ties against content-only hits', () => {
+  it('identifier hits rank above content-only hits (tie-break determinism)', () => {
     const identifierChunk = makeChunk({
       id: 'resource:tie-identifier',
       content: 'kind: Pod metadata labels: app',
       identifiers: ['app-pod'],
       artifactCategory: 'kubernetes-resource',
-      summary: 'Identifier tie-break winner',
+      summary: 'Identifier match winner',
     });
     const contentOnlyChunk = makeChunk({
       id: 'log:tie-content',
       content: 'app-pod error failed',
       identifiers: [],
       artifactCategory: 'log',
-      summary: 'Content-only tie candidate',
+      summary: 'Content-only match',
     });
 
     const index = new LexicalSearchIndex();
     index.build([contentOnlyChunk, identifierChunk]);
 
     const results = index.search('app-pod error failed', 10);
+    // The identifier chunk should rank first regardless of exact scores.
+    // (With BM25 content scoring the scores are no longer equal, but
+    // the flat 3.0 identifier weight still dominates a typical multi-token
+    // BM25 content score for a small corpus.)
     expect(results[0]!.chunk.id).toBe('resource:tie-identifier');
-    expect(results[0]!.score).toBe(results[1]!.score);
   });
 });
 
@@ -633,6 +635,107 @@ describe('LexicalSearchIndex.extractQueryIdentifiers', () => {
     const reason = ids.find((id) => id.toLowerCase() === 'crashloopbackoff');
     expect(reason).toBe('CrashLoopBackOff'); // original casing preserved
   });
+
+  // ── High-signal diagnostic terms (step-10 / issue 2.7) ──────────────────
+
+  it('extracts "secret" as a searchable identifier (not a stop word)', () => {
+    const ids = index.extractQueryIdentifiers('missing secret app-credentials');
+    expect(ids).toContain('missing');
+    expect(ids).toContain('secret');
+    expect(ids).toContain('app-credentials');
+  });
+
+  it('extracts "service" as a searchable identifier', () => {
+    const ids = index.extractQueryIdentifiers('service api-gateway is unreachable');
+    expect(ids).toContain('service');
+    expect(ids).toContain('api-gateway');
+    expect(ids).toContain('unreachable');
+  });
+
+  it('extracts "configmap" as a searchable identifier', () => {
+    const ids = index.extractQueryIdentifiers('configmap db-config missing key');
+    expect(ids).toContain('configmap');
+    expect(ids).toContain('db-config');
+  });
+
+  it('extracts "failed" as a searchable identifier', () => {
+    const ids = index.extractQueryIdentifiers('failed pod web-server');
+    expect(ids).toContain('failed');
+    expect(ids).toContain('web-server');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// High-signal stop-word fix: searching 'secret', 'missing', etc.
+// ---------------------------------------------------------------------------
+
+describe('LexicalSearchIndex — high-signal diagnostic terms as identifier queries (step-10)', () => {
+  it('searching "missing secret" finds chunks with "secret" in identifiers', () => {
+    // A chunk whose identifiers explicitly include the literal word "secret"
+    // (e.g. a Kubernetes Secret resource or an analyzer result that tags the
+    // secret kind as an identifier).
+    const secretChunk = makeChunk({
+      id: 'resource:secret-tagged',
+      content: 'kind: Secret metadata name: my-secret namespace: default',
+      identifiers: ['my-secret', 'secret', 'default'],
+      namespace: 'default',
+      artifactCategory: 'kubernetes-resource',
+      summary: 'Secret resource chunk with "secret" in identifiers',
+    });
+    const unrelatedChunk = makePodChunk('unrelated-pod');
+
+    const idx = new LexicalSearchIndex();
+    idx.build([secretChunk, unrelatedChunk]);
+
+    const results = idx.search('missing secret', 10);
+    const found = results.find((r) => r.chunk.identifiers.includes('secret'));
+    expect(found).toBeDefined();
+    expect(found!.chunk.id).toBe('resource:secret-tagged');
+  });
+
+  it('searching "missing secret" does NOT find a chunk whose content only contains "secretKeyRef"', () => {
+    // Simulate a monitoring pod that has secretKeyRef in its raw JSON but is
+    // unrelated to the query.  Before the stop-word fix this chunk was falsely
+    // surfaced via substring expansion ('secret' ⊂ 'secretkeyref').
+    const noiseChunk = makeChunk({
+      id: 'resource:noise-secretkeyref',
+      // Raw JSON-like content with secretKeyRef but no standalone 'secret' token
+      content: '{"env":[{"name":"GF_DB_PASS","valueFrom":{"secretKeyRef":{"name":"monitoring-credentials","key":"pass"}}}]}',
+      identifiers: ['grafana-pod', 'monitoring', 'monitoring-credentials'],
+      namespace: 'monitoring',
+      artifactCategory: 'kubernetes-resource',
+      summary: 'Grafana pod with secretKeyRef (noise)',
+    });
+
+    const idx = new LexicalSearchIndex();
+    idx.build([noiseChunk]);
+
+    const results = idx.search('missing secret app-credentials', 10);
+    // The noise chunk must not appear — 'secret' should not expand to
+    // 'secretkeyref' via substring matching.
+    expect(results).toHaveLength(0);
+  });
+
+  it('searching "failed" finds a chunk with "failed" in identifiers (Helm release)', () => {
+    const helmChunk = makeChunk({
+      id: 'helm-release:default:my-chart',
+      content: 'HelmRelease: my-chart (namespace: default)\nStatus: failed',
+      identifiers: ['my-chart', 'default', 'failed'],
+      namespace: 'default',
+      artifactCategory: 'helm-release',
+      summary: 'Helm release my-chart with status failed',
+    });
+    const unrelatedChunk = makePodChunk('healthy-pod');
+
+    const idx = new LexicalSearchIndex();
+    idx.build([helmChunk, unrelatedChunk]);
+
+    const results = idx.search('failed my-chart', 10);
+    const helmResult = results.find((r) => r.chunk.id === 'helm-release:default:my-chart');
+    expect(helmResult).toBeDefined();
+    // Identifier match for both 'failed' and 'my-chart' → score ≥ 6.0
+    expect(helmResult!.score).toBeGreaterThanOrEqual(6.0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -687,6 +790,163 @@ describe('LexicalSearchIndex — integration with buildChunkIndex fixtures', () 
     expect(foundIds.some((id) => id.startsWith('log:'))).toBe(true);
     // Crash pod should rank first (identifier match outranks content match)
     expect(results[0]!.chunk.id).toBe('pod:default:api-server:crash');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BM25 scoring properties
+// ---------------------------------------------------------------------------
+
+describe('LexicalSearchIndex — BM25 scoring', () => {
+  /**
+   * BM25 saturation test.
+   *
+   * With raw TF, a chunk containing 'default' 50 times scores 50× a single
+   * match, dwarfing a chunk with 2 occurrences of a rare term. BM25 prevents
+   * this: the IDF of a term that appears in almost every chunk is near-zero,
+   * so even 50 repetitions cannot compensate for the high IDF of the rare term.
+   */
+  it('BM25 saturation: chunk with 50 occurrences of common term does not outrank chunk with 2 occurrences of rare term', () => {
+    // 20 background chunks containing 'default' → df('default') = 21, low IDF
+    const background = Array.from({ length: 20 }, (_, i) =>
+      makeChunk({
+        id: `sat-bg-${i}`,
+        content: `pod-${i} running in default namespace with default config`,
+        identifiers: [`pod-${i}`],
+        namespace: 'default',
+        artifactCategory: 'kubernetes-resource',
+        summary: `Background ${i}`,
+      }),
+    );
+
+    // Chunk A: 'default' repeated 50 times — high TF but very low IDF
+    const chunkA = makeChunk({
+      id: 'sat-chunk-a',
+      content: Array(50).fill('default').join(' '),
+      identifiers: [],
+      artifactCategory: 'kubernetes-resource',
+      summary: 'Many defaults',
+    });
+
+    // Chunk B: 'app-credentials' appears 2 times — low TF but very high IDF
+    // ('app-credentials' appears in no background chunk → df = 1)
+    const chunkB = makeChunk({
+      id: 'sat-chunk-b',
+      content: 'app-credentials secret app-credentials missing',
+      identifiers: [],
+      artifactCategory: 'kubernetes-resource',
+      summary: 'Rare term',
+    });
+
+    const index = new LexicalSearchIndex();
+    index.build([...background, chunkA, chunkB]);
+
+    // Query touches both terms.  With raw TF, chunkA would dominate (score 50).
+    // With BM25, the rare 'app-credentials' in chunkB should score higher.
+    const results = index.search('default app-credentials', 10);
+    const aResult = results.find((r) => r.chunk.id === 'sat-chunk-a');
+    const bResult = results.find((r) => r.chunk.id === 'sat-chunk-b');
+
+    expect(bResult).toBeDefined();
+    expect(bResult!.score).toBeGreaterThan(aResult?.score ?? 0);
+  });
+
+  /**
+   * IDF test.
+   *
+   * When both chunks contain exactly ONE occurrence of their respective term,
+   * the chunk whose term is RARE (appears in few documents) should receive a
+   * higher BM25 score than the chunk whose term is COMMON (appears in many
+   * documents).
+   *
+   * topK is set larger than the corpus so both target chunks are always
+   * included in results (avoids false passes from topK truncation).
+   */
+  it('BM25 IDF: common term scores lower per-occurrence than rare term', () => {
+    // 15 background chunks all containing 'default' → df('default') = 16, low IDF
+    const background = Array.from({ length: 15 }, (_, i) =>
+      makeChunk({
+        id: `idf-bg-${i}`,
+        content: `pod-${i} running in default namespace`,
+        identifiers: [`pod-${i}`],
+        artifactCategory: 'kubernetes-resource',
+        summary: `Background ${i}`,
+      }),
+    );
+
+    // One occurrence of the common term 'default'
+    const commonChunk = makeChunk({
+      id: 'idf-common-chunk',
+      content: 'pod running in default namespace',
+      identifiers: [],
+      artifactCategory: 'kubernetes-resource',
+      summary: 'Common term chunk',
+    });
+
+    // One occurrence of the rare term 'app-credentials' (only in this chunk → df = 1)
+    const rareChunk = makeChunk({
+      id: 'idf-rare-chunk',
+      content: 'secret app-credentials not found',
+      identifiers: [],
+      artifactCategory: 'kubernetes-resource',
+      summary: 'Rare term chunk',
+    });
+
+    const index = new LexicalSearchIndex();
+    index.build([...background, commonChunk, rareChunk]);
+
+    // topK=50 is larger than the corpus (17 chunks) so the target chunk is
+    // always present in results and the score is non-zero when it matches.
+    const defaultResults = index.search('default', 50);
+    const commonScore =
+      defaultResults.find((r) => r.chunk.id === 'idf-common-chunk')?.score ?? 0;
+
+    const rareResults = index.search('app-credentials', 50);
+    const rareScore =
+      rareResults.find((r) => r.chunk.id === 'idf-rare-chunk')?.score ?? 0;
+
+    // With BM25, the rare term has higher IDF → higher score per occurrence
+    // than the common term even though both appear exactly once in their chunk.
+    expect(rareScore).toBeGreaterThan(commonScore);
+  });
+
+  /**
+   * Length normalization test.
+   *
+   * BM25 penalizes long documents relative to the corpus average. A short chunk
+   * with exactly one match should rank above a very long chunk with one match,
+   * because the match density is higher in the short chunk.
+   */
+  it('BM25 length normalization: short chunk with 1 match ranks higher than long chunk with 1 match', () => {
+    // Short chunk: 2 tokens, one of which is the target
+    const shortChunk = makeChunk({
+      id: 'len-short-chunk',
+      content: 'crashloopbackoff detected',
+      identifiers: [],
+      artifactCategory: 'log',
+      summary: 'Short chunk',
+    });
+
+    // Long chunk: 101 tokens, only the last is the target
+    const longChunk = makeChunk({
+      id: 'len-long-chunk',
+      content: `${Array(100).fill('running').join(' ')} crashloopbackoff`,
+      identifiers: [],
+      artifactCategory: 'log',
+      summary: 'Long chunk',
+    });
+
+    const index = new LexicalSearchIndex();
+    index.build([shortChunk, longChunk]);
+
+    const results = index.search('crashloopbackoff', 10);
+    const shortResult = results.find((r) => r.chunk.id === 'len-short-chunk');
+    const longResult = results.find((r) => r.chunk.id === 'len-long-chunk');
+
+    expect(shortResult).toBeDefined();
+    expect(longResult).toBeDefined();
+    // Short chunk has higher match density → should rank first
+    expect(shortResult!.score).toBeGreaterThan(longResult!.score);
   });
 });
 

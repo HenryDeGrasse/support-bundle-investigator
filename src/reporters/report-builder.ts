@@ -2,6 +2,7 @@ import type { PipelineResult } from '../pipeline/analyze.js';
 import type { Finding } from '../types/index.js';
 import type { InvestigationReport } from './types.js';
 import { generateSpecRecommendations } from './spec-recommender.js';
+import { cleanEvidencePath, humanizeTitle } from './display-helpers.js';
 
 // ---------------------------------------------------------------------------
 // AI finding helpers
@@ -87,7 +88,7 @@ function generateExecutiveSummary(findings: Finding[]): string {
   return [
     `Investigation identified ${findings.length} finding${findings.length > 1 ? 's' : ''}.`,
     severitySummary,
-    `Most significant: ${topFinding.title} (confidence: ${confidencePct}%).`,
+    `Most significant: ${humanizeTitle(topFinding.title)} (confidence: ${confidencePct}%).`,
     `Recommended action: ${topFinding.recommendedAction}`,
     aiNote,
   ]
@@ -133,9 +134,10 @@ function collectEvidenceReferences(
 
   for (const finding of findings) {
     for (const ev of finding.evidence) {
-      if (!seen.has(ev.path)) {
-        seen.add(ev.path);
-        refs.push({ path: ev.path, note: ev.note });
+      const cleanedPath = cleanEvidencePath(ev.path);
+      if (!seen.has(cleanedPath)) {
+        seen.add(cleanedPath);
+        refs.push({ path: cleanedPath, note: ev.note });
       }
     }
   }

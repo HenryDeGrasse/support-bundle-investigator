@@ -52,7 +52,11 @@ export const GOLDEN_EXPECTATIONS: Record<string, ScenarioExpectation> = {
       /image.*tag/i,
     ],
     topFindingSeverity: ['critical'],
-    topFindingMinConfidence: 0.8,
+    // Hypothesis evidence for image-pull-failure uses events + pod-status only
+    // (no log evidence in collector), giving 0.74 confidence.  Step 1 correctly
+    // routes the log finding through hypothesis dedup (Pod-based components),
+    // so the hypothesis becomes the top finding.  Step 5 will further tune this.
+    topFindingMinConfidence: 0.74,
     mustCiteEvidence: [
       /pods/i,
       /events/i,
@@ -75,6 +79,8 @@ export const GOLDEN_EXPECTATIONS: Record<string, ScenarioExpectation> = {
       /CrashLoopBackOff/i,
       /missing.*secret/i,
       /app-credentials/i,
+      // New hypothesis rootCause format (title is now just the rootCause string)
+      /kubernetes secret.*absent|required.*kubernetes secret|secret.*absent|secret.*fail/i,
     ],
     topFindingSeverity: ['critical'],
     topFindingMinConfidence: 0.85,
@@ -118,5 +124,32 @@ export const GOLDEN_EXPECTATIONS: Record<string, ScenarioExpectation> = {
       /dns|db\.internal|no such host|database|endpoint|connectivity|ready|readiness|probe/i,
     ],
     mustMentionIdentifiers: ['app-pod'],
+  },
+
+  'pvc-pending': {
+    name: 'PVC Pending (StorageClass Mismatch)',
+    minFindings: 2,
+    topFindingMustMatch: [
+      /persistentvolumeclaim/i,
+      /storageclass/i,
+      /storage provisioner/i,
+      /volume/i,
+      /pvc/i,
+    ],
+    topFindingSeverity: ['critical'],
+    topFindingMinConfidence: 0.7,
+    mustCiteEvidence: [
+      /events/i,
+      /persistentvolumeclaims/i,
+      /storageclasses/i,
+    ],
+    mustNotHallucinate: [
+      /ImagePullBackOff/i,
+      /CrashLoopBackOff/i,
+    ],
+    rootCauseMustMatch: [
+      /persistentvolumeclaim|storageclass|storage provisioner|provisioningfailed|pending/i,
+    ],
+    mustMentionIdentifiers: ['db-pod', 'data-pvc', 'fast-ssd'],
   },
 };

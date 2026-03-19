@@ -1,0 +1,18 @@
+2024-03-15T08:10:10Z INFO  db-migrator v1.3.0 starting
+2024-03-15T08:10:10Z INFO  Reading database config from environment
+2024-03-15T08:10:10Z INFO  DB_HOST=wrong-host.internal (from ConfigMap db-config)
+2024-03-15T08:10:10Z INFO  DB_PORT=5432
+2024-03-15T08:10:11Z INFO  Attempting to connect to database at wrong-host.internal:5432
+2024-03-15T08:10:16Z ERROR dial tcp: lookup wrong-host.internal on 10.96.0.10:53: no such host
+2024-03-15T08:10:16Z ERROR Failed to establish database connection: DNS resolution failed for wrong-host.internal
+2024-03-15T08:10:16Z INFO  Retrying with password auth after DNS failure...
+2024-03-15T08:10:20Z ERROR pq: password authentication failed for user "postgres"
+2024-03-15T08:10:20Z INFO  DB_PASSWORD loaded from secret postgres-auth-secret
+2024-03-15T08:10:21Z ERROR pq: password authentication failed for user "postgres"
+2024-03-15T08:10:22Z ERROR pq: password authentication failed for user "postgres"
+2024-03-15T08:10:22Z ERROR Unable to connect to postgres at wrong-host.internal: FATAL: password authentication failed for user "postgres"
+2024-03-15T08:10:23Z ERROR Migration aborted: cannot connect to database
+2024-03-15T08:10:23Z ERROR Root cause: pq: password authentication failed for user "postgres" (SQLSTATE 28P01)
+2024-03-15T08:10:23Z INFO  Check 1: DB_HOST wrong-host.internal does not resolve — update ConfigMap db-config
+2024-03-15T08:10:23Z INFO  Check 2: postgres-auth-secret password does not match database role password
+2024-03-15T08:10:24Z FATAL Migration failed with 2 errors. Exiting with code 1.

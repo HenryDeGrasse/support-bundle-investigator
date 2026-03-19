@@ -1,0 +1,39 @@
+2024-03-15T07:42:30Z INFO  alertmanager v0.26.0 starting
+2024-03-15T07:42:30Z INFO  Loading configuration file /etc/alertmanager/alertmanager.yml
+2024-03-15T07:42:31Z INFO  Listening on :9093
+2024-03-15T07:42:31Z INFO  AlertManager ready, waiting for alerts
+2024-03-15T07:42:45Z INFO  Received 3 alerts from Prometheus
+2024-03-15T07:43:00Z INFO  Grouping alerts by namespace and severity
+2024-03-15T07:43:10Z WARN  Memory usage at 85Mi (limit: 128Mi)
+2024-03-15T07:43:30Z INFO  Processing alert batch: 47 active alerts
+2024-03-15T07:43:45Z WARN  Memory usage at 98Mi (limit: 128Mi) — approaching limit
+2024-03-15T07:44:00Z INFO  Loading alert history from /alertmanager storage
+2024-03-15T07:44:15Z WARN  Memory usage at 112Mi (limit: 128Mi) — critical
+2024-03-15T07:44:30Z INFO  Alert deduplication: processing 1200 historical entries
+2024-03-15T07:44:45Z WARN  Memory usage at 120Mi (limit: 128Mi)
+2024-03-15T07:44:55Z WARN  Memory usage at 126Mi (limit: 128Mi) — OOM imminent
+2024-03-15T07:44:58Z ERROR  out of memory: OOM killer invoked, alertmanager process killed
+2024-03-15T07:44:58Z ERROR  Container alertmanager terminated: OOMKilled (exit code 137)
+2024-03-15T07:45:00Z ERROR  total-vm:524288kB anon-rss:131072kB — exceeded memory limit 128Mi
+2024-03-15T07:58:00Z INFO  alertmanager v0.26.0 restarting (restart #1)
+2024-03-15T07:58:01Z INFO  Loading configuration file /etc/alertmanager/alertmanager.yml
+2024-03-15T07:58:05Z WARN  Memory usage at 80Mi (limit: 128Mi) — high retention period causing OOM
+2024-03-15T07:58:10Z INFO  Processing 2400 historical alert entries
+2024-03-15T07:58:20Z WARN  Memory usage at 110Mi (limit: 128Mi)
+2024-03-15T07:58:30Z WARN  Memory usage at 122Mi (limit: 128Mi)
+2024-03-15T07:58:35Z ERROR  out of memory: process killed, anon-rss 130Mi exceeds limit 128Mi
+2024-03-15T07:58:35Z ERROR  OOMKilled: memory.limit_in_bytes exceeded. Increase container memory limit or reduce --data.retention from 720h
+2024-03-15T08:00:00Z INFO  alertmanager restarting (restart #2)
+2024-03-15T08:00:05Z WARN  Memory usage already at 75Mi on startup — previous data retained
+2024-03-15T08:00:15Z WARN  Memory usage at 100Mi (limit: 128Mi)
+2024-03-15T08:00:25Z ERROR  out of memory: OOMKilled (exit code 137) anon-rss: 131072kB
+2024-03-15T08:00:25Z ERROR  Container alertmanager OOM killed. Memory limit 128Mi is insufficient. Consider increasing to 256Mi or reducing data retention period.
+2024-03-15T08:05:00Z INFO  alertmanager restarting (restart #3)
+2024-03-15T08:05:10Z WARN  Memory usage at 90Mi (limit: 128Mi) after loading history
+2024-03-15T08:05:20Z WARN  Memory usage at 118Mi (limit: 128Mi)
+2024-03-15T08:05:28Z ERROR  OOM kill: alertmanager process exceeded memory limit 128Mi. Actual usage: 247Mi. Kill signal sent.
+2024-03-15T08:05:28Z ERROR  Kubernetes OOMKilled: Increase memory limit in alertmanager deployment resource spec. Current limit: 128Mi.
+2024-03-15T08:10:00Z INFO  alertmanager restarting (restart #4)
+2024-03-15T08:10:10Z WARN  Reducing in-memory buffer size due to OOM history
+2024-03-15T08:10:15Z WARN  Memory usage at 95Mi — still likely to OOM with 720h retention
+2024-03-15T08:10:20Z ERROR  out of memory: process terminated by kernel OOM killer

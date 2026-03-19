@@ -81,7 +81,7 @@ describe('Retrieval Contract: bad-image-tag', () => {
 
       const graphChunks = getRelatedChunks(resourceGraph, podSeed!, chunks);
       const podChunk = graphChunks.find(
-        (c) => c.artifactCategory === 'kubernetes-resource' && c.identifiers.includes('app-pod'),
+        (c) => c.chunk.artifactCategory === 'kubernetes-resource' && c.chunk.identifiers.includes('app-pod'),
       );
       expect(podChunk).toBeDefined();
     });
@@ -92,7 +92,7 @@ describe('Retrieval Contract: bad-image-tag', () => {
       const podSeed = seeds.find((s) => s.source.startsWith('pod:'));
 
       const graphChunks = getRelatedChunks(resourceGraph, podSeed!, chunks);
-      const eventChunks = graphChunks.filter((c) => c.artifactCategory === 'event');
+      const eventChunks = graphChunks.filter((c) => c.chunk.artifactCategory === 'event');
       expect(eventChunks.length).toBeGreaterThan(0);
     });
 
@@ -102,7 +102,7 @@ describe('Retrieval Contract: bad-image-tag', () => {
       const podSeed = seeds.find((s) => s.source.startsWith('pod:'));
 
       const graphChunks = getRelatedChunks(resourceGraph, podSeed!, chunks);
-      const categories = new Set(graphChunks.map((c) => c.artifactCategory));
+      const categories = new Set(graphChunks.map((c) => c.chunk.artifactCategory));
       expect(categories.size).toBeGreaterThanOrEqual(2);
     });
   });
@@ -141,7 +141,8 @@ describe('Retrieval Contract: bad-image-tag', () => {
       const seeds = generateSeeds(scenarios['bad-image-tag']!.context);
       const podSeed = seeds.find((s) => s.source.startsWith('pod:'));
 
-      const graphChunks = getRelatedChunks(resourceGraph, podSeed!, chunks);
+      const graphScoredChunks = getRelatedChunks(resourceGraph, podSeed!, chunks);
+      const graphChunks = graphScoredChunks.map((sc) => sc.chunk);
       const lexicalResults = lexicalIndex.search(podSeed!.hypothesis, 10);
       const lexicalChunks = lexicalResults.map((r) => r.chunk);
 
@@ -164,7 +165,8 @@ describe('Retrieval Contract: bad-image-tag', () => {
       const seeds = generateSeeds(scenarios['bad-image-tag']!.context);
       const podSeed = seeds.find((s) => s.source.startsWith('pod:'));
 
-      const graphChunks = getRelatedChunks(resourceGraph, podSeed!, chunks);
+      const graphScoredChunks = getRelatedChunks(resourceGraph, podSeed!, chunks);
+      const graphChunks = graphScoredChunks.map((sc) => sc.chunk);
       const lexicalResults = lexicalIndex.search(podSeed!.hypothesis, 10);
       const allContent = [...graphChunks, ...lexicalResults.map((r) => r.chunk)]
         .map((c) => c.content)
@@ -188,7 +190,7 @@ describe('Retrieval Contract: missing-secret-crashloop', () => {
       expect(podSeed).toBeDefined();
 
       const graphChunks = getRelatedChunks(resourceGraph, podSeed!, chunks);
-      const categories = new Set(graphChunks.map((c) => c.artifactCategory));
+      const categories = new Set(graphChunks.map((c) => c.chunk.artifactCategory));
       expect(categories.has('kubernetes-resource')).toBe(true);
       expect(categories.has('event')).toBe(true);
     });
@@ -200,7 +202,7 @@ describe('Retrieval Contract: missing-secret-crashloop', () => {
 
       const graphChunks = getRelatedChunks(resourceGraph, podSeed!, chunks);
       const secretRef = graphChunks.some(
-        (c) => c.content.includes('app-credentials') || c.identifiers.includes('app-credentials'),
+        (c) => c.chunk.content.includes('app-credentials') || c.chunk.identifiers.includes('app-credentials'),
       );
       expect(secretRef).toBe(true);
     });

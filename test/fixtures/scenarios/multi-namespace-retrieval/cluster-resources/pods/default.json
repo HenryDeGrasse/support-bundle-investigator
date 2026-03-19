@@ -1,0 +1,133 @@
+{
+  "apiVersion": "v1",
+  "kind": "PodList",
+  "items": [
+    {
+      "apiVersion": "v1",
+      "kind": "Pod",
+      "metadata": {
+        "name": "web-app-pod",
+        "namespace": "default",
+        "labels": { "app": "web-app", "version": "v2.1.0" },
+        "creationTimestamp": "2024-03-15T08:00:00Z"
+      },
+      "spec": {
+        "containers": [
+          {
+            "name": "web-app",
+            "image": "mycompany/web-app:v2.1.0",
+            "ports": [{ "containerPort": 8080 }],
+            "envFrom": [
+              { "configMapRef": { "name": "web-app-config" } },
+              { "secretRef": { "name": "web-app-secret" } }
+            ],
+            "env": [
+              { "name": "DB_HOST", "valueFrom": { "configMapKeyRef": { "name": "db-config", "key": "DB_HOST" } } },
+              { "name": "DB_PORT", "value": "5432" }
+            ],
+            "readinessProbe": {
+              "httpGet": { "path": "/healthz", "port": 8080 },
+              "initialDelaySeconds": 5,
+              "periodSeconds": 10
+            },
+            "resources": {
+              "limits": { "memory": "256Mi", "cpu": "500m" },
+              "requests": { "memory": "128Mi", "cpu": "100m" }
+            }
+          }
+        ]
+      },
+      "status": {
+        "phase": "Running",
+        "conditions": [
+          {
+            "type": "Ready",
+            "status": "False",
+            "reason": "ContainersNotReady",
+            "message": "containers with unready status: [web-app]",
+            "lastTransitionTime": "2024-03-15T08:05:00Z"
+          },
+          {
+            "type": "ContainersReady",
+            "status": "False",
+            "reason": "ContainersNotReady",
+            "message": "containers with unready status: [web-app]",
+            "lastTransitionTime": "2024-03-15T08:05:00Z"
+          },
+          {
+            "type": "PodScheduled",
+            "status": "True",
+            "lastTransitionTime": "2024-03-15T08:00:05Z"
+          }
+        ],
+        "containerStatuses": [
+          {
+            "name": "web-app",
+            "ready": false,
+            "restartCount": 3,
+            "state": {
+              "running": {
+                "startedAt": "2024-03-15T08:00:10Z"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Pod",
+      "metadata": {
+        "name": "cache-pod",
+        "namespace": "default",
+        "labels": { "app": "cache", "tier": "backend" },
+        "creationTimestamp": "2024-03-15T07:50:00Z"
+      },
+      "spec": {
+        "containers": [
+          {
+            "name": "redis",
+            "image": "redis:7.2",
+            "ports": [{ "containerPort": 6379 }],
+            "resources": {
+              "limits": { "memory": "128Mi", "cpu": "200m" },
+              "requests": { "memory": "64Mi", "cpu": "50m" }
+            }
+          }
+        ]
+      },
+      "status": {
+        "phase": "Running",
+        "conditions": [
+          {
+            "type": "Ready",
+            "status": "True",
+            "lastTransitionTime": "2024-03-15T07:50:30Z"
+          },
+          {
+            "type": "ContainersReady",
+            "status": "True",
+            "lastTransitionTime": "2024-03-15T07:50:30Z"
+          },
+          {
+            "type": "PodScheduled",
+            "status": "True",
+            "lastTransitionTime": "2024-03-15T07:50:05Z"
+          }
+        ],
+        "containerStatuses": [
+          {
+            "name": "redis",
+            "ready": true,
+            "restartCount": 0,
+            "state": {
+              "running": {
+                "startedAt": "2024-03-15T07:50:15Z"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

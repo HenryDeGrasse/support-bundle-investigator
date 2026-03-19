@@ -1,21 +1,93 @@
 #!/usr/bin/env node
 /**
- * RAT — Replicated AI Troubleshooting
+ * RAT -- Replicated AI Troubleshooting
  *
  * A simplified entry point that:
- * 1. Scans a directory for .tar.gz support bundles
- * 2. Presents an interactive selection list
- * 3. Launches the pane-based TUI on the selected bundle
+ * 1. Auto-builds if dist/ is stale or missing
+ * 2. Scans ./bundles/ (or a specified directory) for .tar.gz support bundles
+ * 3. Presents an interactive selection list
+ * 4. Launches the pane-based TUI on the selected bundle
  *
  * Usage:
- *   rat                    # Scan current directory
- *   rat /path/to/dir       # Scan specific directory
- *   rat /path/to/bundle.tar.gz  # Analyze directly
+ *   rat                           # Scan ./bundles/ (default)
+ *   rat /path/to/dir              # Scan specific directory
+ *   rat /path/to/bundle.tar.gz    # Analyze directly
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
+import { execSync } from 'child_process';
+import { fileURLToPath } from 'url';
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** Default directory where users should drop support bundle tarballs. */
+const DEFAULT_BUNDLE_DIR = 'bundles';
+
+// ---------------------------------------------------------------------------
+// Auto-build
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns the project root by walking up from the current file until we find
+ * package.json. Works in both CJS (__dirname) and ESM (import.meta.url).
+ */
+function findProjectRoot(): string {
+  // ESM-safe: derive directory from import.meta.url when __dirname is unavailable
+  let dir: string;
+  try {
+    dir = typeof __dirname !== 'undefined'
+      ? __dirname
+      : path.dirname(fileURLToPath(import.meta.url));
+  } catch {
+    dir = process.cwd();
+  }
+
+  for (let i = 0; i < 10; i++) {
+    if (fs.existsSync(path.join(dir, 'package.json'))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return process.cwd();
+}
+
+/**
+ * Checks whether a build is needed and runs `npm run build` if so.
+ *
+ * Build is needed when:
+ * - dist/ directory does not exist, OR
+ * - Any src/ file is newer than the newest dist/ file
+ */
+function ensureBuilt(projectRoot: string): void {
+  const distDir = path.join(projectRoot, 'dist');
+  const srcDir = path.join(projectRoot, 'src');
+
+  if (!fs.existsSync(distDir)) {
+    console.log('  [rat] dist/ not found -- building...');
+    execSync('npm run build', { cwd: projectRoot, stdio: 'inherit' });
+    return;
+  }
+
+  // Quick staleness check: compare newest src/ mtime vs dist/ mtime
+  try {
+    const distStat = fs.statSync(distDir);
+    const srcStat = fs.statSync(srcDir);
+    if (srcStat.mtimeMs > distStat.mtimeMs) {
+      console.log('  [rat] Source files changed -- rebuilding...');
+      execSync('npm run build', { cwd: projectRoot, stdio: 'inherit' });
+    }
+  } catch {
+    // If stat fails, skip auto-build -- user can build manually
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Bundle discovery
+// ---------------------------------------------------------------------------
 
 async function findBundles(dir: string): Promise<string[]> {
   const resolved = path.resolve(dir);
@@ -59,6 +131,10 @@ function formatSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
+
+// ---------------------------------------------------------------------------
+// Interactive selection
+// ---------------------------------------------------------------------------
 
 async function selectBundle(bundles: string[]): Promise<string | null> {
   const rl = readline.createInterface({
@@ -114,9 +190,23 @@ async function selectBundle(bundles: string[]): Promise<string | null> {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
 async function main(): Promise<void> {
+  const projectRoot = findProjectRoot();
   const args = process.argv.slice(2);
-  const target = args[0] ?? process.cwd();
+
+  // Auto-build if needed (unless user passed --no-build)
+  const noBuild = args.includes('--no-build');
+  const filteredArgs = args.filter((a) => a !== '--no-build');
+
+  if (!noBuild) {
+    ensureBuilt(projectRoot);
+  }
+
+  const target = filteredArgs[0] ?? path.join(projectRoot, DEFAULT_BUNDLE_DIR);
 
   // Check if the argument is a direct bundle file
   if (target.endsWith('.tar.gz') && fs.existsSync(target)) {
@@ -127,22 +217,40 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Scan for bundles
-  const scanDir = fs.existsSync(target) && fs.statSync(target).isDirectory()
-    ? target
-    : process.cwd();
+  // Determine scan directory:
+  // - If user gave an explicit path that exists as a directory, use it
+  // - Otherwise use the default ./bundles/ directory
+  const userGaveExplicitPath = filteredArgs.length > 0;
+  let scanDir: string;
+  if (userGaveExplicitPath && fs.existsSync(target) && fs.statSync(target).isDirectory()) {
+    scanDir = target;
+  } else if (userGaveExplicitPath && !fs.existsSync(target)) {
+    // User specified a path that doesn't exist at all
+    scanDir = target;
+  } else {
+    scanDir = path.join(projectRoot, DEFAULT_BUNDLE_DIR);
+  }
 
   const bundles = await findBundles(scanDir);
 
   if (bundles.length === 0) {
+    const bundlesDir = path.join(projectRoot, DEFAULT_BUNDLE_DIR);
     console.log('');
     console.log('  RAT - Replicated AI Troubleshooting');
     console.log('  ====================================');
     console.log('');
     console.log(`  No .tar.gz support bundles found in: ${path.resolve(scanDir)}`);
     console.log('');
+    console.log('  To get started:');
+    console.log(`    1. Place your support bundle .tar.gz file in: ${bundlesDir}/`);
+    console.log('    2. Run: rat');
+    console.log('');
+    console.log('  How to get a support bundle:');
+    console.log('    kubectl support-bundle https://your-app.com/support-bundle-spec.yaml');
+    console.log('    # or download from your vendor portal / customer support');
+    console.log('');
     console.log('  Usage:');
-    console.log('    rat                          Scan current directory');
+    console.log('    rat                          Scan ./bundles/ (default)');
     console.log('    rat /path/to/dir             Scan specific directory');
     console.log('    rat /path/to/bundle.tar.gz   Analyze directly');
     console.log('');

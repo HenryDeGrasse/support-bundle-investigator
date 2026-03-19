@@ -26,7 +26,7 @@ const SCENARIOS = [
   },
   {
     name: 'pvc-pending',
-    expectedTopCategory: 'missing-secret',
+    expectedTopCategory: 'volume-mount-failure',
   },
 ];
 

@@ -3,7 +3,6 @@ export type ArtifactCategory =
   | 'log'
   | 'kubernetes-resource'
   | 'event'
-  | 'config'
   | 'cluster-info'
   | 'helm-release'
   | 'unknown';

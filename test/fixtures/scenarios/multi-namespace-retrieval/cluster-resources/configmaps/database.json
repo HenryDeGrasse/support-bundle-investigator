@@ -1,0 +1,24 @@
+{
+  "apiVersion": "v1",
+  "kind": "ConfigMapList",
+  "items": [
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "db-config",
+        "namespace": "database",
+        "labels": { "app": "postgres", "component": "config" },
+        "creationTimestamp": "2024-03-14T12:00:00Z"
+      },
+      "data": {
+        "DB_HOST": "wrong-host.internal",
+        "DB_PORT": "5432",
+        "DB_NAME": "appdb",
+        "DB_SSL_MODE": "require",
+        "MAX_CONNECTIONS": "100",
+        "CONNECT_TIMEOUT": "10"
+      }
+    }
+  ]
+}

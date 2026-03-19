@@ -31,7 +31,7 @@ function makeContext(): InvestigatorContext {
       manifest: { bundlePath: '', extractedPath: '', files: [], totalSize: 0, extractedAt: new Date() },
       analyzerCount: 0, logFileCount: 0, resourceCount: 0, eventCount: 0,
       namespaces: [], workloads: [], coverageGaps: [],
-      artifactsByCategory: { analyzer: 0, log: 0, 'kubernetes-resource': 0, event: 0, config: 0, 'cluster-info': 0, 'helm-release': 0, unknown: 0 },
+      artifactsByCategory: { analyzer: 0, log: 0, 'kubernetes-resource': 0, event: 0, 'cluster-info': 0, 'helm-release': 0, unknown: 0 },
     },
   };
 }

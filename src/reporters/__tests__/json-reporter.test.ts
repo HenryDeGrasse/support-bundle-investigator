@@ -450,3 +450,93 @@ describe('writeJsonReport — file output', () => {
     expect(filePath).toBe(path.join(dir, 'findings.json'));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Section 8: generateJsonReport — display-helper transformations
+// ---------------------------------------------------------------------------
+
+describe('generateJsonReport — display-helper transformations', () => {
+  it('finding title in JSON is humanized (strips [Hypothesis] prefix)', () => {
+    const finding = makeFinding({
+      title: '[Hypothesis] DNS resolution is failing for the dependency hostname',
+    });
+    const report = makeReport({ findings: [finding] });
+    const parsed = JSON.parse(generateJsonReport(report)) as Record<string, unknown>;
+    const f = (parsed['findings'] as Record<string, unknown>[])[0]!;
+    expect(f['title']).not.toContain('[Hypothesis]');
+    expect(f['title']).toBe('DNS resolution is failing for the dependency hostname');
+  });
+
+  it('finding title in JSON strips (symptom: ...) suffix', () => {
+    const finding = makeFinding({
+      title: '[Hypothesis] DNS failure (symptom: Pod app-pod is not ready)',
+    });
+    const report = makeReport({ findings: [finding] });
+    const parsed = JSON.parse(generateJsonReport(report)) as Record<string, unknown>;
+    const f = (parsed['findings'] as Record<string, unknown>[])[0]!;
+    expect(f['title']).not.toContain('(symptom:');
+    expect(f['title']).toBe('DNS failure');
+  });
+
+  it('evidence paths in JSON output are bundle-relative', () => {
+    const finding = makeFinding({
+      evidence: [
+        {
+          path: '/var/folders/26/x/T/sbi-bundle-AB/wrong-db/logs/app/app-pod.log',
+          note: 'DNS lookup failure',
+          artifactType: 'log' as const,
+        },
+      ],
+    });
+    const report = makeReport({ findings: [finding] });
+    const parsed = JSON.parse(generateJsonReport(report)) as Record<string, unknown>;
+    const f = (parsed['findings'] as Record<string, unknown>[])[0]!;
+    const ev = (f['evidence'] as Record<string, unknown>[])[0]!;
+    expect(ev['path']).not.toContain('/var/folders');
+    expect(ev['path']).toBe('logs/app/app-pod.log');
+  });
+
+  it('affectedComponents in JSON output are cleaned of absolute paths', () => {
+    const finding = makeFinding({
+      affectedComponents: [
+        '/var/folders/26/x/T/sbi-bundle-AB/wrong-db/logs/app/app-pod.log',
+        'Pod/default/app-pod',
+      ],
+    });
+    const report = makeReport({ findings: [finding] });
+    const parsed = JSON.parse(generateJsonReport(report)) as Record<string, unknown>;
+    const f = (parsed['findings'] as Record<string, unknown>[])[0]!;
+    const components = f['affectedComponents'] as string[];
+    expect(components[0]).not.toContain('/var/folders');
+    expect(components[0]).toBe('logs/app/app-pod.log');
+    expect(components[1]).toBe('Pod/default/app-pod');
+  });
+
+  it('evidenceReferences paths in JSON output are bundle-relative', () => {
+    const report = makeReport({
+      evidenceReferences: [
+        {
+          path: '/tmp/sbi-bundle-XYZ/bad-image/cluster-resources/pods/default.json',
+          note: 'Pod resource',
+        },
+        {
+          path: 'logs/app/current.log',
+          note: 'Already relative',
+        },
+      ],
+    });
+    const parsed = JSON.parse(generateJsonReport(report)) as Record<string, unknown>;
+    const refs = parsed['evidenceReferences'] as Record<string, unknown>[];
+    expect(refs[0]!['path']).not.toContain('/tmp/sbi-bundle');
+    expect(refs[0]!['path']).toBe('cluster-resources/pods/default.json');
+    expect(refs[1]!['path']).toBe('logs/app/current.log');
+  });
+
+  it('non-hypothesis titles are passed through unchanged', () => {
+    const finding = makeFinding({ title: 'CrashLoopBackOff: Pod app-pod in default' });
+    const report = makeReport({ findings: [finding] });
+    const parsed = JSON.parse(generateJsonReport(report)) as Record<string, unknown>;
+    const f = (parsed['findings'] as Record<string, unknown>[])[0]!;
+    expect(f['title']).toBe('CrashLoopBackOff: Pod app-pod in default');
+  });
+});

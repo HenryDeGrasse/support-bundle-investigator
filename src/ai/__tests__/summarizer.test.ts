@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { summarizeResource, summarizeEvent, summarizeAnalyzer } from '../summarizer.js';
+import { summarizeResource, summarizeEvent, summarizeAnalyzer, summarizeHelmRelease } from '../summarizer.js';
 import type { K8sResource, K8sEvent, AnalyzerResult } from '../../types/index.js';
+import type { HelmRelease } from '../../parsers/index.js';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -395,5 +396,86 @@ describe('summarizeAnalyzer', () => {
     };
     const summary = summarizeAnalyzer(result);
     expect(summary).toContain('WARN');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// summarizeHelmRelease
+// ---------------------------------------------------------------------------
+
+function makeHelmRelease(overrides: Partial<HelmRelease> = {}): HelmRelease {
+  return {
+    name: 'my-app',
+    namespace: 'default',
+    revision: 3,
+    status: 'deployed',
+    chart: 'my-chart',
+    chartVersion: '1.2.3',
+    appVersion: '2.0.0',
+    updatedAt: '2024-01-15T10:00:00Z',
+    values: { replicaCount: 2 },
+    ...overrides,
+  };
+}
+
+describe('summarizeHelmRelease', () => {
+  it('includes release name', () => {
+    const summary = summarizeHelmRelease(makeHelmRelease({ name: 'my-app' }));
+    expect(summary).toContain('my-app');
+  });
+
+  it('includes namespace', () => {
+    const summary = summarizeHelmRelease(makeHelmRelease({ namespace: 'production' }));
+    expect(summary).toContain('production');
+  });
+
+  it('includes chart name', () => {
+    const summary = summarizeHelmRelease(makeHelmRelease({ chart: 'my-chart' }));
+    expect(summary).toContain('my-chart');
+  });
+
+  it('includes chart version', () => {
+    const summary = summarizeHelmRelease(makeHelmRelease({ chartVersion: '1.2.3' }));
+    expect(summary).toContain('1.2.3');
+  });
+
+  it('includes status', () => {
+    const summary = summarizeHelmRelease(makeHelmRelease({ status: 'failed' }));
+    expect(summary).toContain('failed');
+  });
+
+  it('includes app version', () => {
+    const summary = summarizeHelmRelease(makeHelmRelease({ appVersion: '2.0.0' }));
+    expect(summary).toContain('2.0.0');
+  });
+
+  it('includes updatedAt timestamp', () => {
+    const summary = summarizeHelmRelease(makeHelmRelease({ updatedAt: '2024-01-15T10:00:00Z' }));
+    expect(summary).toContain('2024-01-15T10:00:00Z');
+  });
+
+  it('includes revision number', () => {
+    const summary = summarizeHelmRelease(makeHelmRelease({ revision: 5 }));
+    expect(summary).toContain('5');
+  });
+
+  it('includes values keys when present', () => {
+    const summary = summarizeHelmRelease(makeHelmRelease({ values: { replicaCount: 2, image: 'v1' } }));
+    expect(summary).toContain('replicaCount');
+  });
+
+  it('omits appVersion line when empty', () => {
+    const summary = summarizeHelmRelease(makeHelmRelease({ appVersion: '' }));
+    expect(summary).not.toContain('AppVersion:');
+  });
+
+  it('omits updatedAt line when empty', () => {
+    const summary = summarizeHelmRelease(makeHelmRelease({ updatedAt: '' }));
+    expect(summary).not.toContain('UpdatedAt:');
+  });
+
+  it('omits ValuesKeys line when values is empty', () => {
+    const summary = summarizeHelmRelease(makeHelmRelease({ values: {} }));
+    expect(summary).not.toContain('ValuesKeys:');
   });
 });

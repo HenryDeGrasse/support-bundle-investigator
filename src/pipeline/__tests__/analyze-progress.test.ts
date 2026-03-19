@@ -30,6 +30,8 @@ vi.mock('../../parsers/index.js', () => ({
   parseEventFile: vi.fn().mockResolvedValue([]),
   identifyLogFiles: vi.fn().mockReturnValue([]),
   parseLogFile: vi.fn().mockResolvedValue({ path: '', lines: [], errorCount: 0, warningCount: 0, importance: 0 }),
+  sortEventsByTime: vi.fn((events: unknown[]) => [...events]),
+  parseHelmReleaseFile: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('../../graph/index.js', () => ({
@@ -62,8 +64,9 @@ vi.mock('../../ai/index.js', () => ({
 import { analyzeBundlePipeline } from '../analyze.js';
 import type { PipelineProgressEvent } from '../analyze.js';
 import { extractBundle, profileBundle } from '../../ingestion/index.js';
-import { mergeAnalyzerResults, identifyLogFiles } from '../../parsers/index.js';
+import { mergeAnalyzerResults, identifyLogFiles, parseEventFile, sortEventsByTime } from '../../parsers/index.js';
 import { runInvestigation } from '../../investigators/index.js';
+import type { K8sEvent } from '../../types/index.js';
 import {
   loadAIConfig,
   isAIEnabled,
@@ -73,7 +76,7 @@ import {
   EmbeddingClient,
   VectorStore,
 } from '../../ai/index.js';
-import { buildResourceGraph } from '../../graph/index.js';
+import { buildResourceGraph, InvestigationGraphImpl } from '../../graph/index.js';
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -109,7 +112,6 @@ function makeProfile() {
       log: 0,
       'kubernetes-resource': 0,
       event: 0,
-      config: 0,
       'cluster-info': 0,
       'helm-release': 0,
       unknown: 0,
@@ -151,6 +153,14 @@ beforeEach(() => {
   vi.mocked(identifyLogFiles).mockReturnValue([]);
   vi.mocked(runInvestigation).mockResolvedValue(makeInvestigationResult());
   vi.mocked(buildResourceGraph).mockReturnValue({ nodes: new Map(), edges: [] });
+
+  // Re-initialize InvestigationGraphImpl so graph.addNode/addEdge/getNode work
+  // even when events/resources are non-empty (clearAllMocks clears the implementation).
+  vi.mocked(InvestigationGraphImpl).mockImplementation(() => ({
+    addNode: vi.fn(),
+    addEdge: vi.fn(),
+    getNode: vi.fn().mockReturnValue(null),
+  }) as unknown as InstanceType<typeof InvestigationGraphImpl>);
 
   // AI disabled by default
   vi.mocked(loadAIConfig).mockReturnValue({
@@ -411,5 +421,107 @@ describe('analyzeBundlePipeline — onProgress callback', () => {
 
     // 9 steps × 2 events = 18
     expect(onProgress).toHaveBeenCalledTimes(18);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Event chronological sorting
+// ---------------------------------------------------------------------------
+
+describe('analyzeBundlePipeline — event chronological sorting', () => {
+  const lateEvent: K8sEvent = {
+    type: 'Warning',
+    reason: 'BackOff',
+    message: 'Back-off restarting failed container',
+    involvedObject: { kind: 'Pod', name: 'app-pod', namespace: 'default' },
+    firstTimestamp: '2024-01-15T10:05:00Z',
+    lastTimestamp: '2024-01-15T10:05:00Z',
+  };
+
+  const earlyEvent: K8sEvent = {
+    type: 'Normal',
+    reason: 'Scheduled',
+    message: 'Successfully assigned',
+    involvedObject: { kind: 'Pod', name: 'app-pod', namespace: 'default' },
+    firstTimestamp: '2024-01-15T10:00:00Z',
+    lastTimestamp: '2024-01-15T10:00:00Z',
+  };
+
+  function makeProfileWithEventFile() {
+    const manifest = {
+      bundlePath: '/fake/bundle.tar.gz',
+      extractedPath: '/fake/extracted',
+      files: [
+        {
+          relativePath: 'events.yaml',
+          absolutePath: '/fake/extracted/events.yaml',
+          category: 'event' as const,
+          size: 100,
+        },
+      ],
+      totalSize: 100,
+      extractedAt: new Date(),
+    };
+    return {
+      manifest,
+      analyzerCount: 0,
+      logFileCount: 0,
+      resourceCount: 0,
+      eventCount: 2,
+      namespaces: [],
+      workloads: [],
+      coverageGaps: [],
+      artifactsByCategory: {
+        analyzer: 0,
+        log: 0,
+        'kubernetes-resource': 0,
+        event: 2,
+        'cluster-info': 0,
+        'helm-release': 0,
+        unknown: 0,
+      },
+    };
+  }
+
+  it('calls sortEventsByTime with the parsed events', async () => {
+    // Return events out of chronological order
+    vi.mocked(parseEventFile).mockResolvedValueOnce([lateEvent, earlyEvent]);
+    vi.mocked(profileBundle).mockResolvedValueOnce(
+      makeProfileWithEventFile() as ReturnType<typeof profileBundle> extends Promise<infer T> ? T : never,
+    );
+
+    await analyzeBundlePipeline('/fake/bundle.tar.gz');
+
+    expect(sortEventsByTime).toHaveBeenCalled();
+  });
+
+  it('passes events to runInvestigation in chronological order', async () => {
+    // sortEventsByTime mock returns events sorted by firstTimestamp
+    vi.mocked(sortEventsByTime).mockReturnValueOnce([earlyEvent, lateEvent]);
+    vi.mocked(parseEventFile).mockResolvedValueOnce([lateEvent, earlyEvent]);
+    vi.mocked(profileBundle).mockResolvedValueOnce(
+      makeProfileWithEventFile() as ReturnType<typeof profileBundle> extends Promise<infer T> ? T : never,
+    );
+
+    await analyzeBundlePipeline('/fake/bundle.tar.gz');
+
+    const callArgs = vi.mocked(runInvestigation).mock.calls[0]!;
+    const passedEvents = callArgs[0].events;
+
+    expect(passedEvents[0]?.reason).toBe('Scheduled'); // earlyEvent
+    expect(passedEvents[1]?.reason).toBe('BackOff');   // lateEvent
+  });
+
+  it('returns events in chronological order in PipelineResult', async () => {
+    vi.mocked(sortEventsByTime).mockReturnValueOnce([earlyEvent, lateEvent]);
+    vi.mocked(parseEventFile).mockResolvedValueOnce([lateEvent, earlyEvent]);
+    vi.mocked(profileBundle).mockResolvedValueOnce(
+      makeProfileWithEventFile() as ReturnType<typeof profileBundle> extends Promise<infer T> ? T : never,
+    );
+
+    const result = await analyzeBundlePipeline('/fake/bundle.tar.gz');
+
+    expect(result.events[0]?.reason).toBe('Scheduled'); // earlyEvent
+    expect(result.events[1]?.reason).toBe('BackOff');   // lateEvent
   });
 });

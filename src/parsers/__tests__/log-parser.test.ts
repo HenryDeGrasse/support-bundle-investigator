@@ -411,7 +411,16 @@ describe('classifyLogImportance', () => {
 
 describe('parseLogFile', () => {
   it('returns structured LogFile with lines, errors, warnings from fixture', async () => {
-    const filePath = path.join(SCENARIOS, 'wrong-db-endpoint', 'logs', 'app', 'app-pod.log');
+    const filePath = path.join(
+      SCENARIOS,
+      'wrong-db-endpoint',
+      'cluster-resources',
+      'pods',
+      'logs',
+      'default',
+      'app-pod',
+      'app.log',
+    );
     const logFile = await parseLogFile(filePath);
 
     expect(logFile.path).toBe(filePath);
@@ -425,9 +434,12 @@ describe('parseLogFile', () => {
     const filePath = path.join(
       SCENARIOS,
       'missing-secret-crashloop',
+      'cluster-resources',
+      'pods',
       'logs',
-      'app',
-      'app-pod.log',
+      'default',
+      'app-pod',
+      'app.log',
     );
     const logFile = await parseLogFile(filePath);
 
@@ -440,7 +452,16 @@ describe('parseLogFile', () => {
   });
 
   it('assigns correct line numbers (1-based)', async () => {
-    const filePath = path.join(SCENARIOS, 'wrong-db-endpoint', 'logs', 'app', 'app-pod.log');
+    const filePath = path.join(
+      SCENARIOS,
+      'wrong-db-endpoint',
+      'cluster-resources',
+      'pods',
+      'logs',
+      'default',
+      'app-pod',
+      'app.log',
+    );
     const logFile = await parseLogFile(filePath);
 
     expect(logFile.lines[0]!.lineNumber).toBe(1);
@@ -450,7 +471,16 @@ describe('parseLogFile', () => {
   });
 
   it('handles maxLines option by truncating output', async () => {
-    const filePath = path.join(SCENARIOS, 'wrong-db-endpoint', 'logs', 'app', 'app-pod.log');
+    const filePath = path.join(
+      SCENARIOS,
+      'wrong-db-endpoint',
+      'cluster-resources',
+      'pods',
+      'logs',
+      'default',
+      'app-pod',
+      'app.log',
+    );
     const logFile = await parseLogFile(filePath, { maxLines: 5 });
 
     expect(logFile.lines.length).toBeLessThanOrEqual(5);
@@ -516,7 +546,16 @@ describe('parseLogFile', () => {
 
 describe('classifyLogs', () => {
   it('returns a classification for each log file', async () => {
-    const filePath = path.join(SCENARIOS, 'wrong-db-endpoint', 'logs', 'app', 'app-pod.log');
+    const filePath = path.join(
+      SCENARIOS,
+      'wrong-db-endpoint',
+      'cluster-resources',
+      'pods',
+      'logs',
+      'default',
+      'app-pod',
+      'app.log',
+    );
     const logFile = await parseLogFile(filePath);
 
     const classifications = classifyLogs([logFile]);
@@ -527,7 +566,16 @@ describe('classifyLogs', () => {
   });
 
   it('assigns a category to each log', async () => {
-    const filePath = path.join(SCENARIOS, 'wrong-db-endpoint', 'logs', 'app', 'app-pod.log');
+    const filePath = path.join(
+      SCENARIOS,
+      'wrong-db-endpoint',
+      'cluster-resources',
+      'pods',
+      'logs',
+      'default',
+      'app-pod',
+      'app.log',
+    );
     const logFile = await parseLogFile(filePath);
     const classifications = classifyLogs([logFile]);
     const validCategories = ['application', 'system', 'kubernetes', 'database', 'networking', 'unknown'];
@@ -538,9 +586,12 @@ describe('classifyLogs', () => {
     const filePath = path.join(
       SCENARIOS,
       'missing-secret-crashloop',
+      'cluster-resources',
+      'pods',
       'logs',
-      'app',
-      'app-pod.log',
+      'default',
+      'app-pod',
+      'app.log',
     );
     const logFile = await parseLogFile(filePath);
     const classifications = classifyLogs([logFile]);
@@ -553,12 +604,33 @@ describe('rankLogsByImportance', () => {
     const crashPath = path.join(
       SCENARIOS,
       'missing-secret-crashloop',
+      'cluster-resources',
+      'pods',
       'logs',
-      'app',
-      'app-pod.log',
+      'default',
+      'app-pod',
+      'app.log',
     );
-    const dbPath = path.join(SCENARIOS, 'wrong-db-endpoint', 'logs', 'app', 'app-pod.log');
-    const badImagePath = path.join(SCENARIOS, 'bad-image-tag', 'logs', 'app', 'app-pod.log');
+    const dbPath = path.join(
+      SCENARIOS,
+      'wrong-db-endpoint',
+      'cluster-resources',
+      'pods',
+      'logs',
+      'default',
+      'app-pod',
+      'app.log',
+    );
+    const badImagePath = path.join(
+      SCENARIOS,
+      'bad-image-tag',
+      'cluster-resources',
+      'pods',
+      'logs',
+      'default',
+      'app-pod',
+      'app.log',
+    );
 
     const [crashLog, dbLog, badImageLog] = await Promise.all([
       parseLogFile(crashPath),

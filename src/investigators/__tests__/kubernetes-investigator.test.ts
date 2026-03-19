@@ -31,7 +31,6 @@ function makeProfile(): BundleProfile {
       log: 0,
       'kubernetes-resource': 0,
       event: 0,
-      config: 0,
       'cluster-info': 0,
       'helm-release': 0,
       unknown: 0,
@@ -793,5 +792,298 @@ describe('investigateKubernetes — namespace-scoped pod event correlation', () 
     expect(finding.confidence).toBeLessThan(0.85);
     expect(finding.evidence.every((e) => e.artifactType !== 'event')).toBe(true);
     expect(finding.missingEvidence.some((m) => m.includes("namespace 'prod'"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 12 — Pending Pod with FailedMount and ProvisioningFailed events
+// ---------------------------------------------------------------------------
+
+/** A Pending Pod stuck in ContainerCreating (mirrors pvc-pending fixture). */
+const pendingPvcPod: K8sResource = {
+  apiVersion: 'v1',
+  kind: 'Pod',
+  metadata: { name: 'db-pod', namespace: 'default' },
+  spec: {
+    containers: [{ name: 'postgres', image: 'postgres:15' }],
+    volumes: [
+      {
+        name: 'data-volume',
+        persistentVolumeClaim: { claimName: 'data-pvc' },
+      },
+    ],
+  },
+  status: {
+    phase: 'Pending',
+    conditions: [
+      { type: 'Ready', status: 'False', reason: 'ContainersNotReady' },
+      { type: 'PodScheduled', status: 'True' },
+    ],
+    containerStatuses: [
+      {
+        name: 'postgres',
+        ready: false,
+        restartCount: 0,
+        state: {
+          waiting: {
+            reason: 'ContainerCreating',
+            message: "waiting for volume 'data-volume' to be created",
+          },
+        },
+      },
+    ],
+  },
+};
+
+/** A Pending PVC referencing a non-existent StorageClass. */
+const pendingPvc: K8sResource = {
+  apiVersion: 'v1',
+  kind: 'PersistentVolumeClaim',
+  metadata: { name: 'data-pvc', namespace: 'default' },
+  spec: {
+    accessModes: ['ReadWriteOnce'],
+    storageClassName: 'fast-ssd',
+    resources: { requests: { storage: '10Gi' } },
+  },
+  status: { phase: 'Pending' },
+};
+
+/** StorageClass that exists (but is NOT 'fast-ssd'). */
+const standardStorageClass: K8sResource = {
+  apiVersion: 'storage.k8s.io/v1',
+  kind: 'StorageClass',
+  metadata: { name: 'standard' },
+  spec: {},
+  status: {},
+};
+
+/** Events for the pvc-pending scenario. */
+const pendingPvcEvents: K8sEvent[] = [
+  {
+    type: 'Warning',
+    reason: 'ProvisioningFailed',
+    message: 'storageclass.storage.k8s.io "fast-ssd" not found',
+    involvedObject: { kind: 'PersistentVolumeClaim', name: 'data-pvc', namespace: 'default' },
+    count: 8,
+    firstTimestamp: '2024-01-15T10:00:00Z',
+    lastTimestamp: '2024-01-15T10:05:00Z',
+  },
+  {
+    type: 'Warning',
+    reason: 'FailedScheduling',
+    message: 'persistentvolumeclaim "data-pvc" not found or is not bound',
+    involvedObject: { kind: 'Pod', name: 'db-pod', namespace: 'default' },
+    count: 4,
+    firstTimestamp: '2024-01-15T10:00:05Z',
+    lastTimestamp: '2024-01-15T10:05:00Z',
+  },
+  {
+    type: 'Warning',
+    reason: 'FailedMount',
+    message: 'Unable to attach or mount volumes: unmounted volumes=[data-volume], unattached volumes=[data-volume]',
+    involvedObject: { kind: 'Pod', name: 'db-pod', namespace: 'default' },
+    count: 6,
+    firstTimestamp: '2024-01-15T10:00:10Z',
+    lastTimestamp: '2024-01-15T10:06:00Z',
+  },
+];
+
+describe('investigateKubernetes — Pending Pod with FailedMount and ProvisioningFailed', () => {
+  const context = makeContext({
+    resources: [pendingPvcPod, pendingPvc, standardStorageClass],
+    events: pendingPvcEvents,
+  });
+  const result = investigateKubernetes(context, noSeeds);
+
+  it('produces exactly one finding (the pending pod)', () => {
+    expect(result.findings).toHaveLength(1);
+  });
+
+  it('finding has severity critical', () => {
+    expect(result.findings[0]!.severity).toBe('critical');
+  });
+
+  it('finding title mentions pod name and volume issue', () => {
+    const title = result.findings[0]!.title.toLowerCase();
+    expect(title).toContain('db-pod');
+    expect(
+      title.includes('pvc') || title.includes('volume') || title.includes('provision'),
+    ).toBe(true);
+  });
+
+  it('finding title mentions the missing StorageClass fast-ssd', () => {
+    const title = result.findings[0]!.title;
+    expect(title).toContain('fast-ssd');
+  });
+
+  it('confidence is ≥ 0.85 when ProvisioningFailed events are present', () => {
+    expect(result.findings[0]!.confidence).toBeGreaterThanOrEqual(0.85);
+  });
+
+  it('evidence includes the pod file path', () => {
+    const paths = result.findings[0]!.evidence.map((e) => e.path);
+    expect(paths.some((p) => p.includes('pods/default/db-pod'))).toBe(true);
+  });
+
+  it('evidence includes ProvisioningFailed event note', () => {
+    const notes = result.findings[0]!.evidence.map((e) => e.note.toLowerCase());
+    expect(notes.some((n) => n.includes('provisioningfailed') || n.includes('provisioning'))).toBe(true);
+  });
+
+  it('evidence includes FailedMount event note', () => {
+    const notes = result.findings[0]!.evidence.map((e) => e.note.toLowerCase());
+    expect(notes.some((n) => n.includes('failedmount') || n.includes('failed mount'))).toBe(true);
+  });
+
+  it('affectedComponents includes the pod identifier', () => {
+    const comps = result.findings[0]!.affectedComponents;
+    expect(comps.some((c) => c.includes('db-pod'))).toBe(true);
+    expect(comps.some((c) => c.startsWith('Pod/'))).toBe(true);
+  });
+
+  it('produces graph edges linking evidence to finding', () => {
+    const findingId = result.findings[0]!.id;
+    const supportEdges = result.edges.filter(
+      (e) => e.target === findingId && e.type === 'supports',
+    );
+    expect(supportEdges.length).toBeGreaterThan(0);
+  });
+
+  it('produces a correlates edge between FailedMount and ProvisioningFailed', () => {
+    const correlates = result.edges.filter((e) => e.type === 'correlates');
+    expect(correlates.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 12b — Pending Pod with FailedScheduling only
+// ---------------------------------------------------------------------------
+
+describe('investigateKubernetes — Pending Pod with FailedScheduling events', () => {
+  const pendingPodNoMount: K8sResource = {
+    apiVersion: 'v1',
+    kind: 'Pod',
+    metadata: { name: 'sched-pod', namespace: 'default' },
+    spec: {
+      containers: [{ name: 'app', image: 'myapp:v1' }],
+      nodeSelector: { 'node-type': 'gpu' },
+    },
+    status: {
+      phase: 'Pending',
+      conditions: [
+        { type: 'PodScheduled', status: 'False', reason: 'Unschedulable' },
+      ],
+      containerStatuses: [],
+    },
+  };
+
+  const schedulingEvents: K8sEvent[] = [
+    {
+      type: 'Warning',
+      reason: 'FailedScheduling',
+      message: '0/3 nodes are available: 3 node(s) didn\'t match node selector',
+      involvedObject: { kind: 'Pod', name: 'sched-pod', namespace: 'default' },
+      count: 5,
+      firstTimestamp: '2024-01-15T10:00:00Z',
+      lastTimestamp: '2024-01-15T10:05:00Z',
+    },
+  ];
+
+  const context = makeContext({ resources: [pendingPodNoMount], events: schedulingEvents });
+  const result = investigateKubernetes(context, noSeeds);
+
+  it('produces a finding for the unschedulable pod', () => {
+    expect(result.findings).toHaveLength(1);
+  });
+
+  it('finding title mentions scheduling failure', () => {
+    const title = result.findings[0]!.title.toLowerCase();
+    expect(title).toContain('scheduling');
+  });
+
+  it('evidence includes FailedScheduling event', () => {
+    const notes = result.findings[0]!.evidence.map((e) => e.note.toLowerCase());
+    expect(notes.some((n) => n.includes('failedscheduling') || n.includes('scheduling'))).toBe(true);
+  });
+
+  it('affectedComponents includes the pod identifier', () => {
+    const comps = result.findings[0]!.affectedComponents;
+    expect(comps.some((c) => c.startsWith('Pod/'))).toBe(true);
+    expect(comps.some((c) => c.includes('sched-pod'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 12c — Pending Pod with ProvisioningFailed includes PVC evidence
+// ---------------------------------------------------------------------------
+
+describe('investigateKubernetes — Pending Pod finding includes ProvisioningFailed evidence when PVC events exist', () => {
+  const context = makeContext({
+    resources: [pendingPvcPod, pendingPvc, standardStorageClass],
+    events: pendingPvcEvents,
+  });
+  const result = investigateKubernetes(context, noSeeds);
+
+  it('evidence array contains a PVC resource path', () => {
+    const paths = result.findings[0]!.evidence.map((e) => e.path);
+    expect(paths.some((p) => p.includes('persistentvolumeclaims'))).toBe(true);
+  });
+
+  it('ProvisioningFailed events appear in evidence', () => {
+    const notes = result.findings[0]!.evidence.map((e) => e.note.toLowerCase());
+    expect(notes.some((n) => n.includes('provisioningfailed') || n.includes('provisioning'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 12d — ProvisioningFailed alone still names the PVC in title/evidence
+// ---------------------------------------------------------------------------
+
+describe('investigateKubernetes — Pending Pod with ProvisioningFailed but no FailedMount still includes PVC details', () => {
+  const context = makeContext({
+    resources: [pendingPvcPod, pendingPvc, standardStorageClass],
+    events: [pendingPvcEvents[0]!],
+  });
+  const result = investigateKubernetes(context, noSeeds);
+
+  it('produces a finding that still names the PVC in the title', () => {
+    expect(result.findings).toHaveLength(1);
+    const title = result.findings[0]!.title;
+    expect(title).toContain('data-pvc');
+    expect(title).toContain('fast-ssd');
+  });
+
+  it('includes the PVC resource path even without FailedMount events', () => {
+    const paths = result.findings[0]!.evidence.map((e) => e.path);
+    expect(paths.some((p) => p.includes('persistentvolumeclaims/default/data-pvc'))).toBe(
+      true,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 12e — ImagePullBackOff in Pending phase is NOT detected as Pending Pod
+// ---------------------------------------------------------------------------
+
+describe('investigateKubernetes — ImagePullBackOff in Pending phase is not duplicated as Pending Pod', () => {
+  const imagePullPendingPod: K8sResource = {
+    ...imagePullPod,
+    // imagePullPod already has phase: Pending — it should be picked up by ImagePull detector only
+  };
+
+  const context = makeContext({
+    resources: [imagePullPendingPod],
+    events: imagePullEvents,
+  });
+  const result = investigateKubernetes(context, noSeeds);
+
+  it('produces exactly one finding (ImagePull only, not Pending Pod)', () => {
+    expect(result.findings).toHaveLength(1);
+  });
+
+  it('the finding is the ImagePullBackOff finding, not a Pending Pod finding', () => {
+    const title = result.findings[0]!.title.toLowerCase();
+    expect(title).toContain('imagepullbackoff');
+    expect(title).not.toContain('pending pod');
   });
 });

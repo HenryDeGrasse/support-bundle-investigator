@@ -1,0 +1,20 @@
+2024-03-15T07:55:20Z INFO  Starting Grafana v10.2.0
+2024-03-15T07:55:20Z INFO  Loading configuration from /etc/grafana/grafana.ini
+2024-03-15T07:55:20Z INFO  GF_DATABASE_HOST=wrong-host.internal:5432
+2024-03-15T07:55:20Z INFO  GF_DATABASE_TYPE=postgres
+2024-03-15T07:55:20Z INFO  GF_DATABASE_NAME=grafana
+2024-03-15T07:55:21Z INFO  Initializing database connection pool
+2024-03-15T07:55:21Z ERROR Failed to connect to database: failed to connect to 'host=wrong-host.internal user=grafana database=grafana': dial error (dial tcp: lookup wrong-host.internal on 10.96.0.10:53: no such host)
+2024-03-15T07:55:21Z WARN  Retrying database connection (attempt 1/10)
+2024-03-15T07:55:26Z ERROR dial tcp: lookup wrong-host.internal on 10.96.0.10:53: no such host
+2024-03-15T07:55:26Z WARN  Retrying database connection (attempt 2/10)
+2024-03-15T07:55:31Z ERROR dial tcp: lookup wrong-host.internal on 10.96.0.10:53: no such host
+2024-03-15T07:55:31Z WARN  Retrying database connection (attempt 3/10)
+2024-03-15T07:55:36Z ERROR dial tcp: lookup wrong-host.internal on 10.96.0.10:53: no such host
+2024-03-15T07:55:36Z WARN  Retrying database connection (attempt 4/10)
+2024-03-15T07:55:41Z ERROR dial tcp: lookup wrong-host.internal on 10.96.0.10:53: no such host
+2024-03-15T07:55:46Z ERROR dial tcp: lookup wrong-host.internal on 10.96.0.10:53: no such host
+2024-03-15T07:55:51Z ERROR dial tcp: lookup wrong-host.internal on 10.96.0.10:53: no such host
+2024-03-15T07:55:56Z ERROR database migration failed: cannot reach wrong-host.internal:5432 — no such host. Verify GF_DATABASE_HOST.
+2024-03-15T07:56:01Z ERROR Unable to start Grafana: database connection required. Host wrong-host.internal is not resolvable in cluster DNS.
+2024-03-15T07:56:01Z FATAL  Grafana startup failed: dial tcp: lookup wrong-host.internal on 10.96.0.10:53: no such host

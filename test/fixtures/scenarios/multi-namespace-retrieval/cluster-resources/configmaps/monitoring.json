@@ -1,0 +1,19 @@
+{
+  "apiVersion": "v1",
+  "kind": "ConfigMapList",
+  "items": [
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "prometheus-config",
+        "namespace": "monitoring",
+        "labels": { "app": "prometheus" },
+        "creationTimestamp": "2024-03-14T12:00:00Z"
+      },
+      "data": {
+        "prometheus.yml": "global:\n  scrape_interval: 15s\n  evaluation_interval: 15s\n\nscrape_configs:\n  - job_name: 'kubernetes-pods'\n    kubernetes_sd_configs:\n      - role: pod\n    relabel_configs:\n      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]\n        action: keep\n        regex: true\n  - job_name: 'postgres'\n    static_configs:\n      - targets: ['postgres-service.database.svc.cluster.local:5432']\n"
+      }
+    }
+  ]
+}

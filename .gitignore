@@ -7,3 +7,7 @@ tmp/
 .env
 test/cassettes/
 test/golden/eval-report.json
+
+# Bundle drop directory — track the folder, ignore contents
+bundles/*
+!bundles/.gitkeep

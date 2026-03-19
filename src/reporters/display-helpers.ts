@@ -70,25 +70,25 @@ export function cleanEvidencePath(filePath: string): string {
 /**
  * Converts a machine-generated finding title into a human-friendly form.
  *
- * - Strips `[Hypothesis] ` prefix
- * - Strips `(symptom: ...)` suffix
- * - Cleans absolute temp paths from log-investigator titles
+ * - Strips legacy `[Hypothesis] ` prefix as a backwards-compatible safety net
+ * - Strips legacy `(symptom: ...)` suffix as a backwards-compatible safety net
+ * - Cleans any remaining absolute temp paths from log-investigator titles
  */
 export function humanizeTitle(title: string): string {
   let result = title;
 
-  // Strip [Hypothesis] prefix
+  // Strip legacy [Hypothesis] prefix
   result = result.replace(/^\[Hypothesis\]\s*/i, '');
 
-  // Strip (symptom: ...) suffix
+  // Strip legacy (symptom: ...) suffix
   result = result.replace(/\s*\(symptom:\s*.+\)\s*$/, '');
 
-  // Clean absolute paths in titles (log investigator uses full paths)
+  // Clean absolute paths that may still appear in titles from older findings
   result = result.replace(
-    /(?:in|from)\s+(\/[^\s]+)/g,
-    (_match, absPath: string) => {
+    /\b(in|from)\s+'?(\/[^\s']+)'?/g,
+    (_match, preposition: string, absPath: string) => {
       const cleaned = cleanEvidencePath(absPath);
-      return `in ${cleaned}`;
+      return `${preposition} ${cleaned}`;
     },
   );
 

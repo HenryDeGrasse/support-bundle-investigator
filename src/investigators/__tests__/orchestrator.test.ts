@@ -32,7 +32,6 @@ function makeProfile(): BundleProfile {
       log: 0,
       'kubernetes-resource': 0,
       event: 0,
-      config: 0,
       'cluster-info': 0,
       'helm-release': 0,
       unknown: 0,
@@ -587,5 +586,432 @@ describe('runInvestigation', () => {
     // AI creates one edge per evidence item
     const aiEdges = result.edges.filter((e) => e.id.startsWith('edge:ai:'));
     expect(aiEdges).toHaveLength(2);
+  });
+
+  // ── Step-3 quality improvements ──────────────────────────────────────────
+
+  describe('hypothesis dedup and single-set-per-pod', () => {
+    it('generates only one hypothesis set per pod when k8s and log investigators both produce findings for the same pod', async () => {
+      // A log file whose path basename matches the pod name → resolveLogPodComponent
+      // normalises the component to Pod/default/app-pod, the same as the k8s finding.
+      const appPodLog = makeLogFile('pod-logs/default/app-pod.log', [
+        'ERROR lookup db: no such host',
+      ]);
+      const context = makeContext({
+        resources: [crashLoopPod],
+        events: [backOffEvent],
+        logs: [appPodLog],
+      });
+      const result = await runInvestigation(context);
+
+      // One hypothesis group (both findings share primary component Pod/default/app-pod)
+      // → the crashloop template produces exactly 5 hypotheses.
+      // Without step-1 normalisation we would get 2 groups → 7 hypotheses.
+      expect(result.metadata.hypothesesGenerated).toBe(5);
+    });
+  });
+
+  describe('symptom suppression', () => {
+    // ── Fixtures ────────────────────────────────────────────────────────────
+
+    /** Running pod whose Ready condition is False; has a service-env reference
+     *  that will generate DNS-failure evidence in the hypothesis layer. */
+    const notReadyDnsPod: K8sResource = {
+      apiVersion: 'v1',
+      kind: 'Pod',
+      metadata: { name: 'web-pod', namespace: 'default' },
+      spec: {
+        containers: [
+          {
+            name: 'app',
+            image: 'nginx:latest',
+            // env var whose value is a single-label service name picked up by
+            // collectPodServiceReferences and the DNS evidence collector
+            env: [{ name: 'DB_HOST', value: 'db' }],
+          },
+        ],
+      },
+      status: {
+        phase: 'Running',
+        conditions: [{ type: 'Ready', status: 'False', reason: 'ContainersNotReady' }],
+        containerStatuses: [
+          {
+            name: 'app',
+            ready: false,
+            restartCount: 0,
+            // running state (not waiting) → no CrashLoopBackOff / ImagePullBackOff
+            state: { running: {} },
+          },
+        ],
+      },
+    };
+
+    /** Log file whose basename matches notReadyDnsPod's name → component is
+     *  normalised to Pod/default/web-pod by resolveLogPodComponent. */
+    const dnsLogForWebPod = makeLogFile('pod-logs/default/web-pod.log', [
+      'ERROR lookup db: no such host',
+    ]);
+
+    /** CrashLoop pod that references a missing secret; used to trigger a
+     *  high-confidence missing-secret hypothesis. */
+    const crashLoopSecretPod: K8sResource = {
+      apiVersion: 'v1',
+      kind: 'Pod',
+      metadata: { name: 'svc-pod', namespace: 'default' },
+      spec: {
+        containers: [
+          {
+            name: 'app',
+            image: 'myapp:v1.2.3',
+            envFrom: [{ secretRef: { name: 'app-credentials' } }],
+          },
+        ],
+      },
+      status: {
+        phase: 'Running',
+        conditions: [{ type: 'Ready', status: 'False' }],
+        containerStatuses: [
+          {
+            name: 'app',
+            ready: false,
+            restartCount: 8,
+            state: {
+              waiting: { reason: 'CrashLoopBackOff', message: 'back-off' },
+            },
+          },
+        ],
+      },
+    };
+
+    /** Deployment with 0 ready replicas in the same namespace as crashLoopSecretPod. */
+    const unhealthyDeploymentFixture: K8sResource = {
+      apiVersion: 'apps/v1',
+      kind: 'Deployment',
+      metadata: { name: 'svc-deploy', namespace: 'default' },
+      spec: { replicas: 1 },
+      status: { readyReplicas: 0, availableReplicas: 0, replicas: 1 },
+    };
+
+    /**
+     * A Secret in the 'default' namespace (not the missing one) so that
+     * indexResourceNamesByNamespace returns a non-null set for 'default',
+     * allowing the missing-secret evidence collector to flag app-credentials
+     * as absent.
+     */
+    const otherDefaultSecret: K8sResource = {
+      apiVersion: 'v1',
+      kind: 'Secret',
+      metadata: { name: 'other-secret', namespace: 'default' },
+    };
+
+    /** FailedMount event corroborating the missing-secret diagnosis. */
+    const failedMountCrashEvent: K8sEvent = {
+      involvedObject: { kind: 'Pod', name: 'svc-pod', namespace: 'default' },
+      reason: 'FailedMount',
+      message:
+        'MountVolume.SetUp failed for volume "creds" : secret "app-credentials" not found',
+      type: 'Warning',
+      count: 5,
+      firstTimestamp: '2024-01-01T00:00:00Z',
+      lastTimestamp: '2024-01-01T01:00:00Z',
+    };
+
+    /** Running pod with Ready=False but NO events and NO log files — all
+     *  hypotheses score zero, so the Not Ready Pod finding must be preserved. */
+    const notReadyQuietPod: K8sResource = {
+      apiVersion: 'v1',
+      kind: 'Pod',
+      metadata: { name: 'quiet-pod', namespace: 'default' },
+      spec: { containers: [{ name: 'app', image: 'myapp:v1' }] },
+      status: {
+        phase: 'Running',
+        conditions: [{ type: 'Ready', status: 'False', reason: 'ContainersNotReady' }],
+        containerStatuses: [
+          { name: 'app', ready: false, restartCount: 0, state: { running: {} } },
+        ],
+      },
+    };
+
+    /** Pending pod backed by a PVC whose StorageClass does not exist. */
+    const pendingPvcPod: K8sResource = {
+      apiVersion: 'v1',
+      kind: 'Pod',
+      metadata: { name: 'db-pod', namespace: 'default' },
+      spec: {
+        containers: [{ name: 'db', image: 'postgres:15' }],
+        volumes: [{ name: 'data', persistentVolumeClaim: { claimName: 'data-pvc' } }],
+      },
+      status: {
+        phase: 'Pending',
+        conditions: [{ type: 'Ready', status: 'False', reason: 'ContainersNotReady' }],
+        containerStatuses: [
+          {
+            name: 'db',
+            ready: false,
+            restartCount: 0,
+            state: { waiting: { reason: 'ContainerCreating', message: 'waiting for volume' } },
+          },
+        ],
+      },
+    };
+
+    const pendingPvc: K8sResource = {
+      apiVersion: 'v1',
+      kind: 'PersistentVolumeClaim',
+      metadata: { name: 'data-pvc', namespace: 'default' },
+      spec: {
+        accessModes: ['ReadWriteOnce'],
+        storageClassName: 'fast-ssd',
+        resources: { requests: { storage: '10Gi' } },
+      },
+      status: { phase: 'Pending' },
+    };
+
+    const provisioningFailedEvent: K8sEvent = {
+      involvedObject: { kind: 'PersistentVolumeClaim', name: 'data-pvc', namespace: 'default' },
+      reason: 'ProvisioningFailed',
+      message: 'storageclass.storage.k8s.io "fast-ssd" not found',
+      type: 'Warning',
+      count: 6,
+      firstTimestamp: '2024-01-01T00:00:00Z',
+      lastTimestamp: '2024-01-01T01:00:00Z',
+    };
+
+    const failedMountPendingEvent: K8sEvent = {
+      involvedObject: { kind: 'Pod', name: 'db-pod', namespace: 'default' },
+      reason: 'FailedMount',
+      message:
+        'Unable to attach or mount volumes: unmounted volumes=[data], unattached volumes=[data]',
+      type: 'Warning',
+      count: 6,
+      firstTimestamp: '2024-01-01T00:00:05Z',
+      lastTimestamp: '2024-01-01T01:00:00Z',
+    };
+
+    // ── Tests ────────────────────────────────────────────────────────────────
+
+    it('suppresses Not Ready Pod finding when a root-cause hypothesis covers the same pod', async () => {
+      // dns-failure hypothesis gets confidence ≥ 0.5 from:
+      //   • one DNS failure log line  → supporting item (log)
+      //   • pod service ref (DB_HOST=db)  → supporting item (k8s)
+      //   • conservative "no services captured" note  → supporting item (k8s)
+      // That exceeds the 0.5 threshold and qualifies as a root-cause finding,
+      // which should suppress the Not Ready Pod heuristic for the same pod.
+      const context = makeContext({
+        resources: [notReadyDnsPod],
+        logs: [dnsLogForWebPod],
+      });
+      const result = await runInvestigation(context);
+
+      const notReadyFinding = result.findings.find((f) =>
+        f.id.startsWith('finding:k8s:notready:'),
+      );
+      expect(notReadyFinding).toBeUndefined();
+
+      // The dns-failure hypothesis (root-cause) should still be present
+      const rootCauseFinding = result.findings.find((f) =>
+        f.id.startsWith('finding:hypothesis:dns-failure:'),
+      );
+      expect(rootCauseFinding).toBeDefined();
+    });
+
+    it('suppresses Pending Pod finding when a root-cause hypothesis covers the same pod', async () => {
+      const context = makeContext({
+        resources: [pendingPvcPod, pendingPvc],
+        events: [provisioningFailedEvent, failedMountPendingEvent],
+      });
+      const result = await runInvestigation(context);
+
+      const pendingFinding = result.findings.find((f) =>
+        f.id.startsWith('finding:k8s:pending:'),
+      );
+      expect(pendingFinding).toBeUndefined();
+
+      const rootCauseFinding = result.findings.find((f) =>
+        f.id.startsWith('finding:hypothesis:volume-mount-failure:'),
+      );
+      expect(rootCauseFinding).toBeDefined();
+    });
+
+    it('removes graph edges that reference findings suppressed in the final pass', async () => {
+      const context = makeContext({
+        resources: [notReadyDnsPod],
+        logs: [dnsLogForWebPod],
+      });
+      const result = await runInvestigation(context);
+
+      const retainedFindingIds = new Set(result.findings.map((f) => f.id));
+      const findingRefs = result.edges.flatMap((edge) =>
+        [edge.source, edge.target].filter((nodeId) => nodeId.startsWith('finding:')),
+      );
+
+      expect(findingRefs.every((nodeId) => retainedFindingIds.has(nodeId))).toBe(true);
+      expect(
+        findingRefs.some((nodeId) => nodeId.startsWith('finding:k8s:notready:')),
+      ).toBe(false);
+    });
+
+    it('suppresses Unhealthy Workload finding when a root-cause finding covers a pod in the same namespace', async () => {
+      // missing-secret hypothesis reaches confidence ~1.0 from FailedMount event +
+      // pod secret reference.  Its component is Pod/default/svc-pod (namespace 'default').
+      // The workload finding component is Deployment/default/svc-deploy (same namespace).
+      // The suppression pass must remove the workload finding.
+      const context = makeContext({
+        resources: [crashLoopSecretPod, unhealthyDeploymentFixture, otherDefaultSecret],
+        events: [failedMountCrashEvent],
+      });
+      const result = await runInvestigation(context);
+
+      const workloadFinding = result.findings.find((f) =>
+        f.id.startsWith('finding:k8s:workload:'),
+      );
+      expect(workloadFinding).toBeUndefined();
+    });
+
+    it('preserves CrashLoopBackOff finding even when a root-cause hypothesis covers the same pod', async () => {
+      // CrashLoopBackOff (finding:k8s:crashloop:*) is an informative symptom that
+      // names the failure mode and must not be suppressed even when a root-cause
+      // hypothesis (e.g. missing-secret, confidence 1.0) exists for the same pod.
+      const context = makeContext({
+        resources: [crashLoopSecretPod, otherDefaultSecret],
+        events: [failedMountCrashEvent],
+      });
+      const result = await runInvestigation(context);
+
+      const crashFinding = result.findings.find((f) =>
+        f.id.startsWith('finding:k8s:crashloop:'),
+      );
+      expect(crashFinding).toBeDefined();
+    });
+
+    it('preserves Not Ready Pod finding when no root-cause hypothesis covers it', async () => {
+      // Pod with Ready=False but NO events and NO log files → all hypotheses
+      // score 0 → nonZeroHypothesisFindings is empty → rootCauseFindings is empty
+      // → the Not Ready Pod finding must survive the suppression pass.
+      const context = makeContext({ resources: [notReadyQuietPod] });
+      const result = await runInvestigation(context);
+
+      const notReadyFinding = result.findings.find((f) =>
+        f.id.startsWith('finding:k8s:notready:'),
+      );
+      expect(notReadyFinding).toBeDefined();
+    });
+  });
+
+  describe('AI-primary absorption with step-1 component normalisation', () => {
+    it('absorbs log findings into AI findings when they share the same pod component', async () => {
+      // The log file basename 'dns-app' matches the pod name → resolveLogPodComponent
+      // normalises the log finding's component to Pod/default/dns-app.
+      // The AI finding has the same component → the log finding is absorbed.
+      const dnsPod: K8sResource = {
+        apiVersion: 'v1',
+        kind: 'Pod',
+        metadata: { name: 'dns-app', namespace: 'default' },
+        spec: { containers: [{ name: 'app', image: 'myapp:v1.0' }] },
+        status: {
+          phase: 'Running',
+          conditions: [{ type: 'Ready', status: 'True' }],
+          containerStatuses: [
+            { name: 'app', ready: true, restartCount: 0, state: { running: {} } },
+          ],
+        },
+      };
+
+      const dnsAppLog = makeLogFile('pod-logs/default/dns-app.log', [
+        'ERROR lookup db: no such host',
+      ]);
+
+      const aiDnsFinding = {
+        title: 'DNS resolution failure: pod cannot reach in-cluster service',
+        severity: 'high' as const,
+        confidence: 0.9,
+        affectedComponents: ['Pod/default/dns-app'],
+        reasoningSummary: 'DNS lookup failures observed in application logs.',
+        evidence: [{ path: 'cluster-resources/pods/default/dns-app.yaml', note: 'Pod status' }],
+        contradictionsChecked: [],
+        recommendedAction: 'Check CoreDNS logs and verify service name.',
+        missingEvidence: [],
+      };
+
+      const deps = makeEmptyAIDeps();
+      (deps.llmClient.investigateSeed as ReturnType<typeof vi.fn>).mockResolvedValue({
+        findings: [aiDnsFinding],
+      });
+
+      const context = makeContext({ resources: [dnsPod], logs: [dnsAppLog] });
+      const result = await runInvestigation(context, deps);
+
+      // The log finding should be absorbed into the AI finding (same component)
+      const logFinding = result.findings.find(
+        (f) =>
+          f.id.startsWith('finding:log:') &&
+          f.affectedComponents.some((c) => c === 'Pod/default/dns-app'),
+      );
+      expect(logFinding).toBeUndefined();
+
+      // The AI finding should be present (and enriched with log evidence)
+      const aiFindingResult = result.findings.find(
+        (f) =>
+          f.id.startsWith('finding:ai:') &&
+          f.affectedComponents.some((c) => c === 'Pod/default/dns-app'),
+      );
+      expect(aiFindingResult).toBeDefined();
+    });
+  });
+
+  describe('final dedup uses full normalised title (no 80-char truncation)', () => {
+    it('preserves two findings whose titles differ only after position 80', async () => {
+      // Both titles share the same first 80 characters after normalisation but
+      // differ in the suffix.  With the old 80-char truncation, only one would
+      // survive the dedup pass.  With the full-title comparison, both survive.
+      const title1 =
+        'Connection failure: the pod cannot reach the database service endpoint at hostname-prod-a';
+      const title2 =
+        'Connection failure: the pod cannot reach the database service endpoint at hostname-prod-b';
+
+      // Sanity-check the fixture: same 80-char prefix, different full titles
+      const norm1 = title1.toLowerCase().trim();
+      const norm2 = title2.toLowerCase().trim();
+      expect(norm1.slice(0, 80)).toBe(norm2.slice(0, 80));
+      expect(norm1).not.toBe(norm2);
+
+      const aiFinding1 = {
+        title: title1,
+        severity: 'high' as const,
+        confidence: 0.9,
+        affectedComponents: ['Pod/ns-a/app'],
+        reasoningSummary: 'Pod in ns-a cannot reach endpoint.',
+        evidence: [{ path: 'logs/ns-a/app.log', note: 'Connection error' }],
+        contradictionsChecked: [],
+        recommendedAction: 'Investigate endpoint in ns-a.',
+        missingEvidence: [],
+      };
+      const aiFinding2 = {
+        title: title2,
+        severity: 'high' as const,
+        confidence: 0.8,
+        affectedComponents: ['Pod/ns-b/app'],
+        reasoningSummary: 'Pod in ns-b cannot reach endpoint.',
+        evidence: [{ path: 'logs/ns-b/app.log', note: 'Connection error' }],
+        contradictionsChecked: [],
+        recommendedAction: 'Investigate endpoint in ns-b.',
+        missingEvidence: [],
+      };
+
+      const deps = makeEmptyAIDeps();
+      (deps.llmClient.investigateSeed as ReturnType<typeof vi.fn>).mockResolvedValue({
+        findings: [aiFinding1, aiFinding2],
+      });
+
+      // Use a context that generates at least one seed so the AI mock is called
+      const context = makeContext({ resources: [crashLoopPod], events: [backOffEvent] });
+      const result = await runInvestigation(context, deps);
+
+      const found1 = result.findings.find((f) => f.title === title1);
+      const found2 = result.findings.find((f) => f.title === title2);
+
+      expect(found1).toBeDefined();
+      expect(found2).toBeDefined();
+    });
   });
 });

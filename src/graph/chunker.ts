@@ -74,7 +74,7 @@ export function chunkResource(resource: K8sResource, path: string): Chunk {
   const lines = content.split('\n');
 
   return {
-    id: `${path}:resource`,
+    id: `${path}:${resource.metadata.name}:resource`,
     artifactId: path,
     content,
     startLine: 1,

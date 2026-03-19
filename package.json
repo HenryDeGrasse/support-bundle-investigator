@@ -15,7 +15,8 @@
     "test": "vitest run",
     "unit": "vitest run",
     "build": "tsup",
-    "benchmark:hypotheses": "node scripts/benchmark-hypotheses.mjs"
+    "benchmark:hypotheses": "node scripts/benchmark-hypotheses.mjs",
+    "rat": "npm run build && node dist/cli/rat.mjs"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",

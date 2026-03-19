@@ -2,6 +2,7 @@ import type { K8sEvent, K8sResource } from '../types/index.js';
 import type { LogFile } from '../parsers/index.js';
 import type { InvestigatorContext } from './types.js';
 import type { EvidenceAssessment, Hypothesis, HypothesisCategory } from './hypothesis-types.js';
+import { cleanEvidencePath } from '../reporters/display-helpers.js';
 
 // ---------------------------------------------------------------------------
 // Bundle file-path helpers (mirrors conventions in kubernetes-investigator)
@@ -442,7 +443,7 @@ function collectMissingSecretEvidence(context: InvestigatorContext): EvidenceAss
   );
   for (const { logFile, lineContent } of secretLogMatches) {
     assessment.supporting.push({
-      path: logFile.path,
+      path: cleanEvidencePath(logFile.path),
       note: `Log line indicates missing secret: "${lineContent.trim()}"`,
       artifactType: 'log',
     });
@@ -514,7 +515,7 @@ function collectDnsFailureEvidence(context: InvestigatorContext): EvidenceAssess
   const dnsMatches = findInLogs(context.logs, dnsFailurePattern);
   for (const { logFile, lineContent } of dnsMatches) {
     assessment.supporting.push({
-      path: logFile.path,
+      path: cleanEvidencePath(logFile.path),
       note: `Log line shows DNS resolution failure: "${lineContent.trim()}"`,
       artifactType: 'log',
     });
@@ -600,7 +601,7 @@ function collectDnsFailureEvidence(context: InvestigatorContext): EvidenceAssess
   const successMatches = findInLogs(context.logs, successPattern);
   for (const { logFile, lineContent } of successMatches) {
     assessment.contradicting.push({
-      path: logFile.path,
+      path: cleanEvidencePath(logFile.path),
       note: `Log line shows successful connection (contradicts DNS failure): "${lineContent.trim()}"`,
       artifactType: 'log',
     });
@@ -736,7 +737,7 @@ function collectConfigErrorEvidence(context: InvestigatorContext): EvidenceAsses
   const configMatches = findInLogs(context.logs, configErrorPattern);
   for (const { logFile, lineContent } of configMatches) {
     assessment.supporting.push({
-      path: logFile.path,
+      path: cleanEvidencePath(logFile.path),
       note: `Log line indicates configuration error: "${lineContent.trim()}"`,
       artifactType: 'log',
     });
@@ -749,7 +750,7 @@ function collectConfigErrorEvidence(context: InvestigatorContext): EvidenceAsses
     // Avoid duplicating lines already captured above
     if (!configErrorPattern.test(lineContent)) {
       assessment.supporting.push({
-        path: logFile.path,
+        path: cleanEvidencePath(logFile.path),
         note: `Log line shows resource not-found error (possible config issue): "${lineContent.trim()}"`,
         artifactType: 'log',
       });
@@ -799,7 +800,7 @@ function collectConnectivityEvidence(context: InvestigatorContext): EvidenceAsse
   const timeoutMatches = findInLogs(context.logs, timeoutPattern);
   for (const { logFile, lineContent } of timeoutMatches) {
     assessment.supporting.push({
-      path: logFile.path,
+      path: cleanEvidencePath(logFile.path),
       note: `Log line shows connection failure: "${lineContent.trim()}"`,
       artifactType: 'log',
     });
@@ -835,7 +836,7 @@ function collectConnectivityEvidence(context: InvestigatorContext): EvidenceAsse
   const successMatches = findInLogs(context.logs, successPattern);
   for (const { logFile, lineContent } of successMatches) {
     assessment.contradicting.push({
-      path: logFile.path,
+      path: cleanEvidencePath(logFile.path),
       note: `Log line shows successful connection (contradicts connectivity failure): "${lineContent.trim()}"`,
       artifactType: 'log',
     });
@@ -960,6 +961,212 @@ function collectReadinessFailureEvidence(context: InvestigatorContext): Evidence
 }
 
 // ---------------------------------------------------------------------------
+// volume-mount-failure collector
+// ---------------------------------------------------------------------------
+
+/** Canonical path of a PVC resource file within a support bundle. */
+function pvcFilePath(name: string, namespace: string): string {
+  return `cluster-resources/persistentvolumeclaims/${namespace}/${name}.yaml`;
+}
+
+/** Canonical path of a StorageClass resource file within a support bundle. */
+function storageClassFilePath(name: string): string {
+  return `cluster-resources/storageclasses/${name}.yaml`;
+}
+
+/**
+ * Extracts PersistentVolumeClaim references from pod spec volumes.
+ */
+interface PodPvcReference {
+  podName: string;
+  namespace: string;
+  volumeName: string;
+  claimName: string;
+}
+
+function collectPodPvcReferences(resources: K8sResource[]): PodPvcReference[] {
+  const refs: PodPvcReference[] = [];
+
+  for (const resource of resources) {
+    if (resource.kind !== 'Pod' || !isRecord(resource.spec)) continue;
+
+    const podName = resource.metadata.name;
+    const namespace = resource.metadata.namespace ?? 'default';
+    const volumes = resource.spec['volumes'];
+
+    if (!Array.isArray(volumes)) continue;
+
+    for (const volume of volumes) {
+      if (!isRecord(volume)) continue;
+      const pvc = volume['persistentVolumeClaim'];
+      if (!isRecord(pvc) || typeof pvc['claimName'] !== 'string') continue;
+
+      refs.push({
+        podName,
+        namespace,
+        volumeName: String(volume['name'] ?? 'unknown'),
+        claimName: pvc['claimName'],
+      });
+    }
+  }
+
+  return refs;
+}
+
+/**
+ * Collects evidence for a `volume-mount-failure` hypothesis.
+ *
+ * Supporting:
+ *   - FailedMount, FailedScheduling events for pods
+ *   - ProvisioningFailed events on PVCs referenced by the pod
+ *   - PVC in Pending phase
+ *   - Referenced StorageClass is absent from bundle resources
+ *
+ * Contradicting:
+ *   - PVC is in Bound phase
+ *   - Referenced StorageClass exists in the bundle
+ *
+ * Missing decisive:
+ *   - Storage provisioner pod logs when absent
+ */
+function collectVolumeFailureEvidence(context: InvestigatorContext): EvidenceAssessment {
+  const assessment = emptyAssessment();
+  const podPvcRefs = collectPodPvcReferences(context.resources);
+
+  // Supporting: FailedMount events on pods
+  const failedMountEvents = findEvents(
+    context.events,
+    /FailedMount/i,
+  );
+  for (const ev of failedMountEvents) {
+    const ns = ev.involvedObject.namespace ?? 'default';
+    assessment.supporting.push({
+      path: eventsFilePath(ns),
+      note: `FailedMount event for '${ev.involvedObject.name}': ${ev.message.slice(0, 160)}`,
+      artifactType: 'event',
+      timestamp: ev.firstTimestamp,
+    });
+  }
+
+  // Supporting: FailedScheduling events on pods (often co-occurs with PVC not bound)
+  const failedSchedulingEvents = findEvents(
+    context.events,
+    /FailedScheduling/i,
+  );
+  for (const ev of failedSchedulingEvents) {
+    const ns = ev.involvedObject.namespace ?? 'default';
+    assessment.supporting.push({
+      path: eventsFilePath(ns),
+      note: `FailedScheduling event for '${ev.involvedObject.name}': ${ev.message.slice(0, 160)}`,
+      artifactType: 'event',
+      timestamp: ev.firstTimestamp,
+    });
+  }
+
+  // Supporting: ProvisioningFailed events on PVCs
+  const provisioningFailedEvents = findEvents(
+    context.events,
+    /ProvisioningFailed|ProvisioningFailed/i,
+  );
+  for (const ev of provisioningFailedEvents) {
+    const ns = ev.involvedObject.namespace ?? 'default';
+    assessment.supporting.push({
+      path: eventsFilePath(ns),
+      note: `ProvisioningFailed event for PVC '${ev.involvedObject.name}': ${ev.message.slice(0, 160)}`,
+      artifactType: 'event',
+      timestamp: ev.firstTimestamp,
+    });
+  }
+
+  // Analyse each PVC referenced by pods
+  const storageClassNames = new Set<string>();
+  for (const ref of podPvcRefs) {
+    // Find the actual PVC resource
+    const pvcResource = context.resources.find(
+      (r) =>
+        r.kind === 'PersistentVolumeClaim' &&
+        r.metadata.name === ref.claimName &&
+        (r.metadata.namespace ?? 'default') === ref.namespace,
+    );
+
+    if (pvcResource == null) {
+      assessment.supporting.push({
+        path: pvcFilePath(ref.claimName, ref.namespace),
+        note: `PVC '${ref.claimName}' referenced by pod '${ref.podName}' volume '${ref.volumeName}' is not present in the bundle`,
+        artifactType: 'kubernetes-resource',
+      });
+      continue;
+    }
+
+    // Check PVC phase
+    const pvcPhase = isRecord(pvcResource.status)
+      ? String(pvcResource.status['phase'] ?? '')
+      : '';
+
+    if (pvcPhase === 'Pending') {
+      assessment.supporting.push({
+        path: pvcFilePath(ref.claimName, ref.namespace),
+        note: `PVC '${ref.claimName}' is in Pending phase — volume has not been provisioned`,
+        artifactType: 'kubernetes-resource',
+      });
+    } else if (pvcPhase === 'Bound') {
+      assessment.contradicting.push({
+        path: pvcFilePath(ref.claimName, ref.namespace),
+        note: `PVC '${ref.claimName}' is Bound — volume provisioning succeeded, mount failure has another cause`,
+        artifactType: 'kubernetes-resource',
+      });
+    }
+
+    // Collect StorageClass name from PVC spec
+    if (isRecord(pvcResource.spec)) {
+      const scName = pvcResource.spec['storageClassName'];
+      if (typeof scName === 'string' && scName.length > 0) {
+        storageClassNames.add(scName);
+      }
+    }
+  }
+
+  // Check whether each referenced StorageClass exists in the bundle
+  for (const scName of storageClassNames) {
+    const scExists = context.resources.some(
+      (r) => r.kind === 'StorageClass' && r.metadata.name === scName,
+    );
+
+    if (scExists) {
+      assessment.contradicting.push({
+        path: storageClassFilePath(scName),
+        note: `StorageClass '${scName}' exists in the bundle — provisioning failure may be due to a provisioner issue rather than a missing StorageClass`,
+        artifactType: 'kubernetes-resource',
+      });
+    } else {
+      assessment.supporting.push({
+        path: storageClassFilePath(scName),
+        note: `StorageClass '${scName}' referenced by PVC is absent from the bundle — this is the likely cause of ProvisioningFailed`,
+        artifactType: 'kubernetes-resource',
+      });
+    }
+  }
+
+  // Missing decisive: storage provisioner logs
+  const hasProvisionerLogs = context.logs.some((l) =>
+    /provisioner|storage.*controller|csi.*provisioner/i.test(l.path),
+  );
+  if (!hasProvisionerLogs) {
+    assessment.missingDecisive.push(
+      'Storage provisioner pod logs would confirm the exact provisioning failure reason',
+    );
+  }
+
+  if (podPvcRefs.length === 0) {
+    assessment.missingDecisive.push(
+      'Pod spec volume configuration showing PVC references would confirm the volume mount failure path',
+    );
+  }
+
+  return assessment;
+}
+
+// ---------------------------------------------------------------------------
 // Dispatch table
 // ---------------------------------------------------------------------------
 
@@ -972,6 +1179,7 @@ const CATEGORY_COLLECTORS: Partial<Record<HypothesisCategory, CategoryCollector>
   'config-error': collectConfigErrorEvidence,
   'connectivity-failure': collectConnectivityEvidence,
   'readiness-failure': collectReadinessFailureEvidence,
+  'volume-mount-failure': collectVolumeFailureEvidence,
 };
 
 // ---------------------------------------------------------------------------

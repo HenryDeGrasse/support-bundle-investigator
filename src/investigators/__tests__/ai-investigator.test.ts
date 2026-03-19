@@ -6,7 +6,8 @@ import type { AIInvestigatorDeps } from '../ai-investigator.js';
 import type { IndexedChunk } from '../../ai/chunk-indexer.js';
 import type { ResourceRelationshipGraph } from '../../graph/resource-graph.js';
 import type { AIFindingResponse } from '../../ai/llm-client.js';
-import { investigateWithAI, DEFAULT_MAX_SEEDS } from '../ai-investigator.js';
+import { investigateWithAI, DEFAULT_MAX_SEEDS, mergeChunks } from '../ai-investigator.js';
+import type { RetrievalList } from '../ai-investigator.js';
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -33,7 +34,6 @@ function makeProfile(): BundleProfile {
       log: 0,
       'kubernetes-resource': 0,
       event: 0,
-      config: 0,
       'cluster-info': 0,
       'helm-release': 0,
       unknown: 0,
@@ -1074,5 +1074,129 @@ describe('investigateWithAI', () => {
     } finally {
       consoleSpy.mockRestore();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RRF mergeChunks unit tests
+// ---------------------------------------------------------------------------
+
+describe('mergeChunks (RRF)', () => {
+  // ── RRF-1: cross-system agreement rewards a chunk seen in both graph and lexical ──
+
+  it('ranks a chunk found in both graph (rank 1) and lexical (rank 1) above chunks found in only one system', () => {
+    // chunkA appears at rank 1 in both graph and lexical → double RRF boost
+    // chunkB appears at graph rank 2 only → single, lower-ranked contribution
+    // chunkC appears at lexical rank 2 only → single, lower-ranked contribution
+    const chunkA = makeChunk('chunk:a', 'path/a.json', 'content a');
+    const chunkB = makeChunk('chunk:b', 'path/b.json', 'content b');
+    const chunkC = makeChunk('chunk:c', 'path/c.json', 'content c');
+
+    const graphList: RetrievalList = { chunks: [chunkA, chunkB] };
+    const lexicalList: RetrievalList = { chunks: [chunkA, chunkC] };
+
+    // chunkA: 1/(60+1) + 1/(60+1) = 2/61 ≈ 0.03279
+    // chunkB: 1/(60+2) = 1/62 ≈ 0.01613 (graph only)
+    // chunkC: 1/(60+2) = 1/62 ≈ 0.01613 (lexical only)
+    const result = mergeChunks([graphList, lexicalList]);
+
+    expect(result[0]!.id).toBe('chunk:a');
+  });
+
+  it('ranks a chunk found by graph (rank 1) and lexical (rank 3) above a chunk found only by graph (rank 2)', () => {
+    const chunkA = makeChunk('chunk:a', 'path/a.json', 'content a');
+    const chunkB = makeChunk('chunk:b', 'path/b.json', 'content b');
+    const chunkC = makeChunk('chunk:c', 'path/c.json', 'filler content c');
+    const chunkX = makeChunk('chunk:x', 'path/x.json', 'extra content');
+
+    // chunkA: graph rank 1 (1/61) + lexical rank 3 (1/63) ≈ 0.032266
+    // chunkB: graph rank 2 only (1/62) ≈ 0.016129
+    // chunkC: lexical rank 1 only (1/61) ≈ 0.016393
+    // chunkX: lexical rank 2 only (1/62) ≈ 0.016129
+    // chunkA (cross-system agreement) outranks chunkB (single-system only)
+    const graphList: RetrievalList = { chunks: [chunkA, chunkB] };
+    const lexicalList: RetrievalList = { chunks: [chunkC, chunkX, chunkA] };
+
+    const result = mergeChunks([graphList, lexicalList]);
+
+    expect(result[0]!.id).toBe('chunk:a');
+    // chunkB only appears in graph, so it has lower RRF than cross-system chunkA
+    const chunkBIdx = result.findIndex((c) => c.id === 'chunk:b');
+    const chunkAIdx = result.findIndex((c) => c.id === 'chunk:a');
+    expect(chunkAIdx).toBeLessThan(chunkBIdx);
+  });
+
+  // ── RRF-2: chunk found by all 3 systems ranks highest ────────────────────
+
+  it('ranks a chunk found by all 3 systems (graph, lexical, semantic) highest', () => {
+    const tripleChunk = makeChunk('chunk:triple', 'path/triple.json', 'triple hit');
+    const graphOnly = makeChunk('chunk:graph', 'path/graph.json', 'graph only');
+    const lexOnly = makeChunk('chunk:lex', 'path/lex.json', 'lexical only');
+    const semOnly = makeChunk('chunk:sem', 'path/sem.json', 'semantic only');
+
+    const graphList: RetrievalList = { chunks: [tripleChunk, graphOnly] };
+    const lexicalList: RetrievalList = { chunks: [tripleChunk, lexOnly] };
+    const semanticList: RetrievalList = { chunks: [tripleChunk, semOnly] };
+
+    // tripleChunk: 3 × 1/(60+1) = 3/61 ≈ 0.04918
+    // graphOnly: 1/(60+2) = 1/62 ≈ 0.01613
+    // lexOnly: 1/(60+2) = 1/62 ≈ 0.01613
+    // semOnly: 1/(60+2) = 1/62 ≈ 0.01613
+    const result = mergeChunks([graphList, lexicalList, semanticList]);
+
+    expect(result[0]!.id).toBe('chunk:triple');
+  });
+
+  // ── RRF-3: results are capped at MAX_CHUNKS_PER_SEED (20) ────────────────
+
+  it('caps merged results at MAX_CHUNKS_PER_SEED (20)', () => {
+    // Create 30 unique chunks across graph + lexical
+    const graphChunks = Array.from({ length: 15 }, (_, i) =>
+      makeChunk(`chunk:g${i}`, `path/g${i}.json`, `graph content ${i}`),
+    );
+    const lexicalChunks = Array.from({ length: 15 }, (_, i) =>
+      makeChunk(`chunk:l${i}`, `path/l${i}.json`, `lexical content ${i}`),
+    );
+
+    const graphList: RetrievalList = { chunks: graphChunks };
+    const lexicalList: RetrievalList = { chunks: lexicalChunks };
+
+    const result = mergeChunks([graphList, lexicalList]);
+
+    expect(result.length).toBeLessThanOrEqual(20);
+  });
+
+  // ── RRF-4: merge is deterministic ────────────────────────────────────────
+
+  it('produces deterministic output for the same inputs', () => {
+    const chunks = Array.from({ length: 10 }, (_, i) =>
+      makeChunk(`chunk:${i}`, `path/${i}.json`, `content ${i}`),
+    );
+
+    // Mix chunks across lists in non-trivial ways
+    const graphList: RetrievalList = { chunks: [chunks[2]!, chunks[0]!, chunks[7]!, chunks[4]!] };
+    const lexicalList: RetrievalList = { chunks: [chunks[0]!, chunks[3]!, chunks[2]!, chunks[9]!] };
+    const semanticList: RetrievalList = { chunks: [chunks[7]!, chunks[2]!, chunks[5]!] };
+
+    const result1 = mergeChunks([graphList, lexicalList, semanticList]);
+    const result2 = mergeChunks([graphList, lexicalList, semanticList]);
+
+    // Both runs must produce identical ordering
+    expect(result1.map((c) => c.id)).toEqual(result2.map((c) => c.id));
+  });
+
+  it('is deterministic when two chunks have identical RRF scores (tie-break by ID)', () => {
+    // Two chunks each appearing in only one system at the same rank — identical RRF scores
+    const chunkAlpha = makeChunk('chunk:alpha', 'path/alpha.json', 'content alpha');
+    const chunkZeta = makeChunk('chunk:zeta', 'path/zeta.json', 'content zeta');
+
+    const graphList: RetrievalList = { chunks: [chunkAlpha] };
+    const lexicalList: RetrievalList = { chunks: [chunkZeta] };
+
+    // Both have RRF = 1/61; tie broken by id: 'chunk:alpha' < 'chunk:zeta'
+    const result = mergeChunks([graphList, lexicalList]);
+
+    expect(result[0]!.id).toBe('chunk:alpha');
+    expect(result[1]!.id).toBe('chunk:zeta');
   });
 });

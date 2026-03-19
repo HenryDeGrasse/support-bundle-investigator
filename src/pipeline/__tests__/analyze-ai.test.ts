@@ -32,6 +32,8 @@ vi.mock('../../parsers/index.js', () => ({
   parseEventFile: vi.fn().mockResolvedValue([]),
   identifyLogFiles: vi.fn().mockReturnValue([]),
   parseLogFile: vi.fn().mockResolvedValue({ path: '', lines: [], errorCount: 0, warningCount: 0, importance: 0 }),
+  sortEventsByTime: vi.fn((events: unknown[]) => [...events]),
+  parseHelmReleaseFile: vi.fn().mockResolvedValue([]),
 }));
 
 // Mock graph — minimal implementation of what analyze.ts needs
@@ -108,7 +110,6 @@ function makeProfile() {
       log: 0,
       'kubernetes-resource': 0,
       event: 0,
-      config: 0,
       'cluster-info': 0,
       'helm-release': 0,
       unknown: 0,

@@ -1,6 +1,7 @@
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import type { InvestigationReport } from './types.js';
+import { cleanEvidencePath, humanizeTitle } from './display-helpers.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -42,14 +43,14 @@ export function generateJsonReport(report: InvestigationReport): string {
     findings: report.findings.map((finding) => {
       const base = {
         id: finding.id,
-        title: finding.title,
+        title: humanizeTitle(finding.title),
         severity: finding.severity,
         confidence: finding.confidence,
-        affectedComponents: finding.affectedComponents,
+        affectedComponents: finding.affectedComponents.map(cleanEvidencePath),
         reasoningSummary: finding.reasoningSummary,
         evidence: finding.evidence.map((ev) => {
           const evOut: Record<string, unknown> = {
-            path: ev.path,
+            path: cleanEvidencePath(ev.path),
             note: ev.note,
           };
           if (ev.artifactType !== undefined) {
@@ -66,7 +67,10 @@ export function generateJsonReport(report: InvestigationReport): string {
       };
       return base;
     }),
-    evidenceReferences: report.evidenceReferences,
+    evidenceReferences: report.evidenceReferences.map((ev) => ({
+      path: cleanEvidencePath(ev.path),
+      note: ev.note,
+    })),
     contradictions: report.contradictions,
     nextSteps: report.nextSteps,
     missingEvidence: report.missingEvidence,

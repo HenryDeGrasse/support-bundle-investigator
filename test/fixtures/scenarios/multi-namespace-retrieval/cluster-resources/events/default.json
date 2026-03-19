@@ -1,0 +1,246 @@
+{
+  "apiVersion": "v1",
+  "kind": "EventList",
+  "items": [
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "web-app-pod.unhealthy-readiness-1",
+        "namespace": "default",
+        "creationTimestamp": "2024-03-15T08:05:10Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "web-app-pod", "namespace": "default" },
+      "reason": "Unhealthy",
+      "message": "Readiness probe failed: Get \"http://10.244.1.10:8080/healthz\": dial tcp 10.244.1.10:8080: connect: connection refused",
+      "type": "Warning",
+      "count": 18,
+      "firstTimestamp": "2024-03-15T08:05:10Z",
+      "lastTimestamp": "2024-03-15T08:30:00Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "web-app-pod.backoff-1",
+        "namespace": "default",
+        "creationTimestamp": "2024-03-15T08:04:00Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "web-app-pod", "namespace": "default" },
+      "reason": "BackOff",
+      "message": "Back-off restarting failed container web-app in pod web-app-pod_default(abcde-12345)",
+      "type": "Warning",
+      "count": 6,
+      "firstTimestamp": "2024-03-15T08:04:00Z",
+      "lastTimestamp": "2024-03-15T08:25:00Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "web-app-pod.failed-dns-1",
+        "namespace": "default",
+        "creationTimestamp": "2024-03-15T08:00:16Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "web-app-pod", "namespace": "default" },
+      "reason": "Failed",
+      "message": "Error: failed to connect to database: dial tcp: lookup wrong-host.internal on 10.96.0.10:53: no such host",
+      "type": "Warning",
+      "count": 3,
+      "firstTimestamp": "2024-03-15T08:00:16Z",
+      "lastTimestamp": "2024-03-15T08:10:00Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "web-app-pod.pulled-1",
+        "namespace": "default",
+        "creationTimestamp": "2024-03-15T08:00:05Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "web-app-pod", "namespace": "default" },
+      "reason": "Pulled",
+      "message": "Successfully pulled image \"mycompany/web-app:v2.1.0\" in 3.542s",
+      "type": "Normal",
+      "count": 1,
+      "firstTimestamp": "2024-03-15T08:00:05Z",
+      "lastTimestamp": "2024-03-15T08:00:05Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "web-app-pod.started-1",
+        "namespace": "default",
+        "creationTimestamp": "2024-03-15T08:00:10Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "web-app-pod", "namespace": "default" },
+      "reason": "Started",
+      "message": "Started container web-app",
+      "type": "Normal",
+      "count": 3,
+      "firstTimestamp": "2024-03-15T08:00:10Z",
+      "lastTimestamp": "2024-03-15T08:20:10Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "web-app.deployment-unavailable",
+        "namespace": "default",
+        "creationTimestamp": "2024-03-15T08:05:00Z"
+      },
+      "involvedObject": { "kind": "Deployment", "name": "web-app", "namespace": "default" },
+      "reason": "ScalingReplicaSet",
+      "message": "Scaled down replica set web-app-7d6d8b4c69 to 0",
+      "type": "Normal",
+      "count": 1,
+      "firstTimestamp": "2024-03-15T08:05:00Z",
+      "lastTimestamp": "2024-03-15T08:05:00Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "cache-pod.pulled-1",
+        "namespace": "default",
+        "creationTimestamp": "2024-03-15T07:50:10Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "cache-pod", "namespace": "default" },
+      "reason": "Pulled",
+      "message": "Successfully pulled image \"redis:7.2\" in 2.128s",
+      "type": "Normal",
+      "count": 1,
+      "firstTimestamp": "2024-03-15T07:50:10Z",
+      "lastTimestamp": "2024-03-15T07:50:10Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "cache-pod.started-1",
+        "namespace": "default",
+        "creationTimestamp": "2024-03-15T07:50:15Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "cache-pod", "namespace": "default" },
+      "reason": "Started",
+      "message": "Started container redis",
+      "type": "Normal",
+      "count": 1,
+      "firstTimestamp": "2024-03-15T07:50:15Z",
+      "lastTimestamp": "2024-03-15T07:50:15Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "web-app-pod.scheduled",
+        "namespace": "default",
+        "creationTimestamp": "2024-03-15T08:00:01Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "web-app-pod", "namespace": "default" },
+      "reason": "Scheduled",
+      "message": "Successfully assigned default/web-app-pod to worker-node-1",
+      "type": "Normal",
+      "count": 1,
+      "firstTimestamp": "2024-03-15T08:00:01Z",
+      "lastTimestamp": "2024-03-15T08:00:01Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "cache-pod.scheduled",
+        "namespace": "default",
+        "creationTimestamp": "2024-03-15T07:50:01Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "cache-pod", "namespace": "default" },
+      "reason": "Scheduled",
+      "message": "Successfully assigned default/cache-pod to worker-node-2",
+      "type": "Normal",
+      "count": 1,
+      "firstTimestamp": "2024-03-15T07:50:01Z",
+      "lastTimestamp": "2024-03-15T07:50:01Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "web-app-pod.unhealthy-readiness-2",
+        "namespace": "default",
+        "creationTimestamp": "2024-03-15T08:15:10Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "web-app-pod", "namespace": "default" },
+      "reason": "Unhealthy",
+      "message": "Readiness probe failed: HTTP probe failed with statuscode: 503",
+      "type": "Warning",
+      "count": 12,
+      "firstTimestamp": "2024-03-15T08:15:10Z",
+      "lastTimestamp": "2024-03-15T08:28:00Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "web-app.replicaset-scaled",
+        "namespace": "default",
+        "creationTimestamp": "2024-03-15T08:00:00Z"
+      },
+      "involvedObject": { "kind": "ReplicaSet", "name": "web-app-7d6d8b4c69", "namespace": "default" },
+      "reason": "SuccessfulCreate",
+      "message": "Created pod: web-app-pod",
+      "type": "Normal",
+      "count": 1,
+      "firstTimestamp": "2024-03-15T08:00:00Z",
+      "lastTimestamp": "2024-03-15T08:00:00Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "web-app-pod.backoff-2",
+        "namespace": "default",
+        "creationTimestamp": "2024-03-15T08:20:00Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "web-app-pod", "namespace": "default" },
+      "reason": "BackOff",
+      "message": "Back-off restarting failed container web-app in pod web-app-pod_default(abcde-12345): DNS resolution failure for wrong-host.internal",
+      "type": "Warning",
+      "count": 4,
+      "firstTimestamp": "2024-03-15T08:20:00Z",
+      "lastTimestamp": "2024-03-15T08:28:00Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "cache-pod.ready",
+        "namespace": "default",
+        "creationTimestamp": "2024-03-15T07:50:30Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "cache-pod", "namespace": "default" },
+      "reason": "Started",
+      "message": "Container redis is ready and accepting connections on port 6379",
+      "type": "Normal",
+      "count": 1,
+      "firstTimestamp": "2024-03-15T07:50:30Z",
+      "lastTimestamp": "2024-03-15T07:50:30Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "web-app-pod.failed-dns-2",
+        "namespace": "default",
+        "creationTimestamp": "2024-03-15T08:25:00Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "web-app-pod", "namespace": "default" },
+      "reason": "Failed",
+      "message": "Error restarting container: failed database connection: lookup wrong-host.internal: no such host",
+      "type": "Warning",
+      "count": 2,
+      "firstTimestamp": "2024-03-15T08:25:00Z",
+      "lastTimestamp": "2024-03-15T08:28:00Z"
+    }
+  ]
+}

@@ -277,12 +277,14 @@ function isHypothesisFinding(finding: Finding): boolean {
 }
 
 /**
- * Extracts the symptom text embedded in a hypothesis finding title.
+ * Extracts the symptom text embedded in a legacy hypothesis finding title.
  *
- * Hypothesis findings are rendered as:
+ * Older hypothesis findings were rendered as:
  *   `[Hypothesis] <root cause> (symptom: <symptom text>)`
  *
- * Returns `null` when the title does not follow that format.
+ * Newer findings store only the root-cause text in `title`, so this helper
+ * returns `null` for current-format titles and callers fall back to structured
+ * component-based grouping.
  */
 function extractHypothesisSymptom(finding: Finding): string | null {
   const match = finding.title.match(/\(symptom:\s*(.+)\)$/);

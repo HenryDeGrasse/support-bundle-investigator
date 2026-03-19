@@ -13,24 +13,21 @@ const POD_FILE = path.join(
   'bad-image-tag',
   'cluster-resources',
   'pods',
-  'default',
-  'app-pod.yaml',
+  'default.json',
 );
 const DEPLOYMENT_FILE = path.join(
   SCENARIOS,
   'bad-image-tag',
   'cluster-resources',
   'deployments',
-  'default',
-  'app-deployment.yaml',
+  'default.json',
 );
 const SERVICE_FILE = path.join(
   SCENARIOS,
   'wrong-db-endpoint',
   'cluster-resources',
   'services',
-  'default',
-  'app-service.yaml',
+  'default.json',
 );
 
 // ---------------------------------------------------------------------------

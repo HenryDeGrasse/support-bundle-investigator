@@ -2,8 +2,9 @@ import type { Finding, FindingSeverity, Evidence, GraphEdge } from '../types/ind
 import type { InvestigatorContext, InvestigatorResult, InvestigationSeed } from './types.js';
 import type { LogFile } from '../parsers/index.js';
 import type { LogClassification } from '../parsers/index.js';
-import { extractErrorWindows, classifyLogs } from '../parsers/index.js';
-import type { K8sResource } from '../types/index.js';
+import { extractErrorWindows, classifyLogs, correlateEventsWithPod, getEventWindow } from '../parsers/index.js';
+import type { K8sResource, K8sEvent } from '../types/index.js';
+import { cleanEvidencePath } from '../reporters/display-helpers.js';
 
 // ---------------------------------------------------------------------------
 // Internal types
@@ -263,6 +264,136 @@ function extractImageNameFromMatch(content: string): string | undefined {
   return match?.[1];
 }
 
+/**
+ * Resolves the affected component string for a log file.
+ *
+ * Resolution strategy (first match wins):
+ * 1. **Filename match** — if the basename (without extension) matches a known
+ *    Pod name, returns `['Pod/<ns>/<pod-name>']`.  Covers legacy log paths
+ *    such as `logs/app/app-pod.log`.
+ * 2. **Parent-directory match** — if the filename match fails (e.g. for init
+ *    or sidecar container logs whose filename is the *container* name), the
+ *    immediate parent directory is checked against known Pod names.  This
+ *    handles the real Troubleshoot bundle layout:
+ *    `cluster-resources/pods/logs/<ns>/<pod>/<container>.log`.
+ * 3. **Fallback** — returns the bundle-relative cleaned path when neither
+ *    heuristic finds a matching Pod resource.
+ *
+ * @param logFilePath - The path of the log file (may be absolute or relative).
+ * @param resources   - All K8s resources in the context, used to look up Pods.
+ */
+function resolveLogPodComponent(logFilePath: string, resources: K8sResource[]): string[] {
+  const segments = logFilePath.split('/');
+
+  // --- 1. Filename-based match (backwards-compatible) ---
+  // e.g. 'logs/app/app-pod.log' → basename 'app-pod'
+  const filename = segments[segments.length - 1] ?? '';
+  const dotIdx = filename.lastIndexOf('.');
+  const basename = dotIdx !== -1 ? filename.slice(0, dotIdx) : filename;
+
+  if (basename) {
+    for (const resource of resources) {
+      if (resource.kind !== 'Pod') continue;
+      if (resource.metadata.name === basename) {
+        const ns = resource.metadata.namespace ?? 'default';
+        return [`Pod/${ns}/${resource.metadata.name}`];
+      }
+    }
+  }
+
+  // --- 2. Parent-directory match (init / sidecar container logs) ---
+  // For paths like 'cluster-resources/pods/logs/<ns>/<pod>/<container>.log'
+  // the filename is the container name; the pod name is one level up.
+  const parentDir = segments[segments.length - 2];
+  if (parentDir) {
+    for (const resource of resources) {
+      if (resource.kind !== 'Pod') continue;
+      if (resource.metadata.name === parentDir) {
+        const ns = resource.metadata.namespace ?? 'default';
+        return [`Pod/${ns}/${resource.metadata.name}`];
+      }
+    }
+  }
+
+  // --- 3. Fallback — no matching Pod found ---
+  return [cleanEvidencePath(logFilePath)];
+}
+
+// ---------------------------------------------------------------------------
+// Temporal correlation helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Extracts the pod name from a list of affected component strings.
+ *
+ * Expects at least one entry in the format `Pod/<namespace>/<name>` and
+ * returns the pod name (last segment).  Returns `undefined` when no Pod
+ * component is present.
+ */
+function extractPodNameFromComponents(components: string[]): string | undefined {
+  for (const comp of components) {
+    if (comp.startsWith('Pod/')) {
+      const parts = comp.split('/');
+      const name = parts[parts.length - 1];
+      if (name) return name;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Builds evidence items from K8s events correlated with a pod around the
+ * time the log errors occurred.
+ *
+ * Strategy:
+ * 1. Call `correlateEventsWithPod` to get all events for the pod.
+ * 2. If the matched log lines carry timestamps, narrow the window to
+ *    ±5 minutes around the earliest/latest log error timestamp.
+ * 3. Return at most 5 evidence items so findings stay concise.
+ */
+function buildEventCorrelationEvidence(
+  logFile: LogFile,
+  matches: PatternMatch[],
+  podName: string,
+  allEvents: K8sEvent[],
+): Evidence[] {
+  const podEvents = correlateEventsWithPod(allEvents, podName);
+  if (podEvents.length === 0) return [];
+
+  // Build a lineNumber → LogLine map for timestamp lookup
+  const lineMap = new Map(logFile.lines.map((l) => [l.lineNumber, l]));
+
+  // Collect parsed timestamps from the matched log lines
+  const timestampMs: number[] = [];
+  for (const match of matches) {
+    const line = lineMap.get(match.lineNumber);
+    if (line?.timestamp) {
+      const ms = Date.parse(line.timestamp);
+      if (!isNaN(ms)) timestampMs.push(ms);
+    }
+  }
+
+  let windowedEvents: K8sEvent[];
+  if (timestampMs.length > 0) {
+    const windowStart = new Date(Math.min(...timestampMs) - 5 * 60 * 1000);
+    const windowEnd = new Date(Math.max(...timestampMs) + 5 * 60 * 1000);
+    windowedEvents = getEventWindow(podEvents, windowStart, windowEnd);
+  } else {
+    // No timestamps on the matched lines — fall back to all pod events
+    windowedEvents = podEvents;
+  }
+
+  return windowedEvents.slice(0, 5).map((event) => {
+    const ns = event.involvedObject.namespace ?? 'default';
+    return {
+      path: `events/${ns}/${event.involvedObject.name}/${event.reason}`,
+      note: `Event ${event.reason} on pod ${event.involvedObject.name}: ${event.message}`,
+      artifactType: 'event' as const,
+      timestamp: event.firstTimestamp ?? event.lastTimestamp,
+    };
+  });
+}
+
 function nextFindingId(type: string, counter: Counter): string {
   return `finding:log:${type}:${counter.value++}`;
 }
@@ -331,30 +462,39 @@ function investigateDnsFailures(
     const classification = classificationMap.get(logFile.path);
     const categoryNote = classification ? ` (${classification.category} log)` : '';
 
+    const cleanedPath = cleanEvidencePath(logFile.path);
     const evidence: Evidence[] = [
       {
-        path: logFile.path,
+        path: cleanedPath,
         note: formatMatchNote(matches),
         artifactType: 'log',
       },
     ];
 
-    const affectedComponents = [logFile.path];
+    const affectedComponents = resolveLogPodComponent(logFile.path, context.resources);
     for (const host of uniqueHostnames.slice(0, 3)) {
       affectedComponents.push(`DNS/${host}`);
+    }
+
+    // Enrich with temporally correlated K8s events for the affected pod
+    if (context.events.length > 0) {
+      const podName = extractPodNameFromComponents(affectedComponents);
+      if (podName) {
+        evidence.push(...buildEventCorrelationEvidence(logFile, matches, podName, context.events));
+      }
     }
 
     const findingId = nextFindingId('dns', counter);
 
     findings.push({
       id: findingId,
-      title: `DNS Resolution Failures in ${logFile.path}`,
+      title: `DNS Resolution Failures in ${cleanedPath}`,
       severity: 'high' as FindingSeverity,
       confidence,
       affectedComponents,
       reasoningSummary:
         `Found ${matches.length} DNS resolution failure${matches.length > 1 ? 's' : ''} ` +
-        `in log file '${logFile.path}'${categoryNote}. ` +
+        `in log file '${cleanedPath}'${categoryNote}. ` +
         (uniqueHostnames.length > 0
           ? `Affected hostname(s): ${uniqueHostnames.slice(0, 3).join(', ')}. `
           : '') +
@@ -437,25 +577,36 @@ function investigateConnectionTimeouts(
     const classification = classificationMap.get(logFile.path);
     const categoryNote = classification ? ` (${classification.category} log)` : '';
 
+    const cleanedPath = cleanEvidencePath(logFile.path);
     const evidence: Evidence[] = [
       {
-        path: logFile.path,
+        path: cleanedPath,
         note: formatMatchNote(matches),
         artifactType: 'log',
       },
     ];
 
+    const affectedComponents = resolveLogPodComponent(logFile.path, context.resources);
+
+    // Enrich with temporally correlated K8s events for the affected pod
+    if (context.events.length > 0) {
+      const podName = extractPodNameFromComponents(affectedComponents);
+      if (podName) {
+        evidence.push(...buildEventCorrelationEvidence(logFile, matches, podName, context.events));
+      }
+    }
+
     const findingId = nextFindingId('connection-timeout', counter);
 
     findings.push({
       id: findingId,
-      title: `Connection Timeout/Refused in ${logFile.path}`,
+      title: `Connection Timeout/Refused in ${cleanedPath}`,
       severity: 'high' as FindingSeverity,
       confidence,
-      affectedComponents: [logFile.path],
+      affectedComponents,
       reasoningSummary:
         `Found ${matches.length} connection failure${matches.length > 1 ? 's' : ''} ` +
-        `in log file '${logFile.path}'${categoryNote}. ` +
+        `in log file '${cleanedPath}'${categoryNote}. ` +
         `Detected pattern(s): ${patternLabels.join(', ')}.`,
       evidence,
       contradictionsChecked: [
@@ -540,30 +691,39 @@ function investigateMissingResources(
     const classification = classificationMap.get(logFile.path);
     const categoryNote = classification ? ` (${classification.category} log)` : '';
 
-    const affectedComponents = [logFile.path];
+    const cleanedPath = cleanEvidencePath(logFile.path);
+    const affectedComponents = resolveLogPodComponent(logFile.path, context.resources);
     for (const secret of uniqueSecrets.slice(0, 3)) {
       affectedComponents.push(`Secret/${secret}`);
     }
 
     const evidence: Evidence[] = [
       {
-        path: logFile.path,
+        path: cleanedPath,
         note: formatMatchNote(matches),
         artifactType: 'log',
       },
     ];
 
+    // Enrich with temporally correlated K8s events for the affected pod
+    if (context.events.length > 0) {
+      const podName = extractPodNameFromComponents(affectedComponents);
+      if (podName) {
+        evidence.push(...buildEventCorrelationEvidence(logFile, matches, podName, context.events));
+      }
+    }
+
     const findingId = nextFindingId('missing-resource', counter);
 
     findings.push({
       id: findingId,
-      title: `Missing Resource Errors in ${logFile.path}`,
+      title: `Missing Resource Errors in ${cleanedPath}`,
       severity: 'high' as FindingSeverity,
       confidence,
       affectedComponents,
       reasoningSummary:
         `Found ${matches.length} missing resource error${matches.length > 1 ? 's' : ''} ` +
-        `in log file '${logFile.path}'${categoryNote}. ` +
+        `in log file '${cleanedPath}'${categoryNote}. ` +
         (uniqueSecrets.length > 0
           ? `Referenced secret(s): ${uniqueSecrets.slice(0, 3).join(', ')}. `
           : '') +
@@ -645,30 +805,39 @@ function investigateImagePullInLogs(
     const classification = classificationMap.get(logFile.path);
     const categoryNote = classification ? ` (${classification.category} log)` : '';
 
-    const affectedComponents = [logFile.path];
+    const cleanedPath = cleanEvidencePath(logFile.path);
+    const affectedComponents = resolveLogPodComponent(logFile.path, context.resources);
     for (const image of uniqueImages.slice(0, 3)) {
       affectedComponents.push(`Image/${image}`);
     }
 
     const evidence: Evidence[] = [
       {
-        path: logFile.path,
+        path: cleanedPath,
         note: formatMatchNote(matches),
         artifactType: 'log',
       },
     ];
 
+    // Enrich with temporally correlated K8s events for the affected pod
+    if (context.events.length > 0) {
+      const podName = extractPodNameFromComponents(affectedComponents);
+      if (podName) {
+        evidence.push(...buildEventCorrelationEvidence(logFile, matches, podName, context.events));
+      }
+    }
+
     const findingId = nextFindingId('image-pull', counter);
 
     findings.push({
       id: findingId,
-      title: `Image Pull Failures in ${logFile.path}`,
+      title: `Image Pull Failures in ${cleanedPath}`,
       severity: 'critical' as FindingSeverity,
       confidence,
       affectedComponents,
       reasoningSummary:
         `Found ${matches.length} image pull failure${matches.length > 1 ? 's' : ''} ` +
-        `in log file '${logFile.path}'${categoryNote}. ` +
+        `in log file '${cleanedPath}'${categoryNote}. ` +
         (uniqueImages.length > 0
           ? `Affected image(s): ${uniqueImages.slice(0, 3).join(', ')}.`
           : ''),

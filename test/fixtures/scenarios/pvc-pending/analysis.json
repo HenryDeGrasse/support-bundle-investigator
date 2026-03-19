@@ -1,0 +1,18 @@
+[
+  {
+    "name": "pod-status",
+    "insight": {
+      "severity": "error",
+      "primary": "Pod Stuck in ContainerCreating",
+      "detail": "Pod 'db-pod' in namespace 'default' is stuck in ContainerCreating state — waiting for PersistentVolumeClaim 'data-pvc' to be bound."
+    }
+  },
+  {
+    "name": "pvc-status",
+    "insight": {
+      "severity": "error",
+      "primary": "PVC Binding Failed",
+      "detail": "PersistentVolumeClaim 'data-pvc' in namespace 'default' is in Pending state — no matching PersistentVolume or StorageClass provisioner available. The PVC references StorageClass 'fast-ssd' which does not exist."
+    }
+  }
+]

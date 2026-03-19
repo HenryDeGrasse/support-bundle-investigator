@@ -25,6 +25,7 @@ const BASE_SEVERITY_BY_CATEGORY: Record<HypothesisCategory, FindingSeverity> = {
   'missing-secret': 'critical',
   'oom-kill': 'critical',
   'image-pull-failure': 'critical',
+  'volume-mount-failure': 'critical',
   'dns-failure': 'high',
   'connectivity-failure': 'high',
   'bad-db-endpoint': 'high',
@@ -58,6 +59,8 @@ const RECOMMENDED_ACTION_BY_CATEGORY: Record<HypothesisCategory, string> = {
     'Create the missing Kubernetes Service with correct selectors, or verify that the existing Service selector matches the Pod labels.',
   'generic-crash':
     'Review application logs to identify the root crash reason. Check for panics, unhandled exceptions, or fatal errors at startup.',
+  'volume-mount-failure':
+    'Check PVC status with `kubectl get pvc -n <namespace>`, verify that the referenced StorageClass exists with `kubectl get storageclass`, and confirm the storage provisioner is running and healthy. Create the missing StorageClass or update the PVC to reference an available one.',
 };
 
 /** Maximum number of supporting evidence items rendered for one hypothesis finding. */
@@ -115,6 +118,7 @@ function deriveAffectedComponents(hypothesis: Hypothesis): string[] {
     'readiness-failure',
     'generic-crash',
     'missing-service',
+    'volume-mount-failure',
   ];
 
   // Find the earliest position where a known category appears after a colon.
@@ -128,9 +132,9 @@ function deriveAffectedComponents(hypothesis: Hypothesis): string[] {
 
   const symptomKey = symptomKeyEnd !== -1 ? id.slice(0, symptomKeyEnd) : id;
 
-  // "pod-crashloop:ns/name" | "pod-imagepull:ns/name" | "pod-not-ready:ns/name"
+  // "pod-crashloop:ns/name" | "pod-imagepull:ns/name" | "pod-not-ready:ns/name" | "pod-pending:ns/name"
   // → "Pod/ns/name"
-  for (const prefix of ['pod-crashloop', 'pod-imagepull', 'pod-not-ready']) {
+  for (const prefix of ['pod-crashloop', 'pod-imagepull', 'pod-not-ready', 'pod-pending']) {
     if (symptomKey.startsWith(`${prefix}:`)) {
       const suffix = symptomKey.slice(prefix.length + 1); // e.g. "default/app-pod"
       return [`Pod/${suffix}`];
@@ -310,14 +314,14 @@ function hasComponentOverlap(a: Finding, b: Finding): boolean {
  *
  * Field mappings:
  * - `id`                    — `finding:hypothesis:{category}:{rank}`
- * - `title`                 — includes root cause and symptom description
+ * - `title`                 — the hypothesis root-cause statement
  * - `severity`              — derived from confidence and category base severity
  * - `confidence`            — taken directly from the scored hypothesis
  * - `evidence`              — union of supporting evidence items
  * - `contradictionsChecked` — notes from contradicting evidence items
  * - `missingEvidence`       — `missingDecisive` entries plus `specGapRecommendations`
- * - `reasoningSummary`      — includes confidence rationale and differential
- *                             diagnosis context
+ * - `reasoningSummary`      — includes confidence rationale, symptom context,
+ *                             and differential-diagnosis detail
  * - `recommendedAction`     — category-specific action string
  * - `affectedComponents`    — derived from the hypothesis id / symptom key
  *
@@ -346,7 +350,7 @@ export function convertHypothesisToFinding(hypothesis: Hypothesis, rank: number)
 
   return {
     id: `finding:hypothesis:${hypothesis.category}:${rank}`,
-    title: `[Hypothesis] ${hypothesis.rootCause} (symptom: ${hypothesis.symptom})`,
+    title: hypothesis.rootCause,
     severity: deriveSeverity(hypothesis.category, hypothesis.confidence),
     confidence: hypothesis.confidence,
     affectedComponents: deriveAffectedComponents(hypothesis),

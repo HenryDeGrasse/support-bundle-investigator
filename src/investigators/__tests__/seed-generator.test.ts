@@ -42,7 +42,6 @@ function makeMinimalProfile(): BundleProfile {
       log: 0,
       'kubernetes-resource': 0,
       event: 0,
-      config: 0,
       'cluster-info': 0,
       'helm-release': 0,
       unknown: 0,
@@ -57,11 +56,11 @@ async function loadScenarioContext(scenario: string): Promise<InvestigatorContex
   const base = path.join(SCENARIOS, scenario);
 
   const analyzerResults: AnalyzerResult[] = await parseAnalyzerFile(
-    path.join(base, 'analyzers', 'output.json'),
+    path.join(base, 'analysis.json'),
   );
 
   const resources: K8sResource[] = await parseResourceFile(
-    path.join(base, 'cluster-resources', 'pods', 'default', 'app-pod.yaml'),
+    path.join(base, 'cluster-resources', 'pods', 'default.json'),
   );
 
   const events: K8sEvent[] = await parseEventFile(
@@ -69,7 +68,7 @@ async function loadScenarioContext(scenario: string): Promise<InvestigatorContex
   );
 
   const appLog: LogFile = await parseLogFile(
-    path.join(base, 'logs', 'app', 'app-pod.log'),
+    path.join(base, 'cluster-resources', 'pods', 'logs', 'default', 'app-pod', 'app.log'),
   );
   const logs: LogFile[] = [appLog];
 

@@ -1,0 +1,222 @@
+{
+  "apiVersion": "v1",
+  "kind": "PodList",
+  "items": [
+    {
+      "apiVersion": "v1",
+      "kind": "Pod",
+      "metadata": {
+        "name": "prometheus-pod",
+        "namespace": "monitoring",
+        "labels": { "app": "prometheus", "component": "server" },
+        "creationTimestamp": "2024-03-15T07:40:00Z"
+      },
+      "spec": {
+        "containers": [
+          {
+            "name": "prometheus",
+            "image": "prom/prometheus:v2.48.0",
+            "ports": [{ "containerPort": 9090 }],
+            "args": [
+              "--config.file=/etc/prometheus/prometheus.yml",
+              "--storage.tsdb.path=/prometheus",
+              "--storage.tsdb.retention.time=15d"
+            ],
+            "volumeMounts": [
+              { "name": "prometheus-config", "mountPath": "/etc/prometheus" },
+              { "name": "prometheus-data", "mountPath": "/prometheus" }
+            ],
+            "resources": {
+              "limits": { "memory": "512Mi", "cpu": "500m" },
+              "requests": { "memory": "256Mi", "cpu": "100m" }
+            }
+          }
+        ],
+        "volumes": [
+          {
+            "name": "prometheus-config",
+            "configMap": { "name": "prometheus-config" }
+          },
+          {
+            "name": "prometheus-data",
+            "persistentVolumeClaim": { "claimName": "prometheus-data-pvc" }
+          }
+        ]
+      },
+      "status": {
+        "phase": "Running",
+        "conditions": [
+          {
+            "type": "Ready",
+            "status": "True",
+            "lastTransitionTime": "2024-03-15T07:41:00Z"
+          },
+          {
+            "type": "ContainersReady",
+            "status": "True",
+            "lastTransitionTime": "2024-03-15T07:41:00Z"
+          },
+          {
+            "type": "PodScheduled",
+            "status": "True",
+            "lastTransitionTime": "2024-03-15T07:40:05Z"
+          }
+        ],
+        "containerStatuses": [
+          {
+            "name": "prometheus",
+            "ready": true,
+            "restartCount": 0,
+            "state": {
+              "running": {
+                "startedAt": "2024-03-15T07:40:30Z"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Pod",
+      "metadata": {
+        "name": "grafana-pod",
+        "namespace": "monitoring",
+        "labels": { "app": "grafana", "component": "dashboard" },
+        "creationTimestamp": "2024-03-15T07:55:00Z"
+      },
+      "spec": {
+        "containers": [
+          {
+            "name": "grafana",
+            "image": "grafana/grafana:10.2.0",
+            "ports": [{ "containerPort": 3000 }],
+            "env": [
+              { "name": "GF_DATABASE_HOST", "value": "wrong-host.internal:5432" },
+              { "name": "GF_DATABASE_TYPE", "value": "postgres" },
+              { "name": "GF_DATABASE_NAME", "value": "grafana" },
+              { "name": "GF_DATABASE_USER", "value": "grafana" },
+              { "name": "GF_DATABASE_PASSWORD", "valueFrom": { "secretKeyRef": { "name": "monitoring-credentials", "key": "grafana-db-password" } } }
+            ],
+            "readinessProbe": {
+              "httpGet": { "path": "/api/health", "port": 3000 },
+              "initialDelaySeconds": 10,
+              "periodSeconds": 10
+            },
+            "resources": {
+              "limits": { "memory": "256Mi", "cpu": "300m" },
+              "requests": { "memory": "128Mi", "cpu": "100m" }
+            }
+          }
+        ]
+      },
+      "status": {
+        "phase": "Running",
+        "conditions": [
+          {
+            "type": "Ready",
+            "status": "False",
+            "reason": "ContainersNotReady",
+            "message": "containers with unready status: [grafana]",
+            "lastTransitionTime": "2024-03-15T08:05:30Z"
+          },
+          {
+            "type": "ContainersReady",
+            "status": "False",
+            "reason": "ContainersNotReady",
+            "message": "containers with unready status: [grafana]",
+            "lastTransitionTime": "2024-03-15T08:05:30Z"
+          },
+          {
+            "type": "PodScheduled",
+            "status": "True",
+            "lastTransitionTime": "2024-03-15T07:55:05Z"
+          }
+        ],
+        "containerStatuses": [
+          {
+            "name": "grafana",
+            "ready": false,
+            "restartCount": 2,
+            "state": {
+              "running": {
+                "startedAt": "2024-03-15T07:55:20Z"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Pod",
+      "metadata": {
+        "name": "alertmanager-pod",
+        "namespace": "monitoring",
+        "labels": { "app": "alertmanager", "component": "alerting" },
+        "creationTimestamp": "2024-03-15T07:42:00Z"
+      },
+      "spec": {
+        "containers": [
+          {
+            "name": "alertmanager",
+            "image": "prom/alertmanager:v0.26.0",
+            "ports": [{ "containerPort": 9093 }],
+            "args": [
+              "--config.file=/etc/alertmanager/alertmanager.yml",
+              "--storage.path=/alertmanager",
+              "--data.retention=720h"
+            ],
+            "resources": {
+              "limits": { "memory": "128Mi", "cpu": "200m" },
+              "requests": { "memory": "64Mi", "cpu": "50m" }
+            }
+          }
+        ]
+      },
+      "status": {
+        "phase": "Running",
+        "conditions": [
+          {
+            "type": "Ready",
+            "status": "False",
+            "reason": "ContainersNotReady",
+            "message": "containers with unready status: [alertmanager]",
+            "lastTransitionTime": "2024-03-15T08:00:00Z"
+          },
+          {
+            "type": "ContainersReady",
+            "status": "False",
+            "reason": "ContainersNotReady",
+            "message": "containers with unready status: [alertmanager]",
+            "lastTransitionTime": "2024-03-15T08:00:00Z"
+          },
+          {
+            "type": "PodScheduled",
+            "status": "True",
+            "lastTransitionTime": "2024-03-15T07:42:05Z"
+          }
+        ],
+        "containerStatuses": [
+          {
+            "name": "alertmanager",
+            "ready": false,
+            "restartCount": 7,
+            "state": {
+              "running": {
+                "startedAt": "2024-03-15T07:58:00Z"
+              }
+            },
+            "lastState": {
+              "terminated": {
+                "reason": "OOMKilled",
+                "exitCode": 137,
+                "finishedAt": "2024-03-15T07:57:55Z"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

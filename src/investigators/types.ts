@@ -1,7 +1,7 @@
 import type { AnalyzerResult, BundleProfile, K8sEvent, K8sResource } from '../types/index.js';
 import type { Finding } from '../types/index.js';
 import type { GraphEdge } from '../types/index.js';
-import type { LogFile } from '../parsers/index.js';
+import type { LogFile, HelmRelease } from '../parsers/index.js';
 
 // ---------------------------------------------------------------------------
 // Seed categories
@@ -55,6 +55,21 @@ export interface InvestigatorContext {
   events: K8sEvent[];
   logs: LogFile[];
   profile: BundleProfile;
+  /**
+   * Maps each parsed K8sResource to the relative source file path it was
+   * loaded from (e.g. `cluster-resources/pods/default.json`).  Used by
+   * `buildChunkIndex` to set accurate `artifactId` values instead of
+   * fabricating a per-resource path.
+   *
+   * Optional: when absent, `buildChunkIndex` falls back to a constructed path.
+   */
+  resourceSourceFiles?: Map<K8sResource, string>;
+  /**
+   * Helm releases parsed from `helm-release` classified files in the bundle.
+   *
+   * Optional: when absent, no Helm release chunks are produced.
+   */
+  helmReleases?: HelmRelease[];
 }
 
 // ---------------------------------------------------------------------------

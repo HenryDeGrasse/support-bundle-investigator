@@ -1,0 +1,40 @@
+2024-03-15T08:00:10Z INFO  Starting web-app v2.1.0
+2024-03-15T08:00:10Z INFO  Loading configuration from environment
+2024-03-15T08:00:10Z INFO  APP_ENV=production LOG_LEVEL=info
+2024-03-15T08:00:11Z INFO  DB_HOST=wrong-host.internal DB_PORT=5432
+2024-03-15T08:00:11Z INFO  CACHE_HOST=cache-pod.default.svc.cluster.local CACHE_PORT=6379
+2024-03-15T08:00:11Z INFO  Connecting to cache at cache-pod.default.svc.cluster.local:6379
+2024-03-15T08:00:12Z INFO  Cache connection established successfully
+2024-03-15T08:00:12Z INFO  Connecting to database at wrong-host.internal:5432
+2024-03-15T08:00:17Z ERROR dial tcp: lookup wrong-host.internal on 10.96.0.10:53: no such host
+2024-03-15T08:00:17Z WARN  Retrying database connection (attempt 1/5)
+2024-03-15T08:00:22Z ERROR dial tcp: lookup wrong-host.internal on 10.96.0.10:53: no such host
+2024-03-15T08:00:22Z WARN  Retrying database connection (attempt 2/5)
+2024-03-15T08:00:27Z ERROR dial tcp: lookup wrong-host.internal on 10.96.0.10:53: no such host
+2024-03-15T08:00:27Z WARN  Retrying database connection (attempt 3/5)
+2024-03-15T08:00:32Z ERROR dial tcp: lookup wrong-host.internal on 10.96.0.10:53: no such host
+2024-03-15T08:00:32Z WARN  Retrying database connection (attempt 4/5)
+2024-03-15T08:00:37Z ERROR dial tcp: lookup wrong-host.internal on 10.96.0.10:53: no such host
+2024-03-15T08:00:37Z WARN  Retrying database connection (attempt 5/5)
+2024-03-15T08:00:37Z ERROR Failed to connect to database after 5 attempts: dial tcp: lookup wrong-host.internal on 10.96.0.10:53: no such host
+2024-03-15T08:00:37Z INFO  Starting HTTP server on :8080 (degraded mode — no DB connection)
+2024-03-15T08:00:38Z INFO  HTTP server listening on :8080
+2024-03-15T08:01:00Z ERROR database operation failed: connection error: desc = "transport: Error while dialing: dial tcp: lookup wrong-host.internal: no such host"
+2024-03-15T08:01:30Z INFO  GET /healthz -> 503 Service Unavailable (database not connected)
+2024-03-15T08:02:00Z ERROR context deadline exceeded while attempting to connect to wrong-host.internal:5432
+2024-03-15T08:02:00Z ERROR dial tcp: lookup wrong-host.internal on 10.96.0.10:53: no such host
+2024-03-15T08:02:30Z INFO  GET /healthz -> 503 Service Unavailable (database not connected)
+2024-03-15T08:03:00Z ERROR dial tcp: lookup wrong-host.internal on 10.96.0.10:53: no such host
+2024-03-15T08:03:30Z INFO  GET /healthz -> 503 Service Unavailable (database not connected)
+2024-03-15T08:04:00Z ERROR dial tcp: lookup wrong-host.internal on 10.96.0.10:53: no such host
+2024-03-15T08:04:30Z INFO  GET /healthz -> 503 Service Unavailable (database not connected)
+2024-03-15T08:05:00Z ERROR DNS resolution failure: no such host wrong-host.internal — check DB_HOST configuration in ConfigMap db-config
+2024-03-15T08:05:00Z ERROR Application entering crash loop due to unresolvable database host
+2024-03-15T08:05:30Z INFO  GET /healthz -> 503 Service Unavailable (database not connected)
+2024-03-15T08:06:00Z ERROR dial tcp: lookup wrong-host.internal on 10.96.0.10:53: no such host
+2024-03-15T08:06:30Z INFO  GET /healthz -> 503 Service Unavailable (database not connected)
+2024-03-15T08:07:00Z ERROR dial tcp: lookup wrong-host.internal on 10.96.0.10:53: no such host
+2024-03-15T08:07:30Z INFO  GET /healthz -> 503 Service Unavailable (database not connected)
+2024-03-15T08:08:00Z ERROR dial tcp: lookup wrong-host.internal on 10.96.0.10:53: no such host
+2024-03-15T08:08:30Z INFO  GET /healthz -> 503 Service Unavailable (database not connected)
+2024-03-15T08:09:00Z ERROR Fatal: persistent DNS failure for wrong-host.internal — container will restart

@@ -3,6 +3,82 @@ import type { IndexedChunk } from '../ai/chunk-indexer.js';
 import type { InvestigationSeed } from '../investigators/types.js';
 
 // ---------------------------------------------------------------------------
+// Entity name extraction (mirrors extractQueryIdentifiers in lexical-search.ts)
+// ---------------------------------------------------------------------------
+
+/** Known K8s error reasons used for entity extraction from free text. */
+const GRAPH_K8S_ERROR_REASONS: readonly string[] = [
+  'CrashLoopBackOff', 'ImagePullBackOff', 'ErrImagePull', 'OOMKilled',
+  'ContainerCannotRun', 'DeadlineExceeded', 'Evicted', 'BackOff',
+  'ContainersNotReady', 'Unschedulable', 'RunContainerError',
+  'CreateContainerError', 'InvalidImageName', 'CreateContainerConfigError',
+  'FailedScheduling', 'FailedMount', 'FailedAttachVolume', 'NodeNotReady',
+];
+
+const GRAPH_K8S_ERROR_REASONS_LOWER = new Map(
+  GRAPH_K8S_ERROR_REASONS.map((reason) => [reason.toLowerCase(), reason]),
+);
+
+/**
+ * Stop words filtered from RFC-1123 name token extraction.
+ * Mirrors RFC1123_STOP_WORDS in lexical-search.ts — intentionally omits
+ * diagnostic terms like 'secret', 'configmap', 'missing', 'failed', etc.
+ */
+const GRAPH_ENTITY_STOP_WORDS: ReadonlySet<string> = new Set([
+  // English connectives
+  'in', 'is', 'are', 'the', 'a', 'an', 'of', 'for', 'with', 'and', 'or',
+  'not', 'has', 'have', 'been', 'being', 'to', 'from', 'on', 'at', 'by',
+  'due', 'via',
+  // K8s structural keywords (non-diagnostic)
+  'pod', 'pods', 'log', 'logs', 'file', 'files', 'check', 'status', 'state',
+  'phase', 'reason', 'message', 'type', 'name', 'namespace', 'container',
+  'containers', 'image', 'images', 'event', 'events', 'resource', 'resources',
+  'cluster', 'node', 'nodes', 'deployment', 'deployments',
+  'running', 'pending',
+  // Common severity / level words
+  'high', 'low', 'medium', 'critical', 'severity', 'info', 'warn', 'error',
+  'warning',
+  // K8s lifecycle verbs (non-diagnostic)
+  'restart', 'restarts', 'back', 'off', 'loop', 'crash', 'crashloop',
+  'invalid', 'wrong',
+]);
+
+/**
+ * Extracts K8s entity names from free text.
+ *
+ * Applies the same extraction pipeline as
+ * `LexicalSearchIndex.extractQueryIdentifiers`:
+ * 1. Known K8s error reasons (canonical casing).
+ * 2. RFC-1123 resource-name tokens (lowercase, 2–63 chars), filtered through
+ *    {@link GRAPH_ENTITY_STOP_WORDS}.
+ *
+ * Used by {@link getRelatedChunks} to resolve entity names mentioned in
+ * analyzer messages or seed hypotheses to graph nodes.
+ */
+function extractEntityNamesFromText(text: string): string[] {
+  const ids = new Set<string>();
+  const lowerText = text.toLowerCase();
+
+  // Step 1: known K8s error reasons
+  for (const [lowerReason, canonicalReason] of GRAPH_K8S_ERROR_REASONS_LOWER) {
+    if (lowerText.includes(lowerReason)) {
+      ids.add(canonicalReason);
+    }
+  }
+
+  // Step 2: RFC-1123 resource names (allow hyphens, 2–63 chars total)
+  const k8sNamePattern = /\b([a-z][a-z0-9-]{1,62})\b/g;
+  for (const match of lowerText.matchAll(k8sNamePattern)) {
+    const token = match[1]!;
+    if (!GRAPH_ENTITY_STOP_WORDS.has(token)) {
+      ids.add(token);
+    }
+  }
+
+  return [...ids];
+}
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -33,6 +109,20 @@ export interface ResourceRelationshipGraph {
   /** Nodes keyed by canonical id: `{Kind}:{namespace}/{name}` */
   nodes: Map<string, ResourceNode>;
   edges: ResourceEdge[];
+}
+
+/**
+ * A chunk retrieved from the graph neighborhood, paired with a hop-distance
+ * score that reflects proximity to the seed resource.
+ *
+ * Scores:
+ * - `1.0` — direct resource (depth 0) or exact seed match (log/analyzer/event)
+ * - `0.7` — depth-1 neighbor
+ * - `0.4` — depth-2 neighbor
+ */
+export interface GraphScoredChunk {
+  chunk: IndexedChunk;
+  score: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -346,28 +436,44 @@ export function buildResourceGraph(
 }
 
 // ---------------------------------------------------------------------------
-// getNeighborhood
+// Hop-distance scoring helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns the retrieval score for a given hop depth:
+ * - depth 0 (direct resource): `1.0`
+ * - depth 1 (one hop away): `0.7`
+ * - depth ≥ 2 (two or more hops): `0.4`
+ */
+function scoreForDepth(depth: number): number {
+  if (depth === 0) return 1.0;
+  if (depth === 1) return 0.7;
+  return 0.4;
+}
+
+// ---------------------------------------------------------------------------
+// getNeighborhoodWithDepth
 // ---------------------------------------------------------------------------
 
 /**
  * Returns all {@link ResourceNode}s reachable within `depth` hops from the
- * specified resource (undirected traversal — follows edges in both directions).
+ * specified resource, along with their exact hop distance from the start node
+ * (undirected traversal — follows edges in both directions).
  *
- * The source node itself is included at depth 0.
+ * The source node itself is returned with depth `0`.
  */
-export function getNeighborhood(
+export function getNeighborhoodWithDepth(
   graph: ResourceRelationshipGraph,
   kind: string,
   name: string,
   namespace: string,
   depth = 2,
-): ResourceNode[] {
+): Array<{ node: ResourceNode; depth: number }> {
   const startId = nodeId(kind, namespace, name);
-  const visited = new Set<string>([startId]);
-  const result: ResourceNode[] = [];
-
-  // Queue entries: [nodeId, remaining depth]
-  const queue: Array<[string, number]> = [[startId, depth]];
+  // Track visited nodes with their assigned depth to prevent revisiting
+  const visitedDepth = new Map<string, number>();
+  visitedDepth.set(startId, 0);
+  const result: Array<{ node: ResourceNode; depth: number }> = [];
 
   // Build adjacency for fast lookup (undirected)
   const adj = new Map<string, Set<string>>();
@@ -381,22 +487,47 @@ export function getNeighborhood(
     adj.get(tId)!.add(sId);
   }
 
-  while (queue.length > 0) {
-    const [current, remaining] = queue.shift()!;
-    const node = graph.nodes.get(current);
-    if (node) result.push(node);
+  // BFS tracking current depth
+  const queue: Array<[string, number]> = [[startId, 0]];
 
-    if (remaining <= 0) continue;
+  while (queue.length > 0) {
+    const [current, currentDepth] = queue.shift()!;
+    const node = graph.nodes.get(current);
+    if (node) result.push({ node, depth: currentDepth });
+
+    if (currentDepth >= depth) continue;
 
     for (const neighbor of adj.get(current) ?? []) {
-      if (!visited.has(neighbor)) {
-        visited.add(neighbor);
-        queue.push([neighbor, remaining - 1]);
+      if (!visitedDepth.has(neighbor)) {
+        visitedDepth.set(neighbor, currentDepth + 1);
+        queue.push([neighbor, currentDepth + 1]);
       }
     }
   }
 
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// getNeighborhood
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns all {@link ResourceNode}s reachable within `depth` hops from the
+ * specified resource (undirected traversal — follows edges in both directions).
+ *
+ * The source node itself is included at depth 0.
+ *
+ * @see {@link getNeighborhoodWithDepth} for the depth-aware variant.
+ */
+export function getNeighborhood(
+  graph: ResourceRelationshipGraph,
+  kind: string,
+  name: string,
+  namespace: string,
+  depth = 2,
+): ResourceNode[] {
+  return getNeighborhoodWithDepth(graph, kind, name, namespace, depth).map(({ node }) => node);
 }
 
 // ---------------------------------------------------------------------------
@@ -452,41 +583,136 @@ export function parseSeedSource(source: string): { kind: string; namespace: stri
 
 /**
  * Given a seed's source string and a flat chunk index, returns all
- * {@link IndexedChunk}s that are relevant to the seed's target resource and
- * its graph neighborhood.
+ * {@link GraphScoredChunk}s that are relevant to the seed's target resource
+ * and its graph neighborhood, scored by hop distance.
+ *
+ * Scoring:
+ * - Log / Analyzer / exact-event chunks: `1.0` (direct seed match)
+ * - K8s resource chunks at depth 0 (the seed resource itself): `1.0`
+ * - K8s resource chunks at depth 1 (direct graph neighbors): `0.7`
+ * - K8s resource chunks at depth 2 (two-hop graph neighbors): `0.4`
+ *
+ * When a chunk qualifies via multiple matching paths (e.g. both node-id match
+ * and name match), the highest score (lowest depth) wins.
  *
  * Strategy:
  * 1. Parse the seed source into (kind, namespace, name).
- * 2. Walk the resource graph neighborhood (depth=2) for K8s resources.
- * 3. Collect chunks whose identifiers overlap with any neighborhood resource
- *    name or namespace.
- * 4. Also always include the direct resource's chunks by exact artifact match.
+ * 2. Walk the resource graph neighborhood (depth=2) for K8s resources,
+ *    building `nodeIdToMinDepth` and `nameToMinDepth` maps.
+ * 3. Collect chunks whose identifiers or node-id overlap with any neighborhood
+ *    resource, assigning scores from the maps.
+ * 4. Log and Analyzer seeds use direct path/name matching → score 1.0.
  */
 export function getRelatedChunks(
   graph: ResourceRelationshipGraph,
   seed: InvestigationSeed,
   chunkIndex: IndexedChunk[],
-): IndexedChunk[] {
+): GraphScoredChunk[] {
   const parsed = parseSeedSource(seed.source);
   if (!parsed) return [];
 
   const { kind, namespace, name } = parsed;
-  const relevantNames = new Set<string>();
-  const relevantNodeIds = new Set<string>();
-  const seen = new Set<string>();
-  const matched: IndexedChunk[] = [];
 
-  const addNodeNeighborhood = (nodeKind: string, nodeName: string, nodeNamespace: string): void => {
-    for (const neighbor of getNeighborhood(graph, nodeKind, nodeName, nodeNamespace, 2)) {
-      relevantNodeIds.add(nodeId(neighbor.kind, neighbor.namespace, neighbor.name));
-      relevantNames.add(neighbor.name.toLowerCase());
+  // Maps for hop-distance lookup during chunk scoring
+  const nodeIdToMinDepth = new Map<string, number>();
+  const nameToMinDepth = new Map<string, number>();
+  const seen = new Set<string>();
+  const matched: GraphScoredChunk[] = [];
+
+  /**
+   * Runs BFS from the given node and populates `nodeIdToMinDepth` /
+   * `nameToMinDepth` with the minimum depth seen for each node / name.
+   */
+  const addNeighborhoodWithDepth = (nodeKind: string, nodeName: string, nodeNamespace: string): void => {
+    for (const { node, depth } of getNeighborhoodWithDepth(graph, nodeKind, nodeName, nodeNamespace, 2)) {
+      const id = nodeId(node.kind, node.namespace, node.name);
+      const existingDepth = nodeIdToMinDepth.get(id);
+      if (existingDepth === undefined || depth < existingDepth) {
+        nodeIdToMinDepth.set(id, depth);
+      }
+      const lowerName = node.name.toLowerCase();
+      const existingNameDepth = nameToMinDepth.get(lowerName);
+      if (existingNameDepth === undefined || depth < existingNameDepth) {
+        nameToMinDepth.set(lowerName, depth);
+      }
     }
   };
 
   if (kind === 'Pod') {
-    relevantNodeIds.add(nodeId(kind, namespace || 'default', name));
-    relevantNames.add(name.toLowerCase());
-    addNodeNeighborhood(kind, name, namespace || 'default');
+    addNeighborhoodWithDepth(kind, name, namespace || 'default');
+  }
+
+  // ── Analyzer seed: extract entity names → walk graph neighborhoods ────────
+  if (kind === 'Analyzer') {
+    // Find the matching analyzer chunk(s) in the index
+    const analyzerChunks = chunkIndex.filter(
+      (chunk) =>
+        chunk.artifactCategory === 'analyzer' &&
+        (chunk.artifactId === name ||
+          (isRecord(chunk.metadata) && getString(chunk.metadata['name']) === name) ||
+          chunk.identifiers.some((id) => id === name)),
+    );
+
+    // Extract entity names from hypothesis AND analyzer chunk content
+    const textParts: string[] = [seed.hypothesis];
+    for (const ac of analyzerChunks) {
+      textParts.push(ac.content);
+    }
+    const entityNames = extractEntityNamesFromText(textParts.join(' '));
+
+    // Resolve entity names to graph nodes and walk neighborhoods
+    let foundAnyNodes = false;
+    for (const entityName of entityNames) {
+      for (const [, node] of graph.nodes) {
+        if (node.name === entityName) {
+          addNeighborhoodWithDepth(node.kind, node.name, node.namespace);
+          foundAnyNodes = true;
+        }
+      }
+    }
+
+    // Fallback: if no entity names resolved to nodes, find unhealthy pods
+    if (!foundAnyNodes) {
+      const unhealthyPodNames = new Set<string>();
+      for (const chunk of chunkIndex) {
+        if (
+          chunk.artifactCategory === 'kubernetes-resource' &&
+          (chunk.identifiers.includes('CrashLoopBackOff') ||
+            chunk.identifiers.includes('ImagePullBackOff'))
+        ) {
+          for (const id of chunk.identifiers) {
+            unhealthyPodNames.add(id);
+          }
+        }
+      }
+      for (const [, node] of graph.nodes) {
+        if (node.kind === 'Pod' && unhealthyPodNames.has(node.name)) {
+          addNeighborhoodWithDepth('Pod', node.name, node.namespace);
+        }
+      }
+    }
+  }
+
+  // ── Log seed: resolve pod from path → walk graph neighborhood ─────────────
+  if (kind === 'Log') {
+    // Parse log path to extract pod name using same heuristics as
+    // resolveLogPodComponent: filename-without-extension first, then
+    // parent directory (for container-scoped logs like pods/logs/ns/pod/ctr.log)
+    const logPathSegments = name.split('/');
+    const logFilename = logPathSegments[logPathSegments.length - 1] ?? '';
+    const dotIdx = logFilename.lastIndexOf('.');
+    const logBasename = dotIdx !== -1 ? logFilename.slice(0, dotIdx) : logFilename;
+    const logParentDir = logPathSegments[logPathSegments.length - 2];
+
+    const podNamesToCheck = new Set<string>();
+    if (logBasename) podNamesToCheck.add(logBasename);
+    if (logParentDir) podNamesToCheck.add(logParentDir);
+
+    for (const [, node] of graph.nodes) {
+      if (node.kind === 'Pod' && podNamesToCheck.has(node.name)) {
+        addNeighborhoodWithDepth('Pod', node.name, node.namespace);
+      }
+    }
   }
 
   let eventReason = '';
@@ -495,8 +721,10 @@ export function getRelatedChunks(
     const eventParts = name.split(':');
     eventObjectName = eventParts.pop() ?? name;
     eventReason = eventParts.join(':');
-    relevantNames.add(eventObjectName.toLowerCase());
-    if (eventReason) relevantNames.add(eventReason.toLowerCase());
+
+    // The event reason and involved-object name are depth-0 from the event seed
+    nameToMinDepth.set(eventObjectName.toLowerCase(), 0);
+    if (eventReason) nameToMinDepth.set(eventReason.toLowerCase(), 0);
 
     const matchingEventChunks = chunkIndex.filter((chunk) => {
       if (chunk.artifactCategory !== 'event' || !isRecord(chunk.metadata)) return false;
@@ -514,30 +742,32 @@ export function getRelatedChunks(
         const eventKind =
           (isRecord(chunk.metadata) ? getString(chunk.metadata['kind']) : '') ||
           'Pod';
-        relevantNodeIds.add(nodeId('Event', eventNamespace, `${eventReason}:${eventObjectName}`));
-        addNodeNeighborhood(eventKind, eventObjectName, eventNamespace);
+        nodeIdToMinDepth.set(nodeId('Event', eventNamespace, `${eventReason}:${eventObjectName}`), 0);
+        addNeighborhoodWithDepth(eventKind, eventObjectName, eventNamespace);
       }
     } else {
-      addNodeNeighborhood('Pod', eventObjectName, namespace || 'default');
+      addNeighborhoodWithDepth('Pod', eventObjectName, namespace || 'default');
     }
   }
 
   for (const chunk of chunkIndex) {
     if (seen.has(chunk.id)) continue;
 
+    // ── Direct Log match ───────────────────────────────────────────────────
     if (kind === 'Log' && chunk.artifactId === name) {
-      matched.push(chunk);
+      matched.push({ chunk, score: 1.0 });
       seen.add(chunk.id);
       continue;
     }
 
+    // ── Direct Analyzer match ──────────────────────────────────────────────
     if (
       kind === 'Analyzer' &&
       (chunk.artifactId === name ||
         (isRecord(chunk.metadata) && getString(chunk.metadata['name']) === name) ||
         chunk.identifiers.some((identifier) => identifier === name))
     ) {
-      matched.push(chunk);
+      matched.push({ chunk, score: 1.0 });
       seen.add(chunk.id);
       continue;
     }
@@ -551,7 +781,7 @@ export function getRelatedChunks(
         ? nodeId(metaKind, metaNamespace || chunk.namespace || 'default', metaName)
         : '';
 
-    const exactGraphMatch = chunkNodeId !== '' && relevantNodeIds.has(chunkNodeId);
+    // ── Exact event match → always depth-0 score ──────────────────────────
     const exactEventMatch =
       kind === 'Event' &&
       chunk.artifactCategory === 'event' &&
@@ -559,10 +789,30 @@ export function getRelatedChunks(
       getString(metadata['reason']).toLowerCase() === eventReason.toLowerCase() &&
       getString(metadata['name']).toLowerCase() === eventObjectName.toLowerCase();
 
-    const hasNameMatch = chunk.identifiers.some((identifier) => relevantNames.has(identifier.toLowerCase()));
+    if (exactEventMatch) {
+      matched.push({ chunk, score: 1.0 });
+      seen.add(chunk.id);
+      continue;
+    }
 
-    if (exactGraphMatch || exactEventMatch || hasNameMatch) {
-      matched.push(chunk);
+    // ── Hop-distance scoring via graph node id and/or name match ──────────
+    let bestDepth: number | undefined;
+
+    if (chunkNodeId !== '' && nodeIdToMinDepth.has(chunkNodeId)) {
+      const d = nodeIdToMinDepth.get(chunkNodeId)!;
+      if (bestDepth === undefined || d < bestDepth) bestDepth = d;
+    }
+
+    for (const identifier of chunk.identifiers) {
+      const lowerIdentifier = identifier.toLowerCase();
+      if (nameToMinDepth.has(lowerIdentifier)) {
+        const d = nameToMinDepth.get(lowerIdentifier)!;
+        if (bestDepth === undefined || d < bestDepth) bestDepth = d;
+      }
+    }
+
+    if (bestDepth !== undefined) {
+      matched.push({ chunk, score: scoreForDepth(bestDepth) });
       seen.add(chunk.id);
     }
   }

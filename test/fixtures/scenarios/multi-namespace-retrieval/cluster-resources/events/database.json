@@ -1,0 +1,278 @@
+{
+  "apiVersion": "v1",
+  "kind": "EventList",
+  "items": [
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "postgres-primary-pod.unhealthy-1",
+        "namespace": "database",
+        "creationTimestamp": "2024-03-15T07:55:00Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "postgres-primary-pod", "namespace": "database" },
+      "reason": "Unhealthy",
+      "message": "Readiness probe failed: pg_isready: FATAL: password authentication failed for user \"postgres\"",
+      "type": "Warning",
+      "count": 15,
+      "firstTimestamp": "2024-03-15T07:55:00Z",
+      "lastTimestamp": "2024-03-15T08:30:00Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "postgres-primary-pod.backoff-1",
+        "namespace": "database",
+        "creationTimestamp": "2024-03-15T08:00:00Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "postgres-primary-pod", "namespace": "database" },
+      "reason": "BackOff",
+      "message": "Back-off restarting failed container postgres in pod postgres-primary-pod_database",
+      "type": "Warning",
+      "count": 8,
+      "firstTimestamp": "2024-03-15T08:00:00Z",
+      "lastTimestamp": "2024-03-15T08:30:00Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "migration-pod.failed-auth-1",
+        "namespace": "database",
+        "creationTimestamp": "2024-03-15T08:10:45Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "migration-pod", "namespace": "database" },
+      "reason": "Failed",
+      "message": "Error: migration failed: FATAL: password authentication failed for user \"postgres\" — check postgres-auth-secret",
+      "type": "Warning",
+      "count": 1,
+      "firstTimestamp": "2024-03-15T08:10:45Z",
+      "lastTimestamp": "2024-03-15T08:10:45Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "migration-pod.pulled-1",
+        "namespace": "database",
+        "creationTimestamp": "2024-03-15T08:10:05Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "migration-pod", "namespace": "database" },
+      "reason": "Pulled",
+      "message": "Successfully pulled image \"mycompany/db-migrator:v1.3.0\" in 2.8s",
+      "type": "Normal",
+      "count": 1,
+      "firstTimestamp": "2024-03-15T08:10:05Z",
+      "lastTimestamp": "2024-03-15T08:10:05Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "migration-pod.started-1",
+        "namespace": "database",
+        "creationTimestamp": "2024-03-15T08:10:10Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "migration-pod", "namespace": "database" },
+      "reason": "Started",
+      "message": "Started container migrate",
+      "type": "Normal",
+      "count": 1,
+      "firstTimestamp": "2024-03-15T08:10:10Z",
+      "lastTimestamp": "2024-03-15T08:10:10Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "postgres-primary-pod.scheduled",
+        "namespace": "database",
+        "creationTimestamp": "2024-03-15T07:45:01Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "postgres-primary-pod", "namespace": "database" },
+      "reason": "Scheduled",
+      "message": "Successfully assigned database/postgres-primary-pod to worker-node-2",
+      "type": "Normal",
+      "count": 1,
+      "firstTimestamp": "2024-03-15T07:45:01Z",
+      "lastTimestamp": "2024-03-15T07:45:01Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "postgres-replica-pod.pulled-1",
+        "namespace": "database",
+        "creationTimestamp": "2024-03-15T07:46:10Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "postgres-replica-pod", "namespace": "database" },
+      "reason": "Pulled",
+      "message": "Successfully pulled image \"postgres:15.4\" in 1.9s",
+      "type": "Normal",
+      "count": 1,
+      "firstTimestamp": "2024-03-15T07:46:10Z",
+      "lastTimestamp": "2024-03-15T07:46:10Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "postgres-replica-pod.started-1",
+        "namespace": "database",
+        "creationTimestamp": "2024-03-15T07:46:30Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "postgres-replica-pod", "namespace": "database" },
+      "reason": "Started",
+      "message": "Started container postgres",
+      "type": "Normal",
+      "count": 1,
+      "firstTimestamp": "2024-03-15T07:46:30Z",
+      "lastTimestamp": "2024-03-15T07:46:30Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "postgres-primary-pod.failedmount-1",
+        "namespace": "database",
+        "creationTimestamp": "2024-03-15T07:45:15Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "postgres-primary-pod", "namespace": "database" },
+      "reason": "FailedMount",
+      "message": "MountVolume.SetUp succeeded for volume \"postgres-data\" (UniqueName: \"kubernetes.io/persistentvolumeclaim/postgres-data-pvc\") pod \"postgres-primary-pod\" (UID: \"xyz-pvc-123\")",
+      "type": "Normal",
+      "count": 1,
+      "firstTimestamp": "2024-03-15T07:45:15Z",
+      "lastTimestamp": "2024-03-15T07:45:15Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "postgres-primary-pod.pulled-1",
+        "namespace": "database",
+        "creationTimestamp": "2024-03-15T07:45:10Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "postgres-primary-pod", "namespace": "database" },
+      "reason": "Pulled",
+      "message": "Successfully pulled image \"postgres:15.4\" in 2.1s",
+      "type": "Normal",
+      "count": 1,
+      "firstTimestamp": "2024-03-15T07:45:10Z",
+      "lastTimestamp": "2024-03-15T07:45:10Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "postgres-primary-pod.started-1",
+        "namespace": "database",
+        "creationTimestamp": "2024-03-15T07:45:20Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "postgres-primary-pod", "namespace": "database" },
+      "reason": "Started",
+      "message": "Started container postgres",
+      "type": "Normal",
+      "count": 1,
+      "firstTimestamp": "2024-03-15T07:45:20Z",
+      "lastTimestamp": "2024-03-15T07:45:20Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "postgres-primary-pod.unhealthy-2",
+        "namespace": "database",
+        "creationTimestamp": "2024-03-15T08:15:00Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "postgres-primary-pod", "namespace": "database" },
+      "reason": "Unhealthy",
+      "message": "Readiness probe failed: pg_isready returned error: FATAL: password authentication failed for user \"postgres\" (SQLSTATE 28P01)",
+      "type": "Warning",
+      "count": 10,
+      "firstTimestamp": "2024-03-15T08:15:00Z",
+      "lastTimestamp": "2024-03-15T08:28:00Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "migration-pod.scheduled",
+        "namespace": "database",
+        "creationTimestamp": "2024-03-15T08:10:01Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "migration-pod", "namespace": "database" },
+      "reason": "Scheduled",
+      "message": "Successfully assigned database/migration-pod to worker-node-1",
+      "type": "Normal",
+      "count": 1,
+      "firstTimestamp": "2024-03-15T08:10:01Z",
+      "lastTimestamp": "2024-03-15T08:10:01Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "postgres-replica-pod.scheduled",
+        "namespace": "database",
+        "creationTimestamp": "2024-03-15T07:46:01Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "postgres-replica-pod", "namespace": "database" },
+      "reason": "Scheduled",
+      "message": "Successfully assigned database/postgres-replica-pod to worker-node-1",
+      "type": "Normal",
+      "count": 1,
+      "firstTimestamp": "2024-03-15T07:46:01Z",
+      "lastTimestamp": "2024-03-15T07:46:01Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "postgres-data-pvc.bound",
+        "namespace": "database",
+        "creationTimestamp": "2024-03-14T11:00:15Z"
+      },
+      "involvedObject": { "kind": "PersistentVolumeClaim", "name": "postgres-data-pvc", "namespace": "database" },
+      "reason": "Bound",
+      "message": "Successfully bound to PersistentVolume pvc-abc123 with 20Gi on StorageClass standard",
+      "type": "Normal",
+      "count": 1,
+      "firstTimestamp": "2024-03-14T11:00:15Z",
+      "lastTimestamp": "2024-03-14T11:00:15Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "migration-pod.failed-auth-2",
+        "namespace": "database",
+        "creationTimestamp": "2024-03-15T08:10:40Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "migration-pod", "namespace": "database" },
+      "reason": "Failed",
+      "message": "Container migrate terminated with exit code 1: pq: password authentication failed for user \"postgres\"",
+      "type": "Warning",
+      "count": 1,
+      "firstTimestamp": "2024-03-15T08:10:40Z",
+      "lastTimestamp": "2024-03-15T08:10:40Z"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Event",
+      "metadata": {
+        "name": "postgres-replica-pod.ready",
+        "namespace": "database",
+        "creationTimestamp": "2024-03-15T07:47:00Z"
+      },
+      "involvedObject": { "kind": "Pod", "name": "postgres-replica-pod", "namespace": "database" },
+      "reason": "Started",
+      "message": "Container postgres is ready. Replica is replicating from postgres-service.database.svc.cluster.local",
+      "type": "Normal",
+      "count": 1,
+      "firstTimestamp": "2024-03-15T07:47:00Z",
+      "lastTimestamp": "2024-03-15T07:47:00Z"
+    }
+  ]
+}

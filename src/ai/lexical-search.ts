@@ -8,8 +8,21 @@ import type { IndexedChunk } from './chunk-indexer.js';
 const WEIGHT_IDENTIFIER = 3.0;
 /** Namespace match (query token equals chunk.namespace). */
 const WEIGHT_NAMESPACE = 1.5;
-/** Content token match (query token appears in chunk.content). */
-const WEIGHT_CONTENT = 1.0;
+/**
+ * Fallback content weight used for substring-expansion matches whose indexed
+ * term differs from the query token (so BM25 parameters cannot be resolved).
+ * Kept at 1.0 to preserve pre-BM25 behaviour for those edge cases.
+ */
+const WEIGHT_CONTENT_FALLBACK = 1.0;
+
+// ---------------------------------------------------------------------------
+// BM25 parameters
+// ---------------------------------------------------------------------------
+
+/** BM25 term-frequency saturation parameter. */
+const BM25_K1 = 1.2;
+/** BM25 length-normalisation parameter. */
+const BM25_B = 0.75;
 
 /** Minimum token length for content indexing and querying. */
 const MIN_TOKEN_LEN = 2;
@@ -51,6 +64,11 @@ const K8S_ERROR_REASONS_LOWER = new Map(
  * Common English and K8s-context words that appear in hypothesis strings but
  * are NOT Kubernetes resource identifiers. Filters these from
  * `extractQueryIdentifiers` so they don't add noise to identifier lookups.
+ *
+ * Also used in {@link getContentMatches} to suppress noisy substring
+ * expansion: stop words that are short prefixes of longer K8s tokens
+ * (e.g. `'secret'` → `'secretkeyref'`) are only matched exactly, not via
+ * substring expansion.
  */
 const K8S_STOP_WORDS: ReadonlySet<string> = new Set([
   // English connectives
@@ -69,6 +87,44 @@ const K8S_STOP_WORDS: ReadonlySet<string> = new Set([
   // K8s lifecycle verbs used in hypothesis text
   'restart', 'restarts', 'back', 'off', 'loop', 'crash', 'crashloop',
   'missing', 'invalid', 'wrong', 'unreachable',
+]);
+
+/**
+ * Stop-word set used **exclusively** by the RFC-1123 name extraction step
+ * (step 4 of {@link extractQueryIdentifiers}).
+ *
+ * This is a strict subset of {@link K8S_STOP_WORDS}: the high-signal
+ * diagnostic terms that double as searchable K8s identifiers —
+ * `secret`, `service`, `configmap`, `missing`, `failed`, `failure`,
+ * `unreachable` — are intentionally **absent** so that queries like
+ * `"missing secret app-credentials"` correctly extract all three tokens
+ * as identifier candidates rather than silently discarding the first two.
+ *
+ * {@link K8S_STOP_WORDS} (which retains those terms) is still consulted
+ * inside {@link getContentMatches} to suppress noisy substring expansion
+ * (e.g. preventing `'secret'` from matching `'secretkeyref'` in unrelated
+ * resource JSON).
+ */
+const RFC1123_STOP_WORDS: ReadonlySet<string> = new Set([
+  // English connectives
+  'in', 'is', 'are', 'the', 'a', 'an', 'of', 'for', 'with', 'and', 'or',
+  'not', 'has', 'have', 'been', 'being', 'to', 'from', 'on', 'at', 'by',
+  'due', 'via',
+  // K8s structural keywords (non-diagnostic)
+  'pod', 'pods', 'log', 'logs', 'file', 'files', 'check', 'status', 'state',
+  'phase', 'reason', 'message', 'type', 'name', 'namespace', 'container',
+  'containers', 'image', 'images', 'event', 'events', 'resource', 'resources',
+  'cluster', 'node', 'nodes', 'deployment', 'deployments',
+  'running', 'pending',
+  // Common severity / level words
+  'high', 'low', 'medium', 'critical', 'severity', 'info', 'warn', 'error',
+  'warning',
+  // K8s lifecycle verbs (non-diagnostic)
+  'restart', 'restarts', 'back', 'off', 'loop', 'crash', 'crashloop',
+  'invalid', 'wrong',
+  // NOTE: 'secret', 'secrets', 'service', 'services', 'configmap',
+  // 'configmaps', 'missing', 'failed', 'failure', 'unreachable' are
+  // intentionally OMITTED so they can be extracted as identifier candidates.
 ]);
 
 // ---------------------------------------------------------------------------
@@ -202,6 +258,17 @@ export class LexicalSearchIndex {
   /** content token → (chunk array index → token frequency in that chunk). */
   private contentIndex = new Map<string, Map<number, number>>();
 
+  // ── BM25 statistics (computed during build) ──────────────────────────────
+
+  /** Total number of indexed chunks (N in BM25 literature). */
+  private bm25N = 0;
+  /** Average document length in content tokens across all chunks. */
+  private bm25Avgdl = 1;
+  /** term → number of chunks containing that term (document frequency). */
+  private bm25Df = new Map<string, number>();
+  /** Per-chunk content token counts (indexed parallel to `chunks`). */
+  private bm25DocLengths: number[] = [];
+
   // ── build ────────────────────────────────────────────────────────────────
 
   /**
@@ -219,6 +286,7 @@ export class LexicalSearchIndex {
     this.identifierIndex.clear();
     this.namespaceIndex.clear();
     this.contentIndex.clear();
+    this.bm25DocLengths = [];
 
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i]!;
@@ -234,14 +302,28 @@ export class LexicalSearchIndex {
         addToIndex(this.namespaceIndex, chunk.namespace.toLowerCase(), i);
       }
 
+      // Tokenise once; reuse tokens for both doc-length tracking and indexing.
+      const tokens = tokenizeContent(chunk.content);
+      this.bm25DocLengths.push(tokens.length);
+
       const tokenCounts = new Map<string, number>();
-      for (const token of tokenizeContent(chunk.content)) {
+      for (const token of tokens) {
         tokenCounts.set(token, (tokenCounts.get(token) ?? 0) + 1);
       }
 
       for (const [token, count] of tokenCounts) {
         addToCountIndex(this.contentIndex, token, i, count);
       }
+    }
+
+    // ── BM25 corpus statistics ────────────────────────────────────────────
+    this.bm25N = chunks.length;
+    const totalLen = this.bm25DocLengths.reduce((s, l) => s + l, 0);
+    this.bm25Avgdl = this.bm25N > 0 ? totalLen / this.bm25N : 1;
+
+    this.bm25Df.clear();
+    for (const [term, posting] of this.contentIndex) {
+      this.bm25Df.set(term, posting.size);
     }
   }
 
@@ -301,7 +383,7 @@ export class LexicalSearchIndex {
 
     for (const token of queryTokens) {
       for (const [idx, count] of this.getContentMatches(token)) {
-        bump(idx, WEIGHT_CONTENT * count, 'contentHits', count);
+        bump(idx, this.bm25Score(token, idx, count), 'contentHits', count);
       }
     }
 
@@ -350,7 +432,7 @@ export class LexicalSearchIndex {
     const k8sNamePattern = /\b([a-z][a-z0-9-]{1,62})\b/g;
     for (const match of hypothesis.matchAll(k8sNamePattern)) {
       const token = match[1]!;
-      if (!K8S_STOP_WORDS.has(token)) {
+      if (!RFC1123_STOP_WORDS.has(token)) {
         ids.add(token);
       }
     }
@@ -366,6 +448,14 @@ export class LexicalSearchIndex {
    * Exact matches are used first. When the query token is only a partial term,
    * the search deterministically expands to indexed tokens that contain the
    * query token as a substring (e.g. `auth` → `authentication`).
+   *
+   * Substring expansion is suppressed for tokens that are in
+   * {@link K8S_STOP_WORDS}.  These are short, generic words that produce
+   * excessive false-positive matches via substring expansion
+   * (e.g. `'secret'` matching every resource that contains `'secretkeyref'`
+   * or `'secretref'`).  Exact matches are still performed so that documents
+   * which contain the literal word (e.g. an event message that says
+   * `"secret app-credentials not found"`) are still surfaced.
    */
   private getContentMatches(queryToken: string): Map<number, number> {
     const matches = new Map<number, number>();
@@ -375,6 +465,11 @@ export class LexicalSearchIndex {
       mergeCounts(matches, exact);
     }
 
+    // Suppress noisy substring expansion for stop-word query tokens.
+    if (K8S_STOP_WORDS.has(queryToken)) {
+      return matches;
+    }
+
     for (const [indexedToken, posting] of this.contentIndex) {
       if (indexedToken === queryToken) continue;
       if (!indexedToken.includes(queryToken)) continue;
@@ -382,5 +477,36 @@ export class LexicalSearchIndex {
     }
 
     return matches;
+  }
+
+  /**
+   * Computes the BM25 score contribution for a single query term matching a
+   * specific chunk.
+   *
+   * Formula: `IDF(t) × (tf × (k1+1)) / (tf + k1 × (1 - b + b × |d|/avgdl))`
+   * where `IDF(t) = ln((N - df + 0.5) / (df + 0.5) + 1)`.
+   *
+   * If `queryToken` is not in the vocabulary (i.e. it matched via substring
+   * expansion and has no direct IDF entry), falls back to
+   * {@link WEIGHT_CONTENT_FALLBACK} × `tf` to preserve pre-BM25 behaviour
+   * for those edge cases.
+   */
+  private bm25Score(queryToken: string, chunkIdx: number, tf: number): number {
+    const df = this.bm25Df.get(queryToken);
+    if (df === undefined) {
+      // Substring-expansion match: query token not directly in index.
+      return WEIGHT_CONTENT_FALLBACK * tf;
+    }
+
+    const N = this.bm25N;
+    if (N === 0) return 0;
+
+    const idf = Math.log((N - df + 0.5) / (df + 0.5) + 1);
+    const dl = this.bm25DocLengths[chunkIdx] ?? 1;
+    const avgdl = this.bm25Avgdl;
+    const tfNorm =
+      (tf * (BM25_K1 + 1)) /
+      (tf + BM25_K1 * (1 - BM25_B + BM25_B * (dl / avgdl)));
+    return idf * tfNorm;
   }
 }

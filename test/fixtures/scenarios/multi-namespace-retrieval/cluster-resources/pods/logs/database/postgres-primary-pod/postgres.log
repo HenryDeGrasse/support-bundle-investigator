@@ -1,0 +1,39 @@
+2024-03-15T07:45:20Z LOG   database system was shut down at 2024-03-15 07:45:18 UTC
+2024-03-15T07:45:20Z LOG   entering standby mode
+2024-03-15T07:45:21Z LOG   redo starts at 0/1000028
+2024-03-15T07:45:21Z LOG   consistent recovery state reached at 0/1000100
+2024-03-15T07:45:21Z LOG   database system is ready to accept read-only connections
+2024-03-15T07:45:22Z LOG   starting PostgreSQL 15.4 on x86_64-pc-linux-musl
+2024-03-15T07:45:22Z LOG   listening on IPv4 address "0.0.0.0", port 5432
+2024-03-15T07:45:22Z LOG   database system identifier: 7234567890123456789
+2024-03-15T07:45:23Z LOG   autovacuum launcher started
+2024-03-15T07:45:23Z LOG   logical replication launcher started
+2024-03-15T07:45:25Z FATAL  password authentication failed for user "postgres"
+2024-03-15T07:45:25Z DETAIL  Connection rejected: role "postgres" password mismatch. Check POSTGRES_PASSWORD in secret postgres-auth-secret.
+2024-03-15T07:45:30Z FATAL  password authentication failed for user "postgres"
+2024-03-15T07:45:30Z DETAIL  Role exists, but provided password in secret does not match initialized database password.
+2024-03-15T07:45:35Z ERROR  could not connect to the primary server: FATAL: password authentication failed for user "postgres"
+2024-03-15T07:45:40Z FATAL  password authentication failed for user "postgres"
+2024-03-15T07:45:45Z FATAL  password authentication failed for user "postgres"
+2024-03-15T07:45:50Z ERROR  database connection failed: FATAL: password authentication failed for user "postgres" (SQLSTATE 28P01)
+2024-03-15T07:46:00Z LOG   restartpoint complete: wrote 0 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled
+2024-03-15T07:46:10Z FATAL  password authentication failed for user "postgres"
+2024-03-15T07:46:15Z ERROR  pg_isready check failed: FATAL: password authentication failed for user "postgres"
+2024-03-15T07:46:20Z WARN   max_wal_size is too low, forcing checkpoint: 128MB
+2024-03-15T07:46:30Z FATAL  password authentication failed for user "postgres"
+2024-03-15T07:47:00Z FATAL  password authentication failed for user "postgres"
+2024-03-15T07:47:30Z ERROR  authentication error: supplied password is incorrect for role postgres — verify Secret postgres-auth-secret value
+2024-03-15T07:48:00Z FATAL  password authentication failed for user "postgres"
+2024-03-15T07:48:30Z FATAL  password authentication failed for user "postgres"
+2024-03-15T07:49:00Z FATAL  password authentication failed for user "postgres"
+2024-03-15T07:49:30Z ERROR  readiness probe failure count: 15. Pod will be restarted.
+2024-03-15T07:50:00Z FATAL  password authentication failed for user "postgres"
+2024-03-15T07:50:30Z FATAL  password authentication failed for user "postgres"
+2024-03-15T07:51:00Z ERROR  FATAL: password authentication failed for user "postgres" (SQLSTATE 28P01)
+2024-03-15T07:51:30Z FATAL  password authentication failed for user "postgres"
+2024-03-15T07:52:00Z FATAL  password authentication failed for user "postgres"
+2024-03-15T07:52:30Z LOG   checkpoint starting: immediate force wait
+2024-03-15T07:53:00Z FATAL  password authentication failed for user "postgres"
+2024-03-15T07:53:30Z FATAL  password authentication failed for user "postgres"
+2024-03-15T07:54:00Z ERROR  authentication failure: wrong password for role postgres in postgres-auth-secret
+2024-03-15T07:54:30Z FATAL  password authentication failed for user "postgres"

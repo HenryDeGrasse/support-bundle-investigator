@@ -9,7 +9,10 @@ import {
   parseEventFile,
   identifyLogFiles,
   parseLogFile,
+  parseHelmReleaseFile,
+  sortEventsByTime,
 } from '../parsers/index.js';
+import type { HelmRelease } from '../parsers/index.js';
 import { InvestigationGraphImpl, buildResourceGraph } from '../graph/index.js';
 import type {
   AnalyzerResult,
@@ -256,6 +259,18 @@ export async function analyzeBundlePipeline(
   );
   const resources = resourceBatches.flat();
 
+  // Build a source-file map so chunk IDs use actual bundle paths instead of
+  // fabricated per-resource paths.  Each resource keeps the reference identity
+  // from the batch, so Map lookup by reference works correctly.
+  const resourceSourceFiles = new Map<K8sResource, string>();
+  for (let i = 0; i < resourceFiles.length; i++) {
+    const file = resourceFiles[i]!;
+    const batch = resourceBatches[i] ?? [];
+    for (const resource of batch) {
+      resourceSourceFiles.set(resource, file.relativePath);
+    }
+  }
+
   completeTraceStep(trace, step4, resources.length);
   emitProgress(options, { step: 'parse-resources', status: 'completed', artifactsProcessed: resources.length });
   log(`Parsed ${resources.length} K8s resources`, verbose);
@@ -269,7 +284,7 @@ export async function analyzeBundlePipeline(
   const eventBatches = await Promise.all(
     eventFiles.map((f) => parseEventFile(f.absolutePath)),
   );
-  const events = eventBatches.flat();
+  const events = sortEventsByTime(eventBatches.flat());
 
   completeTraceStep(trace, step5, events.length);
   emitProgress(options, { step: 'parse-events', status: 'completed', artifactsProcessed: events.length });
@@ -287,6 +302,14 @@ export async function analyzeBundlePipeline(
   emitProgress(options, { step: 'parse-logs', status: 'completed', artifactsProcessed: logs.length });
   log(`Parsed ${logs.length} log files`, verbose);
 
+  // ── 6b. Parse Helm release files ─────────────────────────────────────────
+  const helmFiles = profile.manifest.files.filter((f) => f.category === 'helm-release');
+  const helmBatches = await Promise.all(
+    helmFiles.map((f) => parseHelmReleaseFile(f.absolutePath)),
+  );
+  const helmReleases: HelmRelease[] = helmBatches.flat();
+  log(`Parsed ${helmReleases.length} Helm releases`, verbose);
+
   // ── 7. Build AI chunk index and lexical index (optional, AI-gated) ────────
   let aiDeps: AIInvestigatorDeps | undefined;
 
@@ -297,7 +320,7 @@ export async function analyzeBundlePipeline(
     log('Building AI chunk index…', verbose);
 
     try {
-      const chunks = buildChunkIndex({ analyzerResults, resources, events, logs, profile });
+      const chunks = buildChunkIndex({ analyzerResults, resources, events, logs, profile, resourceSourceFiles, helmReleases });
       const resourceGraph = buildResourceGraph(resources, events);
       const lexicalIndex = new LexicalSearchIndex();
       lexicalIndex.build(chunks);
@@ -441,6 +464,8 @@ export async function analyzeBundlePipeline(
       events,
       logs,
       profile,
+      resourceSourceFiles,
+      helmReleases,
     },
     aiDeps,
     seedProgress,

@@ -362,6 +362,10 @@ export async function runInvestigation(
   // finding type groups (AI findings compete with AI, heuristic with heuristic).
   // When an AI finding and a heuristic finding have similar titles, prefer
   // the AI finding.
+  //
+  // The full normalized title is used as the dedup key (no character-count
+  // truncation). Truncating to a short prefix would incorrectly merge two
+  // legitimately different findings that happen to share a long common prefix.
   const dedupedFindings: Finding[] = [];
   const seenTitles = new Map<string, Finding>();
 
@@ -378,8 +382,7 @@ export async function runInvestigation(
       .replace(/\(symptom:.*\)$/i, '')
       .replace(/['']/g, "'")
       .trim()
-      .toLowerCase()
-      .slice(0, 80);
+      .toLowerCase();
 
     const existing = seenTitles.get(normTitle);
     if (existing == null) {
@@ -396,17 +399,87 @@ export async function runInvestigation(
     // else: skip the lower-confidence duplicate
   }
 
-  // ── 7b. Sort by severity desc, then confidence desc ───────────────────────
-  const sortedFindings = [...dedupedFindings].sort((a, b) => {
+  // ── 7b. Symptom suppression pass ──────────────────────────────────────────
+  // When a root-cause finding (hypothesis with confidence ≥ 0.5, or an AI
+  // finding) exists for a component, suppress pure-symptom heuristic findings
+  // for the same component so they don't add noise to the report.
+  //
+  // Suppressed finding types:
+  //   - 'Not Ready Pod'      (finding:k8s:notready:*) — generic readiness symptom
+  //   - 'Pending Pod'        (finding:k8s:pending:*)  — generic scheduling/volume symptom
+  //   - 'Unhealthy Workload' (finding:k8s:workload:*) — generic workload symptom
+  //
+  // Preserved finding types (even when a root-cause hypothesis exists):
+  //   - CrashLoopBackOff  (finding:k8s:crashloop:*) — names the specific failure mode
+  //   - ImagePullBackOff  (finding:k8s:imagepull:*)  — names the specific failure mode
+  //
+  // For 'Not Ready Pod' and 'Pending Pod': suppress when any root-cause
+  //   finding has a component that exactly matches one of the symptom
+  //   finding's pod components.
+  //
+  // For 'Unhealthy Workload': suppress when any root-cause finding has a Pod
+  //   component in the same namespace as the workload.  This is a sound proxy
+  //   for "the workload's pods are already diagnosed".
+  const rootCauseFindings = dedupedFindings.filter(
+    (f) =>
+      (f.id.startsWith('finding:hypothesis:') && f.confidence >= 0.5) ||
+      f.id.startsWith('finding:ai:'),
+  );
+
+  // Collect pod components and namespaces covered by root-cause findings
+  const rootCausePodComponents = new Set<string>();
+  const rootCausePodNamespaces = new Set<string>();
+
+  for (const rcf of rootCauseFindings) {
+    for (const comp of rcf.affectedComponents) {
+      if (comp.startsWith('Pod/')) {
+        rootCausePodComponents.add(comp);
+        const parts = comp.split('/');
+        if (parts[1] != null) rootCausePodNamespaces.add(parts[1]);
+      }
+    }
+  }
+
+  const suppressedFindings = dedupedFindings.filter((f) => {
+    // Suppress 'Not Ready Pod' and 'Pending Pod' when a root-cause finding
+    // covers the same pod. These are broad workload symptoms rather than the
+    // actual diagnosis once a stronger root cause is available.
+    if (
+      f.id.startsWith('finding:k8s:notready:') ||
+      f.id.startsWith('finding:k8s:pending:')
+    ) {
+      return !f.affectedComponents.some((comp) => rootCausePodComponents.has(comp));
+    }
+
+    // Suppress 'Unhealthy Workload' when a root-cause finding covers a Pod in
+    // the same namespace (the workload's pods have been diagnosed)
+    if (f.id.startsWith('finding:k8s:workload:')) {
+      return !f.affectedComponents.some((comp) => {
+        const parts = comp.split('/');
+        const ns = parts[1];
+        return ns != null && rootCausePodNamespaces.has(ns);
+      });
+    }
+
+    return true;
+  });
+
+  // ── 7c. Sort by severity desc, then confidence desc ───────────────────────
+  const sortedFindings = [...suppressedFindings].sort((a, b) => {
     const severityDiff =
       (SEVERITY_ORDER[b.severity] ?? 0) - (SEVERITY_ORDER[a.severity] ?? 0);
     if (severityDiff !== 0) return severityDiff;
     return b.confidence - a.confidence;
   });
 
+  // Final graph cleanup: step 7a/7b can remove findings after the first edge
+  // filtering pass, so re-filter once more against the final retained finding
+  // set to avoid dangling finding-node references in the investigation graph.
+  const finalEdges = filterEdgesForRetainedFindings(combinedEdges, sortedFindings);
+
   return {
     findings: sortedFindings,
-    edges: combinedEdges,
+    edges: finalEdges,
     seeds,
     metadata: {
       seedCount: seeds.length,

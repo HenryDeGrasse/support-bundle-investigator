@@ -165,10 +165,6 @@ describe('evidenceIcon()', () => {
     expect(evidenceIcon('analyzer')).toBe('ANL');
   });
 
-  it('returns CFG for config', () => {
-    expect(evidenceIcon('config')).toBe('CFG');
-  });
-
   it('returns HLM for helm-release', () => {
     expect(evidenceIcon('helm-release')).toBe('HLM');
   });
