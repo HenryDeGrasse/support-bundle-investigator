@@ -282,20 +282,46 @@ function normalizeIssueFamily(finding: Finding): string {
 
   const lower = finding.title.toLowerCase();
 
-  if (lower.includes('missing') && lower.includes('secret')) return 'missing-secret';
-  if (lower.includes('missing') && lower.includes('service')) return 'missing-service';
-  if (lower.includes('dns') || lower.includes('resolution fail')) return 'dns-failure';
+  // Secret-related: covers "missing secret", "secret not found", "absent secret",
+  // "required secret", "secret 'x' not found", etc.
+  if (
+    lower.includes('secret') &&
+    (lower.includes('missing') ||
+      lower.includes('not found') ||
+      lower.includes('absent') ||
+      lower.includes('required') ||
+      lower.includes('does not exist'))
+  ) {
+    return 'missing-secret';
+  }
+
+  // Service-related
+  if (
+    lower.includes('service') &&
+    (lower.includes('missing') || lower.includes('not found') || lower.includes('absent'))
+  ) {
+    return 'missing-service';
+  }
+
+  if (lower.includes('dns') || lower.includes('resolution fail') || lower.includes('no such host')) {
+    return 'dns-failure';
+  }
   if (
     lower.includes('connection') &&
     (lower.includes('timeout') || lower.includes('refused'))
   ) {
     return 'connectivity-failure';
   }
-  if (lower.includes('imagepull') || lower.includes('image pull')) return 'image-pull-failure';
+  if (lower.includes('imagepull') || lower.includes('image pull') || lower.includes('errimagepull')) {
+    return 'image-pull-failure';
+  }
   if (lower.includes('not ready') || lower.includes('readiness')) return 'readiness-failure';
-  if (lower.includes('crashloop')) return 'crashloop';
+  if (lower.includes('crashloop') || lower.includes('crash loop')) return 'crashloop';
   if (lower.includes('image') && lower.includes('mismatch')) return 'image-mismatch';
   if (lower.includes('unhealthy')) return 'unhealthy';
+  if (lower.includes('oom') || lower.includes('out of memory') || lower.includes('memory limit')) {
+    return 'oom-kill';
+  }
 
   return lower.slice(0, 40).replace(/\s+/g, '-');
 }
@@ -428,9 +454,29 @@ export function mergeHypothesisFindings(
   hypothesisFindings: Finding[],
   originalFindings: Finding[],
 ): Finding[] {
-  const uncoveredOriginals = originalFindings.filter((originalFinding) => {
-    const originalIssueFamily = normalizeIssueFamily(originalFinding);
+  // AI findings always win over hypothesis findings for the same issue.
+  // When an AI finding covers the same issue family + component as a hypothesis
+  // finding, the hypothesis finding is suppressed in favour of the AI finding.
+  // This prevents the hypothesis layer from burying AI-synthesised diagnoses.
+  const aiFindingsInOriginal = originalFindings.filter((f) =>
+    f.id.startsWith('finding:ai:'),
+  );
 
+  const survivingHypothesis = hypothesisFindings.filter((hypothesisFinding) => {
+    if (aiFindingsInOriginal.length === 0) return true;
+    const hypothesisFamily = normalizeIssueFamily(hypothesisFinding);
+    // Suppress this hypothesis finding if any AI finding covers the same issue
+    return !aiFindingsInOriginal.some(
+      (aiFinding) =>
+        normalizeIssueFamily(aiFinding) === hypothesisFamily &&
+        hasComponentOverlap(aiFinding, hypothesisFinding),
+    );
+  });
+
+  // Non-AI original findings that aren't already covered by a hypothesis finding
+  const nonAiOriginals = originalFindings.filter((f) => !f.id.startsWith('finding:ai:'));
+  const uncoveredOriginals = nonAiOriginals.filter((originalFinding) => {
+    const originalIssueFamily = normalizeIssueFamily(originalFinding);
     return !hypothesisFindings.some(
       (hypothesisFinding) =>
         normalizeIssueFamily(hypothesisFinding) === originalIssueFamily &&
@@ -438,5 +484,5 @@ export function mergeHypothesisFindings(
     );
   });
 
-  return [...hypothesisFindings, ...uncoveredOriginals];
+  return [...aiFindingsInOriginal, ...survivingHypothesis, ...uncoveredOriginals];
 }

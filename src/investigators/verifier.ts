@@ -454,8 +454,20 @@ function roundConfidence(value: number): number {
 function mergeFindings(group: Finding[]): Finding {
   if (group.length === 1) return group[0]!;
 
-  // Sort highest-confidence first so the base finding is the most trusted
-  const sorted = [...group].sort((a, b) => b.confidence - a.confidence);
+  // Sort order priority:
+  //   1. AI findings first (finding:ai:*) — preserves AI identity through merge
+  //   2. Then by confidence descending
+  //
+  // Without AI-first priority, a hypothesis finding at confidence=1.0 beats an
+  // AI finding at confidence=1.0 due to stable-sort insertion order (heuristic
+  // findings are inserted before AI findings). The merged result would take the
+  // hypothesis ID, causing the AI-primary promotion step to see no AI findings.
+  const sorted = [...group].sort((a, b) => {
+    const aIsAi = a.id.startsWith('finding:ai:') ? 0 : 1;
+    const bIsAi = b.id.startsWith('finding:ai:') ? 0 : 1;
+    if (aIsAi !== bIsAi) return aIsAi - bIsAi; // AI first
+    return b.confidence - a.confidence;
+  });
   const base = sorted[0]!;
 
   // Highest severity in the group
