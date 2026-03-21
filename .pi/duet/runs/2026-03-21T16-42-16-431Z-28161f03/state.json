@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "phase": "plan_approved",
-  "updatedAt": "2026-03-21T20:06:06.373Z",
+  "phase": "completed",
+  "updatedAt": "2026-03-21T20:08:12.053Z",
   "runId": "2026-03-21T16-42-16-431Z-28161f03",
   "handoffMode": "summary",
   "postPlanMode": "review",
@@ -69,11 +69,10 @@
     "persistSessionAcrossSteps": true
   },
   "goal": "I'd like you to go deep on improving the evals and observability and robustness. covering these: Build a real eval scorecard across all scenarios, Add AI replay/cassette evals, Expand scenario corpus to include newer investigators, Enrich trace.json with seed/retrieval/confidence telemetry, Add a debug mode that emits per-finding provenance, Add cost/latency/model summaries for AI runs,  Robustness- Corrupt/partial/oversized bundle tests, Stress/perf benchmarks, Sensitive-data leakage tests",
-  "round": 3,
-  "resumeAction": "run",
+  "round": 1,
   "activeSummary": {
-    "stepId": "step-14",
-    "stepTitle": "Wire enriched trace fields into JSON and Markdown report output",
+    "stepId": "step-15",
+    "stepTitle": "Final integration pass: build, lint, and full test suite green",
     "gateResults": [
       {
         "id": "lint",
@@ -265,5 +264,5 @@
       }
     ]
   },
-  "stepIndex": 15
+  "stepIndex": 16
 }
