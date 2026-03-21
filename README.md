@@ -2,7 +2,7 @@
 
 > CLI-first, local-first tool that takes a [Troubleshoot](https://troubleshoot.sh/) support bundle `.tar.gz` and produces evidence-backed diagnosis.
 
-**Status: Complete** — full investigation pipeline with differential diagnosis, AI-augmented analysis, interactive TUI, and 6 fixture scenarios verified by **3396+ tests across 83 files**.
+**Status: Complete** — full investigation pipeline with differential diagnosis, AI-augmented analysis, interactive TUI, and fixture scenarios verified by **3637+ tests across 86 files**.
 
 ---
 
@@ -295,7 +295,7 @@ Choosing TEI will start the Docker container and write the settings to `.env`. C
 ## Testing
 
 ```bash
-npm run unit          # 3396+ tests across 83 files
+npm run unit          # 3637+ tests across 86 files
 npm run lint          # zero-warning ESLint
 npm run typecheck     # tsc --noEmit
 ```
@@ -395,7 +395,7 @@ bundle.tar.gz
   +--> runInvestigation
          Seeds: analyzer errors, pod health, log patterns, warning events
          |
-         +--> Kubernetes investigator (CrashLoopBackOff, ImagePullBackOff, not-ready, pending)
+         +--> Kubernetes investigator (CrashLoopBackOff, ImagePullBackOff, not-ready, pending, node conditions/capacity/taints)
          +--> Log investigator (DNS failure, connection timeout, missing resource, image pull)
          +--> Config investigator (missing secrets, service refs, image tag mismatches)
          +--> Service investigator (empty Endpoints, DNS-confirmed unreachable)
@@ -403,9 +403,10 @@ bundle.tar.gz
          +--> AI investigator (DiagnosticGraph traversal + BM25 + HyDE semantic -> LLM)
          |
          +--> Causal template matching (MissingSecret->FailedMount->CrashLoop, etc.)
-         +--> Hypothesis engine (3-5 competing hypotheses per symptom, ranked)
+         +--> Hypothesis engine (declarative templates + evidence rules, 3-5 competing hypotheses per symptom)
+         +--> Cross-symptom correlation (cluster-wide meta-findings for convergent root causes)
          +--> Verifier (contradictions, confidence adjustment, confidenceQuality)
-         +--> Orchestrator merge (AI primary, hypothesis dedup, symptom suppression)
+         +--> Orchestrator merge (Pass 1 structural merge -> Pass 2 title dedup -> symptom suppression)
          |
          +--> Sort by severity + confidence
   |
@@ -523,9 +524,15 @@ Options:
 
 **Heuristic precision floor.** Five deterministic investigators (Kubernetes, Log, Config, Service, NetworkPolicy) provide reliable offline analysis. AI findings are merged on top, never replacing the heuristic baseline.
 
-**Differential diagnosis.** For each symptom, 3-5 competing root-cause hypotheses are generated from a declarative template registry and scored. The top finding includes an explicit comparison explaining why the runner-up was rejected.
+**Differential diagnosis.** For each symptom, 3-5 competing root-cause hypotheses are generated from a declarative template registry and scored. Templates can carry co-located `evidenceRules`, so new diagnostic patterns increasingly land as data changes rather than bespoke procedural code. The top finding includes an explicit comparison explaining why the runner-up was rejected.
 
-**Confidence quality, not just a number.** Every finding carries `confidenceQuality: strong | moderate | weak` alongside the numeric confidence. `81% (weak)` means the number could shift significantly with more bundle data; `100% (strong)` means it's well-grounded across multiple independent sources.
+**Cross-symptom correlation.** When multiple symptom groups in the same namespace converge on the same top-ranked root cause, SBI emits a cluster-wide meta-finding with boosted confidence (for example, a shared `dns-failure` across several pods).
+
+**Node-aware Kubernetes investigation.** The Kubernetes investigator now covers node conditions plus allocatable-vs-capacity memory analysis, scheduling-blocking taints, and MemoryPressure → OOMKilled pod correlation.
+
+**Confidence quality, not just a number.** Every finding carries `confidenceQuality: strong | moderate | weak` alongside the numeric confidence. `81% (weak)` means the number could shift significantly with more bundle data; `100% (strong)` means it's well-grounded across multiple independent sources. Confidence calibration is regression-tested with monotonicity, penalty, and scenario-ranking unit tests.
+
+**Two-pass dedup architecture.** Final finding consolidation is explicit and documented: Pass 1 performs structural component/family merges with evidence absorption, Pass 2 performs title-based cosmetic dedup, and symptom suppression runs afterward as a separate step.
 
 **DiagnosticGraph.** A unified graph replaces two disconnected legacy graphs. It combines structural K8s edges (owner-refs, label-selectors, service-selectors), causal edges (from template matching and investigators), and temporal edges (log chunk ↔ event correlations, sequential event causality). Graph traversal for AI retrieval uses this richer edge set.
 

@@ -545,12 +545,12 @@ Fix: normalize `affectedComponents` in AI findings before verification. Strip le
 
 Fix: align with real bundle paths (flat JSON lists) after fixture rewrite (1.1), or resolve paths against the actual manifest.
 
-### 7.5 No cross-symptom hypothesis correlation
-**Files:** `src/investigators/hypothesis-generator.ts`
+### 7.5 No cross-symptom hypothesis correlation — ✅ Resolved
+**Files:** `src/investigators/hypothesis-generator.ts`, `src/investigators/orchestrator.ts`
 
-Each symptom group generates hypotheses independently. If 3 pods in the same namespace all have DNS failures, they produce 3 independent hypothesis sets. No mechanism to detect "cluster-wide DNS outage" as a shared root cause with higher aggregate confidence.
+Implemented a cross-symptom correlation pass after per-symptom ranking. When multiple symptom groups in the same namespace converge on the same top-ranked category, SBI now emits cluster-wide meta-findings such as `finding:meta:cluster-wide:dns-failure:*` with convergence-boosted confidence.
 
-Fix: after per-symptom hypothesis generation, run a cross-symptom correlation pass. Group hypothesis sets that share the same top-ranked category (e.g. all `dns-failure`). If N symptom groups converge on the same root cause in the same namespace, create a meta-finding: "Cluster-wide DNS failure affecting N pods in namespace X" with confidence boosted by convergence.
+Coverage now includes both unit tests for `correlateAcrossSymptoms()` and an orchestrator integration test proving the full pipeline preserves the meta-finding through dedup and final output sorting.
 
 ### 7.6 No active falsification of hypotheses
 **Files:** `src/investigators/hypothesis-evidence-collector.ts`
@@ -559,19 +559,22 @@ Contradicting evidence search is passive — checks for success patterns in logs
 
 Fix: for each hypothesis, define what evidence would falsify it and actively search for that. "DNS failure" → search for `"successfully resolved"` or `"connected to <hostname>"` for the same hostname. "Registry auth failure" → search for successful pulls of other images from the same registry.
 
-### 7.7 Confidence scores not calibrated against ground truth
-**Files:** `src/investigators/hypothesis-ranker.ts`, `scripts/benchmark-hypotheses.mjs`
+### 7.7 Confidence scores not calibrated against ground truth — ✅ Resolved
+**Files:** `src/investigators/hypothesis-ranker.ts`, `src/investigators/__tests__/hypothesis-ranker.test.ts`, `scripts/benchmark-hypotheses.mjs`
 
-Scoring constants (`SUPPORTING_PER_ITEM = 0.15`, etc.) are hand-tuned. The benchmark checks "is the top-1 category correct?" but doesn't check whether `0.81` confidence actually means 81% correct. A confidence of 0.80 could be right 50% or 99% of the time.
+The confidence model now has explicit calibration regression coverage in the unit suite. Tests assert monotonicity across increasing evidence quality, enforce boundary conditions (`0.0` with no evidence, generic-only cap at `<= 0.50`, max score `<= 1.0`), and verify contradiction / missing-decisive penalties.
 
-Fix: extend the benchmark to track actual correctness per confidence band across a larger test corpus. Use the data to adjust scoring constants. At minimum, verify monotonicity: findings at 0.90 confidence should be correct more often than findings at 0.70.
+The benchmark remains as a corpus-level signal, but the primary calibration gate is now the test suite, including fixture-inspired scenario ranking checks for `wrong-db-endpoint`, `missing-secret-crashloop`, `bad-image-tag`, and `pvc-pending`.
 
-### 7.8 Five dedup/merge layers with overlapping logic
-**Files:** `src/investigators/orchestrator.ts`
+### 7.8 Five dedup/merge layers with overlapping logic — ✅ Resolved
+**Files:** `src/investigators/orchestrator.ts`, `src/investigators/__tests__/orchestrator.test.ts`
 
-The orchestrator runs: (a) hypothesis category dedup, (b) AI-primary promotion, (c) `mergeHypothesisFindings`, (d) title-based dedup, (e) symptom suppression. Each layer has its own normalization, component matching, and title comparison. Layers partially overlap — (a) and (d) both deduplicate by normalized title; (b) and (c) both merge by component overlap. No clear contract between layers.
+The orchestrator has been consolidated into a documented two-pass architecture plus a separate suppression step:
+1. **Pass 1 — component/family structural merge** with explicit winner rules (AI > hypothesis > heuristic) and evidence absorption
+2. **Pass 2 — title-based cosmetic dedup** for wording collisions across components
+3. **Symptom suppression** as a distinct post-dedup cleanup step
 
-Fix: consolidate into two passes: (1) component-based merge (structural, using graph relationships when available), (2) title-based dedup (cosmetic, catching LLM wording variants). Each pass has one normalization strategy and one merge strategy. Currently the multiple layers were added incrementally to fix specific bugs — they need a unified design.
+Contract tests now verify non-overlap between passes, evidence preservation across passes, hypothesis-vs-heuristic and AI-vs-hypothesis precedence, and the normalization boundaries between Pass 1 and Pass 2.
 
 ### 7.9 Spec recommender ignores AI findings
 **Files:** `src/reporters/spec-recommender.ts`
@@ -580,33 +583,23 @@ Fix: consolidate into two passes: (1) component-based merge (structural, using g
 
 Fix: process all findings in the hypothesis gap recommender, not just hypothesis-prefixed ones.
 
-### 7.10 No node resource investigation
-**Files:** `src/investigators/kubernetes-investigator.ts`, `src/investigators/seed-generator.ts`
+### 7.10 No node resource investigation — ✅ Resolved
+**Files:** `src/investigators/kubernetes-investigator.ts`, `src/investigators/seed-generator.ts`, `src/investigators/__tests__/kubernetes-investigator.test.ts`, `src/investigators/__tests__/seed-generator.test.ts`
 
-No investigator examines node conditions (NotReady, MemoryPressure, DiskPressure, PIDPressure, tainted). No seeds are generated for node-level problems. A node in NotReady state explains why pods can't schedule — but this is invisible to the current pipeline.
+Node investigation now covers more than simple health conditions. SBI added:
+- allocatable-vs-capacity memory analysis for constrained nodes
+- taint analysis for `NoSchedule` / `NoExecute` scheduling blockers
+- causal correlation from `MemoryPressure` nodes to OOMKilled pods on the same node
+- seed generation for scheduling-preventing node taints
 
-Fix: add node-health seeds (scan Node resources for unhealthy conditions) and a node investigator that correlates node conditions with pod scheduling failures.
+The Kubernetes investigator also links taint findings conservatively to matching `FailedScheduling` events and emits node-level findings without over-attributing unrelated scheduling failures.
 
-### 7.11 Hypothesis templates are procedural, not declarative
-**Files:** `src/investigators/hypothesis-generator.ts`
+### 7.11 Hypothesis templates are procedural, not declarative — ✅ Resolved
+**Files:** `src/investigators/hypothesis-generator.ts`, `src/investigators/hypothesis-templates.ts`, `src/investigators/hypothesis-evidence-collector.ts`
 
-Five symptom types, each with a hardcoded generator function. Adding a new failure pattern requires new TypeScript code. This should be a declarative template registry:
+The hypothesis layer now uses a declarative template registry. Templates carry `evidenceRules`, and the generator passes those rules through into each instantiated `Hypothesis`. The evidence collector can execute template-driven supporting / contradicting rules directly, which reduces the need for category-specific procedural code.
 
-```yaml
-- symptom: oom-kill
-  hypotheses:
-    - category: oom-kill
-      rootCause: "Container memory limit is too low for the application's working set"
-    - category: config-error  
-      rootCause: "Application has a memory leak triggered by misconfigured caching"
-    - category: generic-crash
-      rootCause: "Application allocates unbounded memory based on input size"
-  evidence_rules:
-    supporting: [{ source: events, pattern: "OOMKilled" }, { source: pod_status, field: "terminated.reason", value: "OOMKilled" }]
-    contradicting: [{ source: pod_status, field: "resources.limits.memory", absent: true }]
-```
-
-Fix: extract hypothesis templates into a data format. The generator reads templates and instantiates hypotheses. New failure patterns are added by editing data, not code. Evidence collection rules are co-located with the template.
+Phase 7 also added a standalone `oom-kill` template plus dedicated collectors for `oom-kill` and `missing-service`, so new failure patterns can be introduced with a mix of declarative templates and narrowly scoped collector extensions where deeper resource correlation is needed.
 
 ### 7.12 No uncertainty communication beyond a single number
 **Files:** `src/types/finding.ts`, `src/reporters/`
@@ -654,4 +647,4 @@ Phase 0 (pipeline integrity — AI grounding, confidence scoring, verifier fixes
                     └─► Phase 6 (new investigators, create causal edges)
 ```
 
-Phase 0 first (correctness). Phase 1 next (fixtures, dead code). Phase 2 and Phase 3 can run in parallel after Phase 1. Phase 4 depends on Phase 3 (needs local embedding backend). Phase 5a can start after Phase 1 (doesn't need retrieval changes). Phase 5b depends on 5a. Phase 6 depends on 5b (investigators need to create causal edges in the unified graph). Phase 5d depends on Phase 3 (needs local LLM for triple extraction) and 5c. Tier 7 items 7.5-7.12 (cross-symptom correlation, active falsification, declarative templates, confidence calibration, dedup consolidation, uncertainty communication) are threaded into their respective phases — 7.5/7.6 into Phase 5b (causal edges enable cross-symptom correlation), 7.8 into Phase 5a (graph unification replaces multi-layer dedup), 7.7 into Phase 6 (needs larger test corpus), 7.11/7.12 can be done anytime.
+Phase 0 first (correctness). Phase 1 next (fixtures, dead code). Phase 2 and Phase 3 can run in parallel after Phase 1. Phase 4 depends on Phase 3 (needs local embedding backend). Phase 5a can start after Phase 1 (doesn't need retrieval changes). Phase 5b depends on 5a. Phase 6 depends on 5b (investigators need to create causal edges in the unified graph). Phase 5d depends on Phase 3 (needs local LLM for triple extraction) and 5c. Within Tier 7, items 7.5, 7.7, 7.8, 7.10, and 7.11 are now resolved; the remaining items (notably 7.6, 7.9, 7.12) stay threaded into their respective phases.

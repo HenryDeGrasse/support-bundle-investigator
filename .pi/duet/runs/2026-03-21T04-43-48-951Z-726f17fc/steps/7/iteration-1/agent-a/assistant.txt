@@ -1,0 +1,37 @@
+Reviewed:
+- `docs/findings-and-improvements.md`
+- `README.md`
+- `MY_APPROACH_AND_THOUGHTS.md`
+
+What I changed:
+- Updated `docs/findings-and-improvements.md`
+  - marked 7.5, 7.7, 7.8, 7.10, and 7.11 as resolved
+  - added brief implementation notes for each resolved item
+  - updated the closing roadmap note to reflect that these Tier 7 items are now complete
+- Updated `README.md`
+  - refreshed test counts to `3637+ tests across 86 files`
+  - expanded the feature/design sections to mention:
+    - declarative hypothesis templates with `evidenceRules`
+    - cross-symptom correlation and cluster-wide meta-findings
+    - node resource / capacity / taint investigation
+    - confidence calibration + monotonicity regression tests
+    - consolidated 2-pass dedup architecture
+  - updated the pipeline overview to reflect the new hypothesis/correlation/dedup flow
+- Updated `MY_APPROACH_AND_THOUGHTS.md`
+  - added a Phase 7 paragraph covering:
+    - shift toward declarative templates
+    - calibration as an enforced regression-tested property
+    - rationale for the 2-pass dedup consolidation
+
+Assessment:
+- Step 7 is complete.
+- The docs now reflect the implemented Phase 7 work and no longer describe these items as open gaps.
+- I verified the required checks after the documentation updates.
+
+Checks run:
+- `npm run lint` ✅
+- `npm run typecheck` ✅
+- `npm run unit` ✅
+- `npm run build` ✅
+
+Verdict: changes_made

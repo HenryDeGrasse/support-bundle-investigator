@@ -20,6 +20,8 @@ The pipeline runs in layers:
 
 ## What Makes This Different
 
+Phase 7 pushed the architecture further toward explicit contracts and data-driven diagnostics. The biggest shift was moving the hypothesis layer toward a declarative template registry with co-located evidence rules, so new failure modes increasingly become template/data work instead of more procedural branches. In parallel, I tightened the confidence model by adding monotonicity and scenario-ranking regression tests — calibration should be enforced continuously, not treated as a one-off benchmark exercise. I also consolidated the final finding merge into a documented 2-pass dedup architecture (structural merge first, cosmetic title dedup second, suppression last) because overlapping cleanup layers are where diagnostic systems quietly lose evidence and trust.
+
 **Falsification, not summarization.** The hypothesis layer doesn't just find evidence that supports a conclusion — it actively searches for evidence that weakens it. When the top two hypotheses are close in confidence, the system says so and recommends what evidence would resolve the ambiguity.
 
 **Spec-gap recommendations.** When confidence is limited by missing bundle data, the system recommends specific collectors or analyzers to add. This is the most Replicated-native feature: it improves future bundles, not just the current triage.
