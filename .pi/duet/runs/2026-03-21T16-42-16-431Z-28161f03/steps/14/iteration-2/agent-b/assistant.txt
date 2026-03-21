@@ -1,0 +1,33 @@
+Reviewed:
+- `test/integration/__tests__/perf-benchmark.test.ts`
+- `test/helpers/create-test-bundle.ts`
+- trace timing behavior exercised by the benchmark
+
+What I verified
+- The new benchmark:
+  - uses an existing moderate fixture (`wrong-db-endpoint`)
+  - runs `analyzeBundlePipeline(..., { noAi: true })`
+  - performs a warm-up run before 3 measured runs
+  - asserts:
+    - wall-clock completion under 10s
+    - trace completion under 10s
+    - no single trace step exceeds 5s
+    - run-to-run variance stays within 2x
+  - uses a `30_000` ms test timeout
+- The test is stable and passes cleanly.
+- Full required checks pass.
+
+What I changed
+- No further changes needed.
+
+Checks run
+- `npx vitest run test/integration/__tests__/perf-benchmark.test.ts` ✅
+- `npm run lint` ✅
+- `npm run typecheck` ✅
+- `npm run unit` ✅
+
+Assessment
+- Step 14 is complete and correct.
+- The benchmark is generous enough for CI while still providing a meaningful regression guard.
+
+Verdict: approve
