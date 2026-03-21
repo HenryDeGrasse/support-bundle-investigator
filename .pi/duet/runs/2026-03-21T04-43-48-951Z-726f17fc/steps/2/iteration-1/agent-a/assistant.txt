@@ -1,0 +1,54 @@
+Reviewed:
+- `src/investigators/hypothesis-templates.ts`
+- `src/investigators/hypothesis-evidence-collector.ts`
+- `src/investigators/__tests__/hypothesis-templates.test.ts`
+- `src/investigators/__tests__/hypothesis-evidence-collector.test.ts`
+
+What I changed:
+- Added TDD coverage for step 2:
+  - `hypothesis-templates.test.ts`
+    - verifies `OOMKilled` text matches a dedicated `oom-kill` template
+    - added structural checks for the new template (`pod-oom`, 3 hypotheses)
+    - updated the existing “custom local registry” test to avoid conflict with the new built-in OOM template
+  - `hypothesis-evidence-collector.test.ts`
+    - added dedicated `oom-kill` collector coverage for:
+      - OOMKilled container status
+      - memory requests/limits from pod spec
+      - OOM-related events
+      - OOM-related logs
+    - added dedicated `missing-service` collector coverage for:
+      - referenced service with 0 ready endpoints
+      - pod/service/endpoints evidence paths
+    - added fallback/template-rule coverage for `missing-service`
+    - extended empty-context coverage to include `oom-kill` and `missing-service`
+- Implemented a standalone `oom-kill` template in `src/investigators/hypothesis-templates.ts`:
+  - patterns: `oomkilled`, `oom kill`, `oom-kill`, `out of memory`, `exit code 137`
+  - key prefix: `pod-oom`
+  - hypotheses:
+    - `oom-kill`
+    - `config-error`
+    - `generic-crash`
+- Implemented `collectOOMKillEvidence()` in `src/investigators/hypothesis-evidence-collector.ts`
+  - scans pod current/last terminated state for `OOMKilled`
+  - extracts memory requests/limits from matching container specs
+  - collects OOM-related events
+  - collects OOM-related log lines
+- Implemented `collectMissingServiceEvidence()`
+  - checks referenced in-cluster services from pod envs
+  - verifies service existence in inventory
+  - inspects `Endpoints` resources and counts ready addresses
+  - emits contradicting evidence when a referenced service has ready endpoints
+- Added `endpointsFilePath()` and `countReadyEndpointAddresses()` helpers.
+- Wired both new collectors into `CATEGORY_COLLECTORS`.
+
+Assessment:
+- Step 2 is implemented and verified.
+- I also tightened `missing-service` evidence so pod-reference support is only added when a real service problem exists, avoiding misleading support for healthy services.
+
+Checks run:
+- `npm run lint` ✅
+- `npm run typecheck` ✅
+- `npm run unit` ✅
+- `npm run build` ✅
+
+Verdict: changes_made

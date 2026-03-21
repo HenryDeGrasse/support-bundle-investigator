@@ -98,6 +98,11 @@ describe('HypothesisTemplate structure', () => {
     const t = loadTemplates().find((t) => t.id === 'pending');
     expect(t?.symptomKeyPrefix).toBe('pod-pending');
   });
+
+  it('oom-kill template has symptomKeyPrefix "pod-oom"', () => {
+    const t = loadTemplates().find((t) => t.id === 'oom-kill');
+    expect(t?.symptomKeyPrefix).toBe('pod-oom');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -193,6 +198,10 @@ describe('matchTemplate', () => {
     expect(matchTemplate('containercreating timeout').id).toBe('pending');
     expect(matchTemplate('failedmount event').id).toBe('pending');
     expect(matchTemplate('failedscheduling').id).toBe('pending');
+  });
+
+  it('matches OOMKilled text to the dedicated oom-kill template', () => {
+    expect(matchTemplate('Container app was OOMKilled after hitting exit code 137').id).toBe('oom-kill');
   });
 
   it('falls back to generic for unrecognised text', () => {
@@ -357,8 +366,10 @@ describe('adding a new template requires no new TypeScript code', () => {
   });
 
   it('matchTemplate can find a custom template when added to a local registry', () => {
-    // This simulates the pattern: no code changes needed, just data
-    const localRegistry = [...HYPOTHESIS_TEMPLATE_REGISTRY, oomKillTemplate];
+    // This simulates the pattern: no code changes needed, just data.
+    // Prepend the local template so it wins over any built-in template with
+    // overlapping OOM symptom patterns.
+    const localRegistry = [oomKillTemplate, ...HYPOTHESIS_TEMPLATE_REGISTRY];
     const corpus = 'container terminated with exit code 137 oomkilled';
     const lower = corpus.toLowerCase();
 
@@ -406,6 +417,11 @@ describe('template-driven output matches procedural generator output', () => {
   it('generic template produces 2 hypotheses (same as the procedural generator)', () => {
     const t = loadTemplates().find((t) => t.id === 'generic')!;
     expect(t.hypotheses).toHaveLength(2);
+  });
+
+  it('oom-kill template produces 3 hypotheses', () => {
+    const t = loadTemplates().find((t) => t.id === 'oom-kill')!;
+    expect(t.hypotheses).toHaveLength(3);
   });
 
   it('crashloop template categories match procedural output', () => {

@@ -741,6 +741,113 @@ describe('collectEvidenceForHypothesis — oom-kill: template rules match contai
   });
 });
 
+describe('collectEvidenceForHypothesis — oom-kill: dedicated collector finds status, limits, requests, events, and logs', () => {
+  const ctx = makeContext({
+    events: [
+      makeEvent('OOMKilled', 'Container app in pod app-pod was OOMKilled after exceeding its memory limit', 'app-pod'),
+    ],
+    logs: [
+      makeLogFile('logs/default/app-pod/app/current.log', [
+        'ERROR runtime: out of memory while allocating cache',
+      ]),
+    ],
+    resources: [
+      {
+        apiVersion: 'v1',
+        kind: 'Pod',
+        metadata: { name: 'app-pod', namespace: 'default' },
+        spec: {
+          containers: [
+            {
+              name: 'app',
+              resources: {
+                requests: { memory: '128Mi' },
+                limits: { memory: '256Mi' },
+              },
+            },
+          ],
+        },
+        status: {
+          containerStatuses: [
+            {
+              name: 'app',
+              ready: false,
+              restartCount: 2,
+              state: { terminated: { reason: 'OOMKilled', exitCode: 137 } },
+              lastState: { terminated: { reason: 'OOMKilled', exitCode: 137 } },
+            },
+          ],
+        },
+      },
+    ],
+  });
+  const hypothesis = makeHypothesis({ category: 'oom-kill' });
+  const assessment = collectEvidenceForHypothesis(hypothesis, ctx);
+
+  it('finds supporting evidence from OOMKilled container status', () => {
+    expect(
+      assessment.supporting.some(
+        (e) => e.path === 'cluster-resources/pods/default.json' && /oomkilled|exit code 137/i.test(e.note),
+      ),
+    ).toBe(true);
+  });
+
+  it('finds supporting evidence from pod memory requests and limits', () => {
+    expect(
+      assessment.supporting.some(
+        (e) => e.path === 'cluster-resources/pods/default.json' && /128Mi|256Mi|memory request|memory limit/i.test(e.note),
+      ),
+    ).toBe(true);
+  });
+
+  it('finds supporting evidence from OOM-related events and logs', () => {
+    expect(assessment.supporting.some((e) => e.path === 'cluster-resources/events/default.json')).toBe(true);
+    expect(assessment.supporting.some((e) => e.path.includes('app-pod') && /out of memory/i.test(e.note))).toBe(true);
+  });
+});
+
+describe('collectEvidenceForHypothesis — oom-kill: dedicated collector also reads init container memory settings', () => {
+  const ctx = makeContext({
+    resources: [
+      {
+        apiVersion: 'v1',
+        kind: 'Pod',
+        metadata: { name: 'app-pod', namespace: 'default' },
+        spec: {
+          initContainers: [
+            {
+              name: 'init-cache',
+              resources: {
+                requests: { memory: '64Mi' },
+                limits: { memory: '96Mi' },
+              },
+            },
+          ],
+        },
+        status: {
+          initContainerStatuses: [
+            {
+              name: 'init-cache',
+              ready: false,
+              restartCount: 1,
+              lastState: { terminated: { reason: 'OOMKilled', exitCode: 137 } },
+            },
+          ],
+        },
+      },
+    ],
+  });
+  const hypothesis = makeHypothesis({ category: 'oom-kill' });
+  const assessment = collectEvidenceForHypothesis(hypothesis, ctx);
+
+  it('captures init container OOMKilled status and memory request/limit evidence', () => {
+    const combined = assessment.supporting.map((e) => `${e.path} ${e.note}`).join(' ');
+    expect(combined).toMatch(/init-cache/i);
+    expect(combined).toMatch(/64Mi|96Mi/i);
+    expect(combined).toMatch(/oomkilled|exit code 137/i);
+  });
+});
+
 describe('collectEvidenceForHypothesis — generic-crash: template rules match fatal and panic log patterns', () => {
   const ctx = makeContext({
     logs: [
@@ -818,6 +925,82 @@ describe('collectEvidenceForHypothesis — template rules produce supporting and
     const notes = assessment.contradicting.map((e) => e.note).join(' ');
     expect(notes).toMatch(/Database connectivity recovered/i);
     expect(notes).toMatch(/successfully connected to database/i);
+  });
+});
+
+describe('collectEvidenceForHypothesis — missing-service: dedicated collector checks service inventory and endpoints', () => {
+  const ctx = makeContext({
+    resources: [
+      {
+        apiVersion: 'v1',
+        kind: 'Pod',
+        metadata: { name: 'app-pod', namespace: 'default' },
+        spec: {
+          containers: [
+            {
+              name: 'app',
+              env: [{ name: 'BACKEND_URL', value: 'http://payments.default.svc.cluster.local:8080' }],
+            },
+          ],
+        },
+      },
+      makeResource('Service', 'payments'),
+      {
+        apiVersion: 'v1',
+        kind: 'Endpoints',
+        metadata: { name: 'payments', namespace: 'default' },
+        spec: {
+          subsets: [
+            {
+              addresses: [],
+              notReadyAddresses: [{ ip: '10.0.0.10' }],
+              ports: [{ port: 8080 }],
+            },
+          ],
+        },
+      },
+    ],
+  });
+  const hypothesis = makeHypothesis({ category: 'missing-service' });
+  const assessment = collectEvidenceForHypothesis(hypothesis, ctx);
+
+  it('finds supporting evidence when a referenced service has no ready endpoints', () => {
+    expect(
+      assessment.supporting.some((e) => /payments/.test(e.note) && /0 ready addresses|no ready endpoints|no ready backend/i.test(e.note)),
+    ).toBe(true);
+  });
+
+  it('records pod, service, and endpoints evidence paths', () => {
+    expect(assessment.supporting.some((e) => e.path === 'cluster-resources/pods/default.json')).toBe(true);
+    expect(assessment.supporting.some((e) => e.path === 'cluster-resources/services/default.json')).toBe(true);
+    expect(assessment.supporting.some((e) => e.path === 'cluster-resources/endpoints/default.json')).toBe(true);
+  });
+});
+
+describe('collectEvidenceForHypothesis — missing-service: template rules provide fallback evidence when collector has no direct match', () => {
+  const ctx = makeContext({
+    logs: [
+      makeLogFile('logs/default/app-pod/app/current.log', [
+        'ERROR upstream service not found: payments',
+      ]),
+    ],
+  });
+  const hypothesis = makeHypothesis({
+    category: 'missing-service',
+    symptom: 'Pod app-pod cannot find the payments service during startup',
+    evidenceRules: [
+      {
+        label: 'Service missing in logs',
+        pattern: 'service not found|missing service|cannot find the payments service',
+        type: 'supporting',
+      },
+    ],
+  });
+  const assessment = collectEvidenceForHypothesis(hypothesis, ctx);
+
+  it('uses template rules for missing-service when the dedicated collector has no direct service-reference evidence', () => {
+    expect(assessment.supporting.some((e) => /Template rule 'Service missing in logs'/i.test(e.note))).toBe(true);
+    expect(assessment.missingDecisive.join(' ')).not.toMatch(/No dedicated evidence collector/i);
   });
 });
 
@@ -912,8 +1095,10 @@ describe('collectEvidenceForHypothesis — empty context', () => {
     'dns-failure',
     'image-pull-failure',
     'config-error',
+    'oom-kill',
     'connectivity-failure',
     'readiness-failure',
+    'missing-service',
   ] as const;
 
   for (const category of categories) {

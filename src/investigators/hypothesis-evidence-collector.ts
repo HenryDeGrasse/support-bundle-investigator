@@ -32,6 +32,10 @@ function eventsFilePath(namespace: string): string {
   return `cluster-resources/events/${namespace}.json`;
 }
 
+function endpointsFilePath(namespace: string): string {
+  return `cluster-resources/endpoints/${namespace}.json`;
+}
+
 // ---------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------
@@ -140,6 +144,8 @@ function resourceEvidencePath(resource: K8sResource, context: InvestigatorContex
       return secretFilePath(namespace);
     case 'Service':
       return serviceFilePath(namespace);
+    case 'Endpoints':
+      return endpointsFilePath(namespace);
     default: {
       const pluralKind = `${resource.kind.toLowerCase()}s`;
       if (resource.metadata.namespace != null) {
@@ -564,6 +570,33 @@ function extractHostnameFromText(content: string): string | undefined {
   if (hostMatch?.[1]) return hostMatch[1];
 
   return undefined;
+}
+
+/** Counts ready endpoint addresses on an Endpoints resource. */
+function countReadyEndpointAddresses(endpoints: K8sResource): number {
+  const subsets = (endpoints as unknown as Record<string, unknown>)['subsets'] ??
+    (isRecord(endpoints.spec) ? endpoints.spec['subsets'] : undefined);
+  if (!Array.isArray(subsets)) return 0;
+
+  let count = 0;
+  for (const subset of subsets) {
+    if (!isRecord(subset)) continue;
+    const addresses = subset['addresses'];
+    if (Array.isArray(addresses)) count += addresses.length;
+  }
+  return count;
+}
+
+function getContainerMemoryValue(
+  container: Record<string, unknown>,
+  bucket: 'requests' | 'limits',
+): string | undefined {
+  const resources = container['resources'];
+  if (!isRecord(resources)) return undefined;
+  const values = resources[bucket];
+  if (!isRecord(values)) return undefined;
+  const memory = values['memory'];
+  return typeof memory === 'string' && memory.length > 0 ? memory : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -1011,6 +1044,134 @@ function collectImagePullEvidence(context: InvestigatorContext): EvidenceAssessm
 }
 
 /**
+ * Collects evidence for an `oom-kill` hypothesis.
+ *
+ * Supporting:
+ *   - Pod container status shows `OOMKilled` in current or last terminated state
+ *   - Pod spec includes memory requests/limits for the affected container
+ *   - Kubernetes events mention OOM or exit code 137
+ *   - Logs mention out-of-memory conditions
+ *
+ * Missing decisive:
+ *   - Precise container memory usage around the OOM event
+ */
+function collectOOMKillEvidence(context: InvestigatorContext): EvidenceAssessment {
+  const assessment = emptyAssessment();
+  const oomLogPattern = /oomkilled|out of memory|memory cgroup|killed process .*oom|exit code 137/i;
+
+  const oomEvents = context.events.filter((ev) =>
+    /oomkilled|killing|evicted|warning/i.test(ev.reason) &&
+    /oomkilled|out of memory|memory cgroup|exceeded.*memory|exit code 137/i.test(ev.message),
+  );
+  for (const ev of oomEvents) {
+    const ns = ev.involvedObject.namespace ?? 'default';
+    assessment.supporting.push({
+      path: eventsFilePath(ns),
+      note: `Event indicates OOM kill for '${ev.involvedObject.name}': ${ev.message}`,
+      artifactType: 'event',
+      timestamp: ev.firstTimestamp,
+    });
+  }
+
+  for (const pod of findResources(context.resources, 'Pod')) {
+    const ns = pod.metadata.namespace ?? 'default';
+    const containerGroups = isRecord(pod.spec)
+      ? [pod.spec['initContainers'], pod.spec['containers']]
+      : [];
+    const containerByName = new Map<string, Record<string, unknown>>();
+    for (const containers of containerGroups) {
+      if (!Array.isArray(containers)) continue;
+      for (const container of containers) {
+        if (!isRecord(container)) continue;
+        const name = container['name'];
+        if (typeof name === 'string') {
+          containerByName.set(name, container);
+        }
+      }
+    }
+
+    if (!isRecord(pod.status)) continue;
+    const statusGroups = [pod.status['containerStatuses'], pod.status['initContainerStatuses']];
+    for (const statuses of statusGroups) {
+      if (!Array.isArray(statuses)) continue;
+
+      for (const status of statuses) {
+        if (!isRecord(status)) continue;
+        const containerName = String(status['name'] ?? 'unknown');
+        const state = status['state'];
+        const lastState = status['lastState'];
+        const currentTerminated = isRecord(state) && isRecord(state['terminated'])
+          ? state['terminated']
+          : undefined;
+        const previousTerminated = isRecord(lastState) && isRecord(lastState['terminated'])
+          ? lastState['terminated']
+          : undefined;
+        const currentReason = String(currentTerminated?.['reason'] ?? '');
+        const previousReason = String(previousTerminated?.['reason'] ?? '');
+
+        if (!/OOMKilled/i.test(currentReason) && !/OOMKilled/i.test(previousReason)) {
+          continue;
+        }
+
+        const exitCode = currentTerminated?.['exitCode'] ?? previousTerminated?.['exitCode'];
+        assessment.supporting.push({
+          path: podFilePath(ns),
+          note:
+            `Container '${containerName}' in pod '${pod.metadata.name}' was OOMKilled` +
+            (exitCode != null ? ` (exit code ${String(exitCode)})` : ''),
+          artifactType: 'kubernetes-resource',
+        });
+
+        const containerSpec = containerByName.get(containerName);
+        if (containerSpec != null) {
+          const memoryRequest = getContainerMemoryValue(containerSpec, 'requests');
+          const memoryLimit = getContainerMemoryValue(containerSpec, 'limits');
+          if (memoryRequest != null || memoryLimit != null) {
+            assessment.supporting.push({
+              path: podFilePath(ns),
+              note:
+                `Container '${containerName}' memory request=${memoryRequest ?? 'unset'} ` +
+                `limit=${memoryLimit ?? 'unset'} in pod '${pod.metadata.name}'`,
+              artifactType: 'kubernetes-resource',
+            });
+          } else {
+            assessment.missingDecisive.push(
+              `Pod spec memory requests/limits for container '${containerName}' would clarify whether the OOM was caused by a tight memory limit or unbounded application growth`,
+            );
+          }
+        }
+      }
+    }
+  }
+
+  const oomLogMatches = findInLogs(context.logs, oomLogPattern);
+  for (const { logFile, lineContent } of oomLogMatches) {
+    assessment.supporting.push({
+      path: cleanEvidencePath(logFile.path),
+      note: `Log line indicates out-of-memory condition: "${lineContent.trim()}"`,
+      artifactType: 'log',
+    });
+  }
+
+  if (
+    assessment.supporting.length === 0 ||
+    !assessment.supporting.some((e) => e.artifactType === 'kubernetes-resource')
+  ) {
+    assessment.missingDecisive.push(
+      'Container termination status showing OOMKilled or kubelet events with exit code 137 would decisively confirm this hypothesis',
+    );
+  }
+
+  if (oomLogMatches.length === 0) {
+    assessment.missingDecisive.push(
+      'Application or kubelet logs around the OOM event would help distinguish a tight memory limit from a memory leak',
+    );
+  }
+
+  return assessment;
+}
+
+/**
  * Collects evidence for a `config-error` hypothesis.
  *
  * Supporting:
@@ -1141,6 +1302,114 @@ function collectConnectivityEvidence(context: InvestigatorContext): EvidenceAsse
   assessment.missingDecisive.push(
     'NetworkPolicy resources and Endpoints data would confirm whether the network path is blocked or service backends are absent',
   );
+
+  return assessment;
+}
+
+/**
+ * Collects evidence for a `missing-service` hypothesis.
+ *
+ * Supporting:
+ *   - Pod spec references an in-cluster Service that does not exist
+ *   - Service exists but has no Endpoints object or 0 ready endpoint addresses
+ *
+ * Contradicting:
+ *   - Referenced Service exists and has ready endpoints
+ */
+function collectMissingServiceEvidence(context: InvestigatorContext): EvidenceAssessment {
+  const assessment = emptyAssessment();
+  const podServiceRefs = collectPodServiceReferences(context.resources);
+  const servicesByNamespace = indexResourceNamesByNamespace(context.resources, 'Service');
+  const endpointsByNamespace = new Map<string, Map<string, K8sResource>>();
+
+  for (const resource of context.resources) {
+    if (resource.kind !== 'Endpoints') continue;
+    const namespace = resource.metadata.namespace ?? 'default';
+    let byName = endpointsByNamespace.get(namespace);
+    if (byName == null) {
+      byName = new Map<string, K8sResource>();
+      endpointsByNamespace.set(namespace, byName);
+    }
+    byName.set(resource.metadata.name, resource);
+  }
+
+  for (const ref of podServiceRefs) {
+    const podReferenceEvidence: Evidence = {
+      path: podFilePath(ref.namespace),
+      note:
+        `Pod '${ref.podName}' references Service '${ref.serviceName}' in namespace ` +
+        `'${ref.serviceNamespace}' via ${ref.location}`,
+      artifactType: 'kubernetes-resource',
+    };
+
+    const servicesInNamespace = servicesByNamespace.get(ref.serviceNamespace);
+    if (servicesInNamespace == null || !servicesInNamespace.has(ref.serviceName)) {
+      assessment.supporting.push(podReferenceEvidence);
+      assessment.supporting.push({
+        path: serviceFilePath(ref.serviceNamespace),
+        note: `Referenced Service '${ref.serviceName}' is missing from namespace '${ref.serviceNamespace}'`,
+        artifactType: 'kubernetes-resource',
+      });
+      continue;
+    }
+
+    const endpoints = endpointsByNamespace.get(ref.serviceNamespace)?.get(ref.serviceName);
+    if (endpoints == null) {
+      assessment.supporting.push(podReferenceEvidence);
+      assessment.supporting.push({
+        path: serviceFilePath(ref.serviceNamespace),
+        note:
+          `Service '${ref.serviceName}' exists in namespace '${ref.serviceNamespace}' but has no ` +
+          'captured Endpoints object',
+        artifactType: 'kubernetes-resource',
+      });
+      assessment.supporting.push({
+        path: endpointsFilePath(ref.serviceNamespace),
+        note:
+          `No Endpoints object found for Service '${ref.serviceName}' in namespace ` +
+          `'${ref.serviceNamespace}' — no ready backends are visible`,
+        artifactType: 'kubernetes-resource',
+      });
+      continue;
+    }
+
+    const readyCount = countReadyEndpointAddresses(endpoints);
+    if (readyCount === 0) {
+      assessment.supporting.push(podReferenceEvidence);
+      assessment.supporting.push({
+        path: serviceFilePath(ref.serviceNamespace),
+        note:
+          `Service '${ref.serviceName}' exists in namespace '${ref.serviceNamespace}' but has no ready endpoints`,
+        artifactType: 'kubernetes-resource',
+      });
+      assessment.supporting.push({
+        path: endpointsFilePath(ref.serviceNamespace),
+        note:
+          `Endpoints for Service '${ref.serviceName}' in namespace '${ref.serviceNamespace}' ` +
+          'have 0 ready addresses',
+        artifactType: 'kubernetes-resource',
+      });
+    } else {
+      assessment.contradicting.push({
+        path: serviceFilePath(ref.serviceNamespace),
+        note: `Referenced Service '${ref.serviceName}' exists in namespace '${ref.serviceNamespace}'`,
+        artifactType: 'kubernetes-resource',
+      });
+      assessment.contradicting.push({
+        path: endpointsFilePath(ref.serviceNamespace),
+        note:
+          `Service '${ref.serviceName}' in namespace '${ref.serviceNamespace}' has ` +
+          `${readyCount} ready endpoint address${readyCount === 1 ? '' : 'es'}`,
+        artifactType: 'kubernetes-resource',
+      });
+    }
+  }
+
+  if (podServiceRefs.length === 0) {
+    assessment.missingDecisive.push(
+      'Pod spec or container environment referencing the missing service would decisively confirm which Service dependency is absent',
+    );
+  }
 
   return assessment;
 }
@@ -1914,8 +2183,10 @@ const CATEGORY_COLLECTORS: Partial<Record<HypothesisCategory, CategoryCollector>
   'dns-failure': collectDnsFailureEvidence,
   'image-pull-failure': collectImagePullEvidence,
   'config-error': collectConfigErrorEvidence,
+  'oom-kill': collectOOMKillEvidence,
   'connectivity-failure': collectConnectivityEvidence,
   'readiness-failure': collectReadinessFailureEvidence,
+  'missing-service': collectMissingServiceEvidence,
   'volume-mount-failure': collectVolumeFailureEvidence,
 };
 

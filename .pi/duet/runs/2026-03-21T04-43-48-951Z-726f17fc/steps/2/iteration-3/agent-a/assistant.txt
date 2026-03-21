@@ -1,0 +1,33 @@
+Reviewed:
+- `src/investigators/hypothesis-templates.ts`
+- `src/investigators/hypothesis-evidence-collector.ts`
+- `src/investigators/__tests__/hypothesis-templates.test.ts`
+- `src/investigators/__tests__/hypothesis-evidence-collector.test.ts`
+
+What I verified:
+- Standalone `oom-kill` template is present with the expected OOM symptom patterns and `pod-oom` key prefix.
+- `matchTemplate()` now routes OOMKilled text to the dedicated OOM template instead of `generic`.
+- `collectOOMKillEvidence()` is wired into `CATEGORY_COLLECTORS` and covers:
+  - current/last terminated `OOMKilled` state
+  - memory requests/limits
+  - OOM-related events
+  - OOM-related logs
+  - init container memory/resource correlation
+- `collectMissingServiceEvidence()` is wired and checks:
+  - referenced service existence
+  - endpoint presence
+  - ready endpoint addresses
+- Template-rule fallback coverage remains in place for `generic-crash` and `missing-service`.
+- The focused and full check suites pass.
+
+Checks run:
+- `npm run lint` ✅
+- `npm run typecheck` ✅
+- `npm run unit` ✅
+- `npm run build` ✅
+
+Assessment:
+- Step 2 looks complete and correct.
+- I did not find any additional issues requiring changes.
+
+Verdict: approve

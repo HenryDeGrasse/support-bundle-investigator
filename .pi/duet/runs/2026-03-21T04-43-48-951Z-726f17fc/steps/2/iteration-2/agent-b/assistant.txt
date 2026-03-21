@@ -1,0 +1,26 @@
+Reviewed:
+- `src/investigators/hypothesis-templates.ts`
+- `src/investigators/hypothesis-evidence-collector.ts`
+- `src/investigators/__tests__/hypothesis-templates.test.ts`
+- `src/investigators/__tests__/hypothesis-evidence-collector.test.ts`
+
+What I changed:
+- Kept the prior Step 2 implementation.
+- Made one follow-up improvement in `src/investigators/hypothesis-evidence-collector.ts`:
+  - `collectOOMKillEvidence()` now also maps `initContainers` from pod specs, not just normal `containers`, so `initContainerStatuses` with `OOMKilled` can pick up memory requests/limits correctly.
+- Added a regression test in `src/investigators/__tests__/hypothesis-evidence-collector.test.ts` to verify OOM evidence collection works for an OOM-killed init container and captures its memory settings.
+
+Assessment:
+- Step 2 is complete and correct.
+- The standalone `oom-kill` template is present and tested.
+- Dedicated collectors for `oom-kill` and `missing-service` are wired and covered.
+- Template-rule fallback coverage for `generic-crash` / `missing-service` is in place.
+- I did not find any remaining issues after the init-container improvement.
+
+Checks run:
+- `npm run lint` ✅
+- `npm run typecheck` ✅
+- `npm run unit` ✅
+- `npm run build` ✅
+
+Verdict: changes_made

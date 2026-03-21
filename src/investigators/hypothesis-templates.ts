@@ -401,6 +401,73 @@ export const HYPOTHESIS_TEMPLATE_REGISTRY: readonly HypothesisTemplate[] = [
     ],
   },
 
+  // ── OOM kill ────────────────────────────────────────────────────────────
+  {
+    id: 'oom-kill',
+    name: 'OOMKilled Pod',
+    symptomPatterns: [
+      'oomkilled',
+      'oom kill',
+      'oom-kill',
+      'out of memory',
+      'exit code 137',
+    ],
+    symptomKeyPrefix: 'pod-oom',
+    symptomDescriptionTemplate:
+      "Pod '{name}' was OOMKilled in namespace '{namespace}'",
+    hypotheses: [
+      {
+        idSuffix: 'oom-kill:memory-limit-too-low',
+        category: 'oom-kill',
+        rootCause:
+          'The container memory limit is too low for the workload and the kernel OOM killer terminates it',
+        evidenceRules: [
+          {
+            label: 'OOMKilled status or event',
+            pattern: 'oomkilled|out of memory|exit code 137|memory limit',
+            type: 'supporting',
+          },
+          {
+            label: 'Memory headroom available',
+            pattern: 'memory.*below.*limit|memory.*headroom|memory.*within.*limit',
+            type: 'contradicting',
+          },
+        ],
+      },
+      {
+        idSuffix: 'config-error:cache-memory-growth',
+        category: 'config-error',
+        rootCause:
+          'A configuration issue such as overly aggressive caching or buffering is driving avoidable memory growth',
+        evidenceRules: [
+          {
+            label: 'Config-driven memory growth',
+            pattern: 'cache.*memory|buffer.*memory|retention.*too high|heap.*growth',
+            type: 'supporting',
+          },
+          {
+            label: 'Configuration reduced memory pressure',
+            pattern: 'cache.*disabled|buffer.*reduced|retention.*lowered',
+            type: 'contradicting',
+          },
+        ],
+      },
+      {
+        idSuffix: 'generic-crash:unbounded-memory-allocation',
+        category: 'generic-crash',
+        rootCause:
+          'The application is allocating memory without bound due to a bug or leak',
+        evidenceRules: [
+          {
+            label: 'Unbounded allocation or leak',
+            pattern: 'memory leak|allocation failed|cannot allocate memory|heap.*oom|fatal.*out of memory',
+            type: 'supporting',
+          },
+        ],
+      },
+    ],
+  },
+
   // ── Generic (fallback) ──────────────────────────────────────────────────
   {
     id: 'generic',
