@@ -1,7 +1,7 @@
 {
   "version": 1,
   "phase": "plan_approved",
-  "updatedAt": "2026-03-21T13:57:01.799Z",
+  "updatedAt": "2026-03-21T14:26:05.047Z",
   "runId": "2026-03-21T04-43-48-951Z-726f17fc",
   "handoffMode": "none",
   "postPlanMode": "autorun",
@@ -72,8 +72,8 @@
   "round": 3,
   "resumeAction": "run",
   "activeSummary": {
-    "stepId": "step-2",
-    "stepTitle": "7.11b — Add OOM-kill standalone template and missing category evidence collectors",
+    "stepId": "step-3",
+    "stepTitle": "7.10 — Enhance node resource investigation with capacity, taints, and pod correlation (TDD)",
     "gateResults": [
       {
         "id": "lint",
@@ -180,5 +180,5 @@
       }
     ]
   },
-  "stepIndex": 2
+  "stepIndex": 3
 }

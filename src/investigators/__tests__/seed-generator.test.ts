@@ -654,6 +654,23 @@ describe('generateSeeds — node health seeds', () => {
     },
   };
 
+  const taintedNode: K8sResource = {
+    apiVersion: 'v1',
+    kind: 'Node',
+    metadata: { name: 'node-5' },
+    spec: {
+      taints: [{ key: 'dedicated', value: 'gpu', effect: 'NoSchedule' }],
+    },
+    status: {
+      conditions: [
+        { type: 'Ready', status: 'True' },
+        { type: 'MemoryPressure', status: 'False' },
+        { type: 'DiskPressure', status: 'False' },
+        { type: 'PIDPressure', status: 'False' },
+      ],
+    },
+  };
+
   /** A fully healthy Node — all conditions OK. */
   const healthyNode: K8sResource = {
     apiVersion: 'v1',
@@ -751,6 +768,15 @@ describe('generateSeeds — node health seeds', () => {
       (s) => s.source.startsWith('node:') && /pid/i.test(s.hypothesis),
     );
     expect(pidSeeds.length).toBeGreaterThan(0);
+  });
+
+  it('generates a seed for a node with a NoSchedule taint', () => {
+    const seeds = generateSeeds(makeCtxWithNodes([taintedNode]));
+    const taintSeed = seeds.find(
+      (s) => s.source === 'node:node-5' && /taint|NoSchedule/i.test(s.hypothesis),
+    );
+    expect(taintSeed).toBeDefined();
+    expect(taintSeed!.priority).toBeGreaterThanOrEqual(70);
   });
 
   it('does not generate a seed for a healthy node', () => {

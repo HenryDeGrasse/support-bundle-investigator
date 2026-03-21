@@ -122,6 +122,12 @@ interface RawNodeCondition {
   message: string;
 }
 
+interface RawNodeTaint {
+  key: string;
+  value?: string;
+  effect: string;
+}
+
 /**
  * Reads `status.conditions` from a Node resource.
  *
@@ -146,6 +152,118 @@ function getNodeConditions(resource: K8sResource): RawNodeCondition[] {
     });
   }
   return conditions;
+}
+
+/** Reads `spec.taints` from a Node resource. */
+function getNodeTaints(resource: K8sResource): RawNodeTaint[] {
+  if (resource.kind !== 'Node') return [];
+  if (!isRecord(resource.spec)) return [];
+
+  const rawTaints = resource.spec['taints'];
+  if (!Array.isArray(rawTaints)) return [];
+
+  const taints: RawNodeTaint[] = [];
+  for (const rawTaint of rawTaints) {
+    if (!isRecord(rawTaint)) continue;
+    const key = typeof rawTaint['key'] === 'string' ? rawTaint['key'] : '';
+    const effect = typeof rawTaint['effect'] === 'string' ? rawTaint['effect'] : '';
+    if (!key || !effect) continue;
+    taints.push({
+      key,
+      value: typeof rawTaint['value'] === 'string' ? rawTaint['value'] : undefined,
+      effect,
+    });
+  }
+  return taints;
+}
+
+/** Parses a Kubernetes memory quantity string into bytes. Returns `undefined` on failure. */
+function parseMemoryQuantity(value: string): number | undefined {
+  const match = value.trim().match(/^([0-9]+(?:\.[0-9]+)?)([KMGTEP]i?|)$/);
+  if (!match?.[1]) return undefined;
+
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount)) return undefined;
+
+  const unit = match[2] ?? '';
+  const multipliers: Record<string, number> = {
+    '': 1,
+    K: 1_000,
+    M: 1_000_000,
+    G: 1_000_000_000,
+    T: 1_000_000_000_000,
+    P: 1_000_000_000_000_000,
+    Ki: 1024,
+    Mi: 1024 ** 2,
+    Gi: 1024 ** 3,
+    Ti: 1024 ** 4,
+    Pi: 1024 ** 5,
+  };
+
+  const multiplier = multipliers[unit];
+  if (multiplier == null) return undefined;
+  return amount * multiplier;
+}
+
+function getNodeMemoryRatio(resource: K8sResource): number | undefined {
+  if (resource.kind !== 'Node' || !isRecord(resource.status)) return undefined;
+
+  const capacity = resource.status['capacity'];
+  const allocatable = resource.status['allocatable'];
+  if (!isRecord(capacity) || !isRecord(allocatable)) return undefined;
+
+  const capacityMemory = typeof capacity['memory'] === 'string' ? capacity['memory'] : undefined;
+  const allocatableMemory = typeof allocatable['memory'] === 'string' ? allocatable['memory'] : undefined;
+  if (capacityMemory == null || allocatableMemory == null) return undefined;
+
+  const capacityBytes = parseMemoryQuantity(capacityMemory);
+  const allocatableBytes = parseMemoryQuantity(allocatableMemory);
+  if (capacityBytes == null || allocatableBytes == null || capacityBytes <= 0) return undefined;
+
+  return allocatableBytes / capacityBytes;
+}
+
+function getPendingPods(resources: K8sResource[]): K8sResource[] {
+  return resources.filter((resource) => {
+    if (resource.kind !== 'Pod' || !isRecord(resource.status)) return false;
+    return resource.status['phase'] === 'Pending';
+  });
+}
+
+function podToleratesTaint(pod: K8sResource, taint: RawNodeTaint): boolean {
+  if (!isRecord(pod.spec)) return false;
+  const rawTolerations = pod.spec['tolerations'];
+  if (!Array.isArray(rawTolerations)) return false;
+
+  for (const rawTol of rawTolerations) {
+    if (!isRecord(rawTol)) continue;
+
+    const key = typeof rawTol['key'] === 'string' ? rawTol['key'] : '';
+    const operator = typeof rawTol['operator'] === 'string' ? rawTol['operator'] : 'Equal';
+    const effect = typeof rawTol['effect'] === 'string' ? rawTol['effect'] : undefined;
+    const value = typeof rawTol['value'] === 'string' ? rawTol['value'] : undefined;
+
+    if (effect != null && effect !== taint.effect) continue;
+
+    // operator=Exists with an empty key tolerates all taint keys for the
+    // matching effect; with a populated key it tolerates that specific key.
+    if (operator === 'Exists' && (key === '' || key === taint.key)) return true;
+    if (operator === 'Equal' && key === taint.key && (value ?? '') === (taint.value ?? '')) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function failedSchedulingEventMentionsTaint(event: K8sEvent, taint: RawNodeTaint): boolean {
+  const message = event.message.toLowerCase();
+  if (!/taint|untolerated/.test(message)) return false;
+  if (!message.includes(taint.key.toLowerCase())) return false;
+  if (taint.value != null && taint.value.length > 0 && !message.includes(taint.value.toLowerCase())) {
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -1116,9 +1234,10 @@ function investigateOOMPods(
   context: InvestigatorContext,
   counter: Counter,
   crashloopFindingByPod: Map<string, string>,
-): { findings: Finding[]; edges: GraphEdge[] } {
+): { findings: Finding[]; edges: GraphEdge[]; findingIdsByNode: Map<string, string[]> } {
   const findings: Finding[] = [];
   const edges: GraphEdge[] = [];
+  const findingIdsByNode = new Map<string, string[]>();
 
   for (const resource of context.resources) {
     if (resource.kind !== 'Pod') continue;
@@ -1158,6 +1277,15 @@ function investigateOOMPods(
       }
 
       const findingId = nextFindingId('oom', counter);
+      const nodeName =
+        isRecord(resource.spec) && typeof resource.spec['nodeName'] === 'string'
+          ? resource.spec['nodeName']
+          : undefined;
+      if (nodeName) {
+        const existing = findingIdsByNode.get(nodeName) ?? [];
+        existing.push(findingId);
+        findingIdsByNode.set(nodeName, existing);
+      }
 
       findings.push({
         id: findingId,
@@ -1229,11 +1357,181 @@ function investigateOOMPods(
     }
   }
 
+  return { findings, edges, findingIdsByNode };
+}
+
+// ---------------------------------------------------------------------------
+// 7. Node resource / taint investigation
+// ---------------------------------------------------------------------------
+
+/**
+ * Produces findings for node-level resource constraints and unschedulable taints.
+ *
+ * - Allocatable memory < 80% of capacity → medium finding about node memory reservation
+ * - `NoSchedule` / `NoExecute` taints that block pending pods lacking tolerations
+ *   → high finding plus causal edges to FailedScheduling event nodes
+ */
+function investigateNodeResources(
+  context: InvestigatorContext,
+  counter: Counter,
+): { findings: Finding[]; edges: GraphEdge[] } {
+  const findings: Finding[] = [];
+  const edges: GraphEdge[] = [];
+  const pendingPods = getPendingPods(context.resources);
+  const failedSchedulingByPodKey = new Map<string, K8sEvent[]>();
+
+  for (const event of context.events) {
+    if (event.reason !== 'FailedScheduling' || event.involvedObject.kind !== 'Pod') continue;
+    const namespace = event.involvedObject.namespace ?? 'default';
+    const key = `${namespace}/${event.involvedObject.name}`;
+    const bucket = failedSchedulingByPodKey.get(key) ?? [];
+    bucket.push(event);
+    failedSchedulingByPodKey.set(key, bucket);
+  }
+
+  for (const resource of context.resources) {
+    if (resource.kind !== 'Node') continue;
+
+    const nodeName = resource.metadata.name;
+    const nodePath = nodeFilePath(nodeName);
+
+    const memoryRatio = getNodeMemoryRatio(resource);
+    if (memoryRatio != null && memoryRatio < 0.8 && isRecord(resource.status)) {
+      const capacity = isRecord(resource.status['capacity'])
+        ? resource.status['capacity']
+        : undefined;
+      const allocatable = isRecord(resource.status['allocatable'])
+        ? resource.status['allocatable']
+        : undefined;
+      const capacityMemory = typeof capacity?.['memory'] === 'string' ? capacity['memory'] : 'unknown';
+      const allocatableMemory = typeof allocatable?.['memory'] === 'string'
+        ? allocatable['memory']
+        : 'unknown';
+      const findingId = nextFindingId('node-resource', counter);
+      const percentage = Math.round(memoryRatio * 100);
+
+      findings.push({
+        id: findingId,
+        title:
+          `Node '${nodeName}' has constrained allocatable memory ` +
+          `(${allocatableMemory} allocatable of ${capacityMemory} capacity)`,
+        severity: 'medium',
+        confidence: 0.75,
+        affectedComponents: [`Node/${nodeName}`],
+        reasoningSummary:
+          `Node '${nodeName}' exposes only ${percentage}% of its memory capacity as allocatable ` +
+          `(${allocatableMemory} of ${capacityMemory}). This can indicate heavy kube/system reservation ` +
+          `or node-level resource pressure that reduces scheduling headroom for workloads.`,
+        evidence: [
+          {
+            path: nodePath,
+            note:
+              `Node allocatable memory is ${allocatableMemory} while capacity is ${capacityMemory} ` +
+              `(${percentage}% allocatable)`,
+            artifactType: 'kubernetes-resource',
+          },
+        ],
+        contradictionsChecked: [
+          `Node '${nodeName}' capacity/allocatable memory values were present in node status`,
+        ],
+        recommendedAction:
+          `Review reservations and workload density on node '${nodeName}'. Compare kube-reserved/system-reserved ` +
+          `settings with actual node usage and consider rebalancing workloads or adding capacity.`,
+        missingEvidence: [],
+      });
+
+      edges.push({
+        id: nextEdgeId(counter),
+        source: `evidence:${nodePath}:allocatable-memory`,
+        target: findingId,
+        type: 'supports',
+        weight: 0.75,
+      });
+    }
+
+    const blockingTaints = getNodeTaints(resource).filter(
+      (taint) => taint.effect === 'NoSchedule' || taint.effect === 'NoExecute',
+    );
+    for (const taint of blockingTaints) {
+      const blockedPods = pendingPods.filter((pod) => !podToleratesTaint(pod, taint));
+      if (blockedPods.length === 0) continue;
+
+      const taintLabel = taint.value ? `${taint.key}=${taint.value}` : taint.key;
+      const findingId = nextFindingId('node-taint', counter);
+      const blockedPodNames = blockedPods.map((pod) => pod.metadata.name);
+
+      findings.push({
+        id: findingId,
+        title:
+          `Node '${nodeName}' taint '${taintLabel}:${taint.effect}' may block pending pods from scheduling`,
+        severity: 'high',
+        confidence: 0.8,
+        affectedComponents: [
+          `Node/${nodeName}`,
+          ...blockedPods.map((pod) => `Pod/${pod.metadata.namespace ?? 'default'}/${pod.metadata.name}`),
+        ],
+        reasoningSummary:
+          `Node '${nodeName}' has taint '${taintLabel}:${taint.effect}'. Pending pods ` +
+          `${blockedPodNames.join(', ')} do not declare a matching toleration, so the taint may explain ` +
+          `their scheduling failures.`,
+        evidence: [
+          {
+            path: nodePath,
+            note: `Node taint '${taintLabel}' with effect '${taint.effect}' is present`,
+            artifactType: 'kubernetes-resource',
+          },
+          ...blockedPods.map((pod) => ({
+            path: podFilePath(pod.metadata.name, pod.metadata.namespace ?? 'default'),
+            note:
+              `Pending pod '${pod.metadata.name}' does not tolerate taint '${taintLabel}:${taint.effect}'`,
+            artifactType: 'kubernetes-resource' as const,
+          })),
+        ],
+        contradictionsChecked: [
+          `Blocked pods were checked for tolerations matching taint '${taintLabel}:${taint.effect}'`,
+        ],
+        recommendedAction:
+          `If these pods are meant to run on node '${nodeName}', add a matching toleration for ` +
+          `'${taintLabel}:${taint.effect}' or remove/relax the taint. Otherwise schedule the pods onto ` +
+          'nodes without this taint.',
+        missingEvidence: [],
+      });
+
+      edges.push({
+        id: nextEdgeId(counter),
+        source: `evidence:${nodePath}:taint:${taintLabel}:${taint.effect}`,
+        target: findingId,
+        type: 'supports',
+        weight: 0.8,
+      });
+
+      for (const pod of blockedPods) {
+        const namespace = pod.metadata.namespace ?? 'default';
+        const podKey = `${namespace}/${pod.metadata.name}`;
+        const schedulingEvents = (failedSchedulingByPodKey.get(podKey) ?? []).filter((event) =>
+          failedSchedulingEventMentionsTaint(event, taint),
+        );
+        for (let i = 0; i < schedulingEvents.length; i += 1) {
+          edges.push({
+            id: nextEdgeId(counter),
+            source: findingId,
+            target: `event:FailedScheduling:${pod.metadata.name}:${namespace}`,
+            type: 'causes',
+            weight: 0.8,
+            note:
+              `Node taint '${taintLabel}:${taint.effect}' on '${nodeName}' may have caused FailedScheduling ` +
+              `for pod '${pod.metadata.name}'`,
+          });
+        }
+      }
+    }
+  }
+
   return { findings, edges };
 }
 
 // ---------------------------------------------------------------------------
-// 7. Node condition investigation
+// 8. Node condition investigation
 // ---------------------------------------------------------------------------
 
 /**
@@ -1251,6 +1549,7 @@ function investigateOOMPods(
 function investigateNodeConditions(
   context: InvestigatorContext,
   counter: Counter,
+  oomFindingIdsByNode: Map<string, string[]>,
 ): { findings: Finding[]; edges: GraphEdge[] } {
   const findings: Finding[] = [];
   const edges: GraphEdge[] = [];
@@ -1387,6 +1686,22 @@ function investigateNodeConditions(
           });
         }
       }
+
+      // For MemoryPressure nodes: link the node-pressure finding to OOMKilled
+      // findings for pods assigned to the same node.
+      if (cond.type === 'MemoryPressure') {
+        const oomFindingIds = oomFindingIdsByNode.get(nodeName) ?? [];
+        for (const oomFindingId of oomFindingIds) {
+          edges.push({
+            id: nextEdgeId(counter),
+            source: findingId,
+            target: oomFindingId,
+            type: 'causes',
+            weight: 0.75,
+            note: `Node '${nodeName}' MemoryPressure may have contributed to OOMKilled workload on the same node`,
+          });
+        }
+      }
     }
   }
 
@@ -1410,7 +1725,8 @@ function investigateNodeConditions(
  * 4. **Pending / ContainerCreating pods** — correlated with FailedMount, FailedScheduling, and ProvisioningFailed events
  * 5. **Unhealthy workloads** — checked via {@link isWorkloadReady}
  * 6. **OOMKilled containers** — detected via current or last terminated state; cross-referenced with resource limits
- * 7. **Node conditions** — NotReady, MemoryPressure, DiskPressure, PIDPressure; correlated with FailedScheduling events
+ * 7. **Node resources / taints** — allocatable-vs-capacity analysis and unschedulable taints correlated with pending pods
+ * 8. **Node conditions** — NotReady, MemoryPressure, DiskPressure, PIDPressure; correlated with FailedScheduling and OOM findings
  *
  * @param context - All parsed bundle data.
  * @param seeds   - Investigation seeds (used as context hints; all resources
@@ -1446,7 +1762,8 @@ export function investigateKubernetes(
   const pending = investigatePendingPods(context, counter);
   const workloads = investigateWorkloads(context, counter);
   const oom = investigateOOMPods(context, counter, crashloopFindingByPod);
-  const nodeHealth = investigateNodeConditions(context, counter);
+  const nodeResources = investigateNodeResources(context, counter);
+  const nodeHealth = investigateNodeConditions(context, counter, oom.findingIdsByNode);
 
   return {
     findings: [
@@ -1456,6 +1773,7 @@ export function investigateKubernetes(
       ...pending.findings,
       ...workloads.findings,
       ...oom.findings,
+      ...nodeResources.findings,
       ...nodeHealth.findings,
     ],
     edges: [
@@ -1465,6 +1783,7 @@ export function investigateKubernetes(
       ...pending.edges,
       ...workloads.edges,
       ...oom.edges,
+      ...nodeResources.edges,
       ...nodeHealth.edges,
     ],
   };

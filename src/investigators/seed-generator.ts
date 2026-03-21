@@ -27,6 +27,8 @@ const PRIORITY_NODE_NOT_READY = 85;
 const PRIORITY_WARN_ANALYZER = 60;
 /** Node has a pressure condition (MemoryPressure, DiskPressure, PIDPressure) */
 const PRIORITY_NODE_PRESSURE = 70;
+/** Node taint may block pod scheduling */
+const PRIORITY_NODE_TAINT = 75;
 /** Pod is not ready but not crashing or pulling */
 const PRIORITY_POD_NOT_READY = 50;
 /** Base priority for a high-importance log file seed */
@@ -195,13 +197,15 @@ function seedsFromEvents(
 // ---------------------------------------------------------------------------
 
 /**
- * Scans Node resources for unhealthy conditions and emits seeds for:
+ * Scans Node resources for unhealthy conditions and blocking taints and emits
+ * seeds for:
  * - `Ready=False`         (NodeNotReady — highest node-level urgency)
  * - `MemoryPressure=True` (memory pressure on the node)
  * - `DiskPressure=True`   (disk pressure on the node)
  * - `PIDPressure=True`    (PID pressure on the node)
+ * - `NoSchedule/NoExecute` taints that may block pod scheduling
  *
- * Healthy nodes (all conditions normal) produce no seeds.
+ * Healthy, untainted nodes produce no seeds.
  */
 function seedsFromNodes(
   resources: K8sResource[],
@@ -256,6 +260,29 @@ function seedsFromNodes(
         });
       }
     }
+
+    if (isRecord(resource.spec)) {
+      const rawTaints = resource.spec['taints'];
+      if (Array.isArray(rawTaints)) {
+        for (const rawTaint of rawTaints) {
+          if (!isRecord(rawTaint)) continue;
+          const key = typeof rawTaint['key'] === 'string' ? rawTaint['key'] : '';
+          const effect = typeof rawTaint['effect'] === 'string' ? rawTaint['effect'] : '';
+          const value = typeof rawTaint['value'] === 'string' ? rawTaint['value'] : undefined;
+          if (!key || (effect !== 'NoSchedule' && effect !== 'NoExecute')) continue;
+
+          const taintLabel = value ? `${key}=${value}` : key;
+          seeds.push({
+            id: makeId('node'),
+            hypothesis:
+              `Node ${nodeName} has taint ${taintLabel}:${effect} — pods without a matching toleration may fail to schedule`,
+            source: `node:${nodeName}`,
+            category: 'kubernetes',
+            priority: PRIORITY_NODE_TAINT,
+          });
+        }
+      }
+    }
   }
 
   return seeds;
@@ -273,7 +300,7 @@ function seedsFromNodes(
  * 2. Pod health heuristics (CrashLoopBackOff, ImagePullBackOff, not-ready)
  * 3. Log files whose importance score exceeds the threshold
  * 4. Warning-type Kubernetes events
- * 5. Node health conditions (NotReady, MemoryPressure, DiskPressure, PIDPressure)
+ * 5. Node health conditions and blocking taints (NotReady, pressure conditions, NoSchedule/NoExecute)
  *
  * The returned array is sorted by {@link InvestigationSeed.priority}
  * descending — highest-priority (most actionable) seeds come first.

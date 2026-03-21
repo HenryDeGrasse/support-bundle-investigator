@@ -1472,11 +1472,68 @@ const healthyNode: K8sResource = {
   metadata: { name: 'healthy-node' },
   spec: {},
   status: {
+    capacity: { memory: '16Gi', cpu: '4' },
+    allocatable: { memory: '15Gi', cpu: '3900m' },
     conditions: [
       { type: 'Ready', status: 'True', reason: 'KubeletReady', message: '' },
       { type: 'MemoryPressure', status: 'False', reason: 'KubeletHasSufficientMemory', message: '' },
       { type: 'DiskPressure', status: 'False', reason: 'KubeletHasNoDiskPressure', message: '' },
       { type: 'PIDPressure', status: 'False', reason: 'KubeletHasSufficientPID', message: '' },
+    ],
+  },
+};
+
+/** Node whose allocatable memory is significantly lower than capacity. */
+const constrainedMemoryNode: K8sResource = {
+  apiVersion: 'v1',
+  kind: 'Node',
+  metadata: { name: 'node-5' },
+  spec: {},
+  status: {
+    capacity: { memory: '16Gi', cpu: '4' },
+    allocatable: { memory: '10Gi', cpu: '3500m' },
+    conditions: [
+      { type: 'Ready', status: 'True', reason: 'KubeletReady', message: '' },
+      { type: 'MemoryPressure', status: 'False', reason: 'KubeletHasSufficientMemory', message: '' },
+      { type: 'DiskPressure', status: 'False', reason: 'KubeletHasNoDiskPressure', message: '' },
+      { type: 'PIDPressure', status: 'False', reason: 'KubeletHasSufficientPID', message: '' },
+    ],
+  },
+};
+
+/** Node with a taint that blocks scheduling for untolerated pods. */
+const taintedNoScheduleNode: K8sResource = {
+  apiVersion: 'v1',
+  kind: 'Node',
+  metadata: { name: 'tainted-node' },
+  spec: {
+    taints: [
+      { key: 'dedicated', value: 'gpu', effect: 'NoSchedule' },
+    ],
+  },
+  status: {
+    capacity: { memory: '32Gi', cpu: '8' },
+    allocatable: { memory: '30Gi', cpu: '7600m' },
+    conditions: [
+      { type: 'Ready', status: 'True', reason: 'KubeletReady', message: '' },
+      { type: 'MemoryPressure', status: 'False', reason: 'KubeletHasSufficientMemory', message: '' },
+      { type: 'DiskPressure', status: 'False', reason: 'KubeletHasNoDiskPressure', message: '' },
+      { type: 'PIDPressure', status: 'False', reason: 'KubeletHasSufficientPID', message: '' },
+    ],
+  },
+};
+
+const pendingUntoleratedPod: K8sResource = {
+  apiVersion: 'v1',
+  kind: 'Pod',
+  metadata: { name: 'pending-untolerated', namespace: 'default' },
+  spec: {
+    containers: [{ name: 'app', image: 'myapp:v1' }],
+  },
+  status: {
+    phase: 'Pending',
+    conditions: [
+      { type: 'PodScheduled', status: 'False', reason: 'Unschedulable' },
     ],
   },
 };
@@ -1491,6 +1548,18 @@ const nodeSchedulingEvents: K8sEvent[] = [
     count: 3,
     firstTimestamp: '2024-01-15T10:00:00Z',
     lastTimestamp: '2024-01-15T10:05:00Z',
+  },
+];
+
+const taintSchedulingEvents: K8sEvent[] = [
+  {
+    type: 'Warning',
+    reason: 'FailedScheduling',
+    message: '0/1 nodes are available: 1 node(s) had untolerated taint {dedicated: gpu}',
+    involvedObject: { kind: 'Pod', name: 'pending-untolerated', namespace: 'default' },
+    count: 2,
+    firstTimestamp: '2024-01-15T11:00:00Z',
+    lastTimestamp: '2024-01-15T11:05:00Z',
   },
 ];
 
@@ -1918,6 +1987,142 @@ describe('investigateKubernetes — NodeNotReady correlates with FailedSchedulin
       (e) => e.type === 'causes' && e.source === nodeFinding!.id,
     );
     expect((causesEdge!.weight ?? 1)).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 21b — Node allocatable memory is significantly below capacity
+// ---------------------------------------------------------------------------
+
+describe('investigateKubernetes — node resource constraint from allocatable vs capacity', () => {
+  const context = makeContext({ resources: [constrainedMemoryNode] });
+  const result = investigateKubernetes(context, noSeeds);
+
+  it('produces a finding about node resource constraints', () => {
+    const finding = result.findings.find(
+      (f) => f.title.includes('node-5') && /allocatable|capacity|resource/i.test(f.title),
+    );
+    expect(finding).toBeDefined();
+  });
+
+  it('finding severity is medium', () => {
+    const finding = result.findings.find((f) => f.title.includes('node-5'));
+    expect(finding!.severity).toBe('medium');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 21c — NoSchedule taint correlates with Pending pod scheduling failure
+// ---------------------------------------------------------------------------
+
+describe('investigateKubernetes — node taint correlates with pod scheduling failure', () => {
+  const context = makeContext({
+    resources: [taintedNoScheduleNode, pendingUntoleratedPod],
+    events: taintSchedulingEvents,
+  });
+  const result = investigateKubernetes(context, noSeeds);
+
+  it('produces a finding for the unschedulable NoSchedule taint', () => {
+    const finding = result.findings.find(
+      (f) => f.title.includes('tainted-node') && /NoSchedule|taint/i.test(f.title),
+    );
+    expect(finding).toBeDefined();
+  });
+
+  it('emits a causes edge linking the taint finding to FailedScheduling', () => {
+    const finding = result.findings.find(
+      (f) => f.title.includes('tainted-node') && /NoSchedule|taint/i.test(f.title),
+    );
+    const edge = result.edges.find(
+      (e) => e.type === 'causes' && e.source === finding!.id && e.target.includes('FailedScheduling'),
+    );
+    expect(edge).toBeDefined();
+    expect(edge!.target).toContain('pending-untolerated');
+  });
+});
+
+describe('investigateKubernetes — node taint does not claim unrelated scheduling failures', () => {
+  const unrelatedSchedulingEvents: K8sEvent[] = [
+    {
+      type: 'Warning',
+      reason: 'FailedScheduling',
+      message: "0/1 nodes are available: 1 node(s) didn't match node selector",
+      involvedObject: { kind: 'Pod', name: 'pending-untolerated', namespace: 'default' },
+      count: 2,
+      firstTimestamp: '2024-01-15T10:00:00Z',
+      lastTimestamp: '2024-01-15T10:01:00Z',
+    },
+  ];
+
+  const context = makeContext({
+    resources: [taintedNoScheduleNode, pendingUntoleratedPod],
+    events: unrelatedSchedulingEvents,
+  });
+  const result = investigateKubernetes(context, noSeeds);
+
+  it('still produces a taint finding from node and pod state', () => {
+    const finding = result.findings.find(
+      (f) => f.title.includes('tainted-node') && /NoSchedule|taint/i.test(f.title),
+    );
+    expect(finding).toBeDefined();
+  });
+
+  it('does not emit a causes edge when FailedScheduling message is unrelated to the taint', () => {
+    const finding = result.findings.find(
+      (f) => f.title.includes('tainted-node') && /NoSchedule|taint/i.test(f.title),
+    );
+    const edge = result.edges.find(
+      (e) => e.type === 'causes' && e.source === finding!.id && e.target.includes('FailedScheduling'),
+    );
+    expect(edge).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scenario 21d — MemoryPressure correlates with OOMKilled pod on same node
+// ---------------------------------------------------------------------------
+
+describe('investigateKubernetes — MemoryPressure correlates with OOMKilled pods on same node', () => {
+  const oomOnPressuredNode: K8sResource = {
+    ...oomTerminatedPod,
+    metadata: { name: 'oom-on-node-2', namespace: 'default' },
+    spec: {
+      ...(oomTerminatedPod.spec ?? {}),
+      nodeName: 'node-2',
+      containers: [
+        {
+          name: 'worker',
+          image: 'worker:v2',
+          resources: {
+            limits: { memory: '128Mi' },
+            requests: { memory: '64Mi' },
+          },
+        },
+      ],
+    },
+  };
+
+  const context = makeContext({ resources: [memoryPressureNode, oomOnPressuredNode] });
+  const result = investigateKubernetes(context, noSeeds);
+
+  it('produces both MemoryPressure and OOM findings', () => {
+    const nodeFinding = result.findings.find(
+      (f) => f.title.includes('node-2') && /memory|pressure/i.test(f.title),
+    );
+    const oomFinding = result.findings.find((f) => f.title.includes('oom-on-node-2'));
+    expect(nodeFinding).toBeDefined();
+    expect(oomFinding).toBeDefined();
+  });
+
+  it('emits a causes edge from MemoryPressure finding to OOM finding', () => {
+    const nodeFinding = result.findings.find(
+      (f) => f.title.includes('node-2') && /memory|pressure/i.test(f.title),
+    );
+    const oomFinding = result.findings.find((f) => f.title.includes('oom-on-node-2'));
+    const edge = result.edges.find(
+      (e) => e.type === 'causes' && e.source === nodeFinding!.id && e.target === oomFinding!.id,
+    );
+    expect(edge).toBeDefined();
   });
 });
 
