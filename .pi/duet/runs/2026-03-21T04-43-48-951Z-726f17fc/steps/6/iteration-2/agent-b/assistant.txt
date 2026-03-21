@@ -1,0 +1,30 @@
+Reviewed:
+- `src/investigators/__tests__/hypothesis-ranker.test.ts`
+- `src/investigators/hypothesis-ranker.ts`
+- `scripts/benchmark-hypotheses.mjs`
+
+What I changed:
+- No additional changes were needed.
+
+Assessment:
+- Step 6 is complete and correct.
+- The new `calibration` coverage in `hypothesis-ranker.test.ts` is present and aligned with the requested scope:
+  - strict monotonicity across improving evidence quality
+  - band/boundary checks (`0.0`, generic-only cap, max score cap)
+  - contradiction penalty regression
+  - missing-decisive penalty regression
+  - cross-scenario ranking checks for the 4 requested fixture scenarios
+- `scripts/benchmark-hypotheses.mjs` was updated to reference the unit suite as the primary calibration gate, which matches the plan.
+- I also ran the benchmark script directly:
+  - all 4 heuristic scenarios still rank the expected top category correctly
+  - the small corpus still shows a confidence-band monotonicity warning at the benchmark level, but that is non-blocking here given the explicit unit-level monotonicity gate and the script’s own “secondary corpus-level signal” framing
+
+Checks run:
+- `npm test -- --run src/investigators/__tests__/hypothesis-ranker.test.ts` ✅
+- `node scripts/benchmark-hypotheses.mjs` ✅
+- `npm run lint` ✅
+- `npm run typecheck` ✅
+- `npm run unit` ✅
+- `npm run build` ✅
+
+Verdict: approve

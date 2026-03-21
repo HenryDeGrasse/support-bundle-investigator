@@ -69,6 +69,42 @@ const specificLogEvidence2: Evidence = {
   artifactType: 'log',
 };
 
+const specificMissingSecretK8sEvidence: Evidence = {
+  path: 'cluster-resources/pods/default/app-pod.yaml',
+  note: "Referenced secret 'app-credentials' absent from namespace 'default'",
+  artifactType: 'kubernetes-resource',
+};
+
+const specificMissingSecretLogEvidence: Evidence = {
+  path: 'logs/default/app-pod/app/current.log',
+  note: 'Log line shows configuration error: "secret app-credentials not found during startup"',
+  artifactType: 'log',
+};
+
+const specificImagePullEventEvidence: Evidence = {
+  path: 'cluster-resources/events/default.json',
+  note: "Event indicates image pull failure for 'api': Failed to pull image 'registry.local/app:v9'",
+  artifactType: 'event',
+};
+
+const specificImagePullK8sEvidence: Evidence = {
+  path: 'cluster-resources/pods/default/api.yaml',
+  note: "Container 'api' waiting with reason 'ImagePullBackOff' — failed to pull image",
+  artifactType: 'kubernetes-resource',
+};
+
+const specificVolumeMountEvidence: Evidence = {
+  path: 'cluster-resources/events/default.json',
+  note: 'FailedMount event for pod db-pod: MountVolume.SetUp failed for volume "data"',
+  artifactType: 'event',
+};
+
+const specificPvcProvisioningEvidence: Evidence = {
+  path: 'cluster-resources/persistentvolumeclaims/default/data.yaml',
+  note: 'Resource not-found error: storageclass.storage.k8s.io "fast-ssd" not found during PVC provisioning',
+  artifactType: 'kubernetes-resource',
+};
+
 // ---------------------------------------------------------------------------
 // Generic evidence fixtures — describe only symptom status, no specific signal.
 // ---------------------------------------------------------------------------
@@ -810,5 +846,253 @@ describe('Integration — rankHypotheses produces coherent rationales', () => {
   it('rationale for empty hypothesis mentions no supporting evidence', () => {
     const empty = ranked.find((h) => h.id === 'hyp:empty')!;
     expect(empty.confidenceRationale.toLowerCase()).toMatch(/no supporting/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Calibration gate — monotonicity, bounds, penalties, and scenario ranking
+// ---------------------------------------------------------------------------
+
+describe('calibration', () => {
+  describe('monotonicity invariant', () => {
+    it('strictly increases as evidence quality improves step-by-step', () => {
+      const score0 = scoreHypothesis(makeHypothesis({ category: 'missing-secret', supporting: [] }));
+      const score1 = scoreHypothesis(
+        makeHypothesis({ category: 'missing-secret', supporting: [genericK8sEvidence] }),
+      );
+      const score2 = scoreHypothesis(
+        makeHypothesis({ category: 'missing-secret', supporting: [specificEventEvidence] }),
+      );
+      const score3 = scoreHypothesis(
+        makeHypothesis({
+          category: 'missing-secret',
+          supporting: [specificEventEvidence, specificMissingSecretK8sEvidence],
+        }),
+      );
+      const score4 = scoreHypothesis(
+        makeHypothesis({
+          category: 'missing-secret',
+          supporting: [
+            specificEventEvidence,
+            specificMissingSecretK8sEvidence,
+            specificMissingSecretLogEvidence,
+          ],
+        }),
+      );
+
+      const scores = [score0, score1, score2, score3, score4];
+      for (let i = 1; i < scores.length; i += 1) {
+        expect(scores[i]!).toBeGreaterThan(scores[i - 1]!);
+      }
+    });
+  });
+
+  describe('confidence band boundaries', () => {
+    it('scores 0.0 when no evidence is present', () => {
+      expect(scoreHypothesis(makeHypothesis())).toBe(0.0);
+    });
+
+    it('caps generic-only evidence at 0.50 or below', () => {
+      const score = scoreHypothesis(
+        makeHypothesis({
+          supporting: [
+            genericK8sEvidence,
+            genericK8sEvidence2,
+            genericK8sEvidence3,
+            genericK8sEvidence4,
+          ],
+        }),
+      );
+      expect(score).toBeLessThanOrEqual(0.5);
+    });
+
+    it('caps maximum evidence score at 1.0', () => {
+      const score = scoreHypothesis(
+        makeHypothesis({
+          category: 'dns-failure',
+          supporting: [
+            specificLogEvidence,
+            {
+              path: 'cluster-resources/services/default.json',
+              note:
+                "Service 'db' exists in namespace 'staging' (not 'default' as referenced). Did you mean to reference 'db.staging.svc.cluster.local'?",
+              artifactType: 'kubernetes-resource',
+            },
+            {
+              path: 'cluster-resources/events/default.json',
+              note: "Event indicates DNS-related failure for 'app-pod': lookup db: no such host",
+              artifactType: 'event',
+            },
+            {
+              path: 'logs/default/app-pod/app/retry.log',
+              note: 'Log line shows DNS resolution failure: "lookup db: no such host"',
+              artifactType: 'log',
+            },
+          ],
+        }),
+      );
+      expect(score).toBeLessThanOrEqual(1.0);
+    });
+  });
+
+  describe('penalties', () => {
+    it('contradicting evidence lowers the score', () => {
+      const withoutContradiction = scoreHypothesis(
+        makeHypothesis({
+          category: 'dns-failure',
+          supporting: [specificLogEvidence, specificEventEvidence],
+        }),
+      );
+      const withContradiction = scoreHypothesis(
+        makeHypothesis({
+          category: 'dns-failure',
+          supporting: [specificLogEvidence, specificEventEvidence],
+          contradicting: [contradictingEvidence],
+        }),
+      );
+
+      expect(withContradiction).toBeLessThan(withoutContradiction);
+    });
+
+    it('missing decisive evidence lowers the score', () => {
+      const withoutMissing = scoreHypothesis(
+        makeHypothesis({
+          category: 'dns-failure',
+          supporting: [specificLogEvidence, specificEventEvidence],
+        }),
+      );
+      const withMissing = scoreHypothesis(
+        makeHypothesis({
+          category: 'dns-failure',
+          supporting: [specificLogEvidence, specificEventEvidence],
+          missingDecisive: ['CoreDNS logs'],
+        }),
+      );
+
+      expect(withMissing).toBeLessThan(withoutMissing);
+    });
+  });
+
+  describe('cross-scenario calibration ranking', () => {
+    it.each([
+      {
+        scenario: 'wrong-db-endpoint',
+        expectedTopCategory: 'dns-failure' as const,
+        hypotheses: [
+          makeHypothesis({
+            id: 'dns',
+            category: 'dns-failure',
+            supporting: [
+              specificLogEvidence,
+              {
+                path: 'cluster-resources/services/default.json',
+                note: "Dependency hostname maps to missing Service 'db' in namespace 'default'",
+                artifactType: 'kubernetes-resource',
+              },
+            ],
+          }),
+          makeHypothesis({
+            id: 'bad-endpoint',
+            category: 'bad-db-endpoint',
+            supporting: [
+              {
+                path: 'cluster-resources/pods/default/app-pod.yaml',
+                note: 'Pod references database host value "db" in DB_HOST',
+                artifactType: 'kubernetes-resource',
+              },
+            ],
+          }),
+          makeHypothesis({
+            id: 'connectivity',
+            category: 'connectivity-failure',
+            supporting: [specificLogEvidence2],
+          }),
+        ],
+      },
+      {
+        scenario: 'missing-secret-crashloop',
+        expectedTopCategory: 'missing-secret' as const,
+        hypotheses: [
+          makeHypothesis({
+            id: 'missing-secret',
+            category: 'missing-secret',
+            supporting: [specificEventEvidence, specificMissingSecretK8sEvidence],
+          }),
+          makeHypothesis({
+            id: 'config-error',
+            category: 'config-error',
+            supporting: [
+              {
+                path: 'cluster-resources/pods/default/app-pod.yaml',
+                note: 'Configuration error suspected from startup failure',
+                artifactType: 'kubernetes-resource',
+              },
+            ],
+          }),
+          makeHypothesis({
+            id: 'generic-crash',
+            category: 'generic-crash',
+            supporting: [genericK8sEvidence],
+          }),
+        ],
+      },
+      {
+        scenario: 'bad-image-tag',
+        expectedTopCategory: 'image-pull-failure' as const,
+        hypotheses: [
+          makeHypothesis({
+            id: 'image-pull',
+            category: 'image-pull-failure',
+            supporting: [specificImagePullEventEvidence, specificImagePullK8sEvidence],
+          }),
+          makeHypothesis({
+            id: 'connectivity',
+            category: 'connectivity-failure',
+            supporting: [
+              {
+                path: 'logs/default/api.log',
+                note: 'Log line shows connection failure: "ERROR connection refused to registry.local:443"',
+                artifactType: 'log',
+              },
+            ],
+          }),
+          makeHypothesis({
+            id: 'config-error',
+            category: 'config-error',
+            supporting: [genericK8sEvidence2],
+          }),
+        ],
+      },
+      {
+        scenario: 'pvc-pending',
+        expectedTopCategory: 'volume-mount-failure' as const,
+        hypotheses: [
+          makeHypothesis({
+            id: 'volume-mount',
+            category: 'volume-mount-failure',
+            supporting: [specificVolumeMountEvidence, specificPvcProvisioningEvidence],
+          }),
+          makeHypothesis({
+            id: 'missing-service',
+            category: 'missing-service',
+            supporting: [
+              {
+                path: 'cluster-resources/services/default.json',
+                note: "Dependency hostname maps to missing Service 'db' in namespace 'default'",
+                artifactType: 'kubernetes-resource',
+              },
+            ],
+          }),
+          makeHypothesis({
+            id: 'generic-crash',
+            category: 'generic-crash',
+            supporting: [genericK8sEvidence3],
+          }),
+        ],
+      },
+    ])('ranks $expectedTopCategory highest for $scenario', ({ expectedTopCategory, hypotheses }) => {
+      const ranked = rankHypotheses(hypotheses);
+      expect(ranked[0]!.category).toBe(expectedTopCategory);
+    });
   });
 });

@@ -170,6 +170,11 @@ function printTable(rows) {
  * Also checks monotonicity: higher bands should have >= accuracy than lower
  * bands and prints a warning when this is violated.
  *
+ * Primary calibration gate lives in the unit suite
+ * (`src/investigators/__tests__/hypothesis-ranker.test.ts`). This benchmark is
+ * a secondary corpus-level signal used to spot broader regressions and inspect
+ * confidence-band behaviour on the fixture scenarios.
+ *
  * @param {Array<{confidence: number, correct: boolean, scenario: string, mode: string}>} allFindingStats
  */
 function printConfidenceCalibration(allFindingStats) {

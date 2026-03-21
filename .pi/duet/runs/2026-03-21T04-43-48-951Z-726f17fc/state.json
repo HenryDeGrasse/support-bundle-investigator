@@ -1,7 +1,7 @@
 {
   "version": 1,
   "phase": "plan_approved",
-  "updatedAt": "2026-03-21T14:43:03.440Z",
+  "updatedAt": "2026-03-21T14:47:57.230Z",
   "runId": "2026-03-21T04-43-48-951Z-726f17fc",
   "handoffMode": "none",
   "postPlanMode": "autorun",
@@ -72,8 +72,8 @@
   "round": 2,
   "resumeAction": "run",
   "activeSummary": {
-    "stepId": "step-5",
-    "stepTitle": "7.8 — Consolidate dedup: add contract tests, remove any remaining overlap, document architecture",
+    "stepId": "step-6",
+    "stepTitle": "7.7 — Add confidence calibration unit tests and verify monotonicity programmatically",
     "gateResults": [
       {
         "id": "lint",
@@ -180,5 +180,5 @@
       }
     ]
   },
-  "stepIndex": 5
+  "stepIndex": 6
 }
