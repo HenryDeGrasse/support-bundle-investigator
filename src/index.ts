@@ -19,6 +19,7 @@ export {
   printProfileSummary,
   printTextSummary,
   writeTraceFile,
+  writeProvenanceFile,
   writePipelineResult,
 } from './cli/index.js';
 export type { OutputOptions } from './cli/index.js';

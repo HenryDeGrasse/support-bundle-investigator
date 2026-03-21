@@ -1,0 +1,39 @@
+Reviewed:
+- `src/cli/cli.ts`
+- `src/cli/runner.ts`
+- `src/cli/output.ts`
+- `src/cli/index.ts`
+- `src/index.ts`
+- `src/cli/__tests__/cli.test.ts`
+- `src/cli/__tests__/runner.test.ts`
+- `src/cli/__tests__/output.test.ts`
+
+What I verified
+- `parseArgs()` includes `debug: boolean`
+- `--debug` is defined in `src/cli/cli.ts` and maps correctly to parsed args
+- standard pipeline mode in `src/cli/runner.ts`:
+  - passes `debug` through to `analyzeBundlePipeline`
+  - forces `verbose` and `trace` when `debug` is enabled
+  - writes `trace.json` in debug mode when `outputDir` is set
+  - writes `provenance.json` in debug mode when `outputDir` is set
+  - emits a stderr debug summary with investigator / seed / confidence delta / merge history
+- `writeProvenanceFile()` exists in `src/cli/output.ts`
+- exports were wired through `src/cli/index.ts` and `src/index.ts`
+- tests cover:
+  - debug flag true/false parsing
+  - runner debug behavior
+  - provenance file serialization
+
+What I changed
+- No further changes needed.
+
+Checks run
+- `npm run lint` ✅
+- `npm run typecheck` ✅
+- `npm run unit` ✅
+
+Assessment
+- Step 10 is complete and correct.
+- The implementation matches the requested CLI/debug behavior, and the suite is green.
+
+Verdict: approve

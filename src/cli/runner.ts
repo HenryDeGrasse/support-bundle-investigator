@@ -1,6 +1,6 @@
 import { parseArgs, CommanderError } from './cli.js';
 import { analyzeBundlePipeline, cleanupPipelineResult } from '../pipeline/analyze.js';
-import { writePipelineResult, writeTraceFile } from './output.js';
+import { writePipelineResult, writeTraceFile, writeProvenanceFile } from './output.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -16,6 +16,42 @@ export interface RunCliOptions {
   loadTUI?: () => Promise<{
     renderTUI: (bundlePath: string, options: Record<string, unknown>) => Promise<void>;
   }>;
+}
+
+function formatDebugValue(value: string | number | undefined): string {
+  if (value === undefined) {
+    return '-';
+  }
+
+  const rendered = typeof value === 'number' ? value.toFixed(2) : value;
+  return rendered.length > 36 ? `${rendered.slice(0, 33)}...` : rendered;
+}
+
+function emitDebugFindingSummary(
+  findings: Awaited<ReturnType<typeof analyzeBundlePipeline>>['findings'],
+): void {
+  console.error('');
+  console.error('Debug finding provenance summary');
+  console.error('Finding ID                      | Investigator   | Seed                                 | Δconf | Merge history');
+  console.error('------------------------------- | -------------- | ------------------------------------ | ----- | -------------');
+
+  if (findings.length === 0) {
+    console.error('(no findings)');
+    return;
+  }
+
+  for (const finding of findings) {
+    const provenance = finding.provenance;
+    console.error(
+      [
+        formatDebugValue(finding.id).padEnd(31),
+        formatDebugValue(provenance?.investigator).padEnd(14),
+        formatDebugValue(provenance?.seedId).padEnd(36),
+        formatDebugValue(provenance?.confidenceDelta).padEnd(5),
+        formatDebugValue(provenance?.mergedFrom?.join(', ')),
+      ].join(' | '),
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -73,10 +109,13 @@ export async function runCli(
 
   // ── Standard pipeline mode ────────────────────────────────────────────────
   try {
+    const verbose = args.verbose || args.debug;
+    const trace = args.trace || args.debug;
+
     result = await analyzeBundlePipeline(args.bundlePath, {
       outputDir: args.outputDir,
-      verbose: args.verbose,
-      trace: args.trace,
+      verbose,
+      trace,
       debug: args.debug,
       noAi: args.noAi,
     });
@@ -84,12 +123,20 @@ export async function runCli(
     await writePipelineResult(result, {
       format: args.format,
       outputDir: args.outputDir,
-      verbose: args.verbose,
+      verbose,
       debug: args.debug,
     });
 
-    if (args.trace && args.outputDir) {
+    if (trace && args.outputDir) {
       await writeTraceFile(result.trace, args.outputDir);
+    }
+
+    if (args.debug && args.outputDir) {
+      await writeProvenanceFile(result.findings, args.outputDir);
+    }
+
+    if (args.debug) {
+      emitDebugFindingSummary(result.findings);
     }
 
     return 0;

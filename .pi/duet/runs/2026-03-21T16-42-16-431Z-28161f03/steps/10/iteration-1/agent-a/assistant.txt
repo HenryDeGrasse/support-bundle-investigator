@@ -1,0 +1,56 @@
+Reviewed:
+- `src/cli/cli.ts`
+- `src/cli/runner.ts`
+- `src/cli/output.ts`
+- `src/cli/index.ts`
+- `src/index.ts`
+- `src/cli/__tests__/cli.test.ts`
+- `src/cli/__tests__/runner.test.ts`
+
+What I changed:
+- `src/cli/runner.ts`
+  - forced `verbose: true` and `trace: true` for pipeline runs when `--debug` is set
+  - writes `provenance.json` via new `writeProvenanceFile()` when `--debug` and `--output-dir` are both present
+  - writes `trace.json` in debug mode even if `--trace` was not explicitly passed
+  - emits a stderr debug summary table showing:
+    - investigator
+    - seed
+    - confidence delta
+    - merge history
+- `src/cli/output.ts`
+  - added `writeProvenanceFile(findings, outputDir)`
+  - writes `<outputDir>/provenance.json` with one entry per finding:
+    - `findingId`
+    - `title`
+    - `provenance`
+- `src/cli/cli.ts`
+  - kept `debug: boolean` support and updated the `--debug` help text to match the step intent
+- `src/cli/index.ts`
+  - re-exported `writeProvenanceFile`
+- `src/index.ts`
+  - re-exported `writeProvenanceFile`
+
+Tests:
+- `src/cli/__tests__/runner.test.ts`
+  - added coverage that `--debug`:
+    - forces verbose + trace into pipeline options
+    - writes `trace.json`
+    - writes `provenance.json`
+    - logs the debug summary
+- added new `src/cli/__tests__/output.test.ts`
+  - verifies `writeProvenanceFile()` writes the expected JSON payload
+  - verifies findings without provenance are preserved as `null`
+- `src/cli/__tests__/cli.test.ts`
+  - existing debug true/false coverage already matched the requirement; no extra change needed there
+
+Assessment:
+- Step 10’s requested behavior is now implemented.
+- One nuance: `--debug` already existed from earlier provenance plumbing, so this step was mainly about completing the runner/output behavior around it rather than introducing the flag from scratch.
+
+Checks run:
+- `npx vitest run src/cli/__tests__/cli.test.ts src/cli/__tests__/runner.test.ts src/cli/__tests__/output.test.ts` ✅
+- `npm run typecheck` ✅
+- `npm run lint` ✅
+- `npm run unit` ✅
+
+Verdict: changes_made

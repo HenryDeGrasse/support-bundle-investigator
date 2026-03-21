@@ -1,6 +1,6 @@
 import * as fsp from 'fs/promises';
 import * as path from 'path';
-import type { BundleProfile } from '../types/index.js';
+import type { BundleProfile, Finding } from '../types/index.js';
 import type { InvestigationTrace } from '../pipeline/trace.js';
 import type { PipelineResult } from '../pipeline/analyze.js';
 import {
@@ -82,6 +82,23 @@ export async function writeTraceFile(
   await fsp.mkdir(outputDir, { recursive: true });
   const traceFile = path.join(outputDir, 'trace.json');
   await fsp.writeFile(traceFile, JSON.stringify(trace, null, 2), 'utf-8');
+}
+
+/**
+ * Writes per-finding provenance metadata to `provenance.json` in `outputDir`.
+ */
+export async function writeProvenanceFile(
+  findings: Finding[],
+  outputDir: string,
+): Promise<void> {
+  await fsp.mkdir(outputDir, { recursive: true });
+  const provenanceFile = path.join(outputDir, 'provenance.json');
+  const payload = findings.map((finding) => ({
+    findingId: finding.id,
+    title: finding.title,
+    provenance: finding.provenance ?? null,
+  }));
+  await fsp.writeFile(provenanceFile, JSON.stringify(payload, null, 2), 'utf-8');
 }
 
 /**

@@ -5,6 +5,7 @@ export {
   printProfileSummary,
   printTextSummary,
   writeTraceFile,
+  writeProvenanceFile,
   writePipelineResult,
 } from './output.js';
 export type { OutputOptions } from './output.js';

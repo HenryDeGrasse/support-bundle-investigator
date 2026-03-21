@@ -19,11 +19,12 @@ vi.mock('../../pipeline/analyze.js', () => ({
 vi.mock('../output.js', () => ({
   writePipelineResult: vi.fn(),
   writeTraceFile: vi.fn(),
+  writeProvenanceFile: vi.fn(),
 }));
 
 import { parseArgs } from '../cli.js';
 import { analyzeBundlePipeline, cleanupPipelineResult } from '../../pipeline/analyze.js';
-import { writePipelineResult, writeTraceFile } from '../output.js';
+import { writePipelineResult, writeTraceFile, writeProvenanceFile } from '../output.js';
 import { runCli } from '../runner.js';
 
 function makePipelineResult(): PipelineResult {
@@ -76,6 +77,7 @@ describe('runCli()', () => {
   const cleanupPipelineResultMock = vi.mocked(cleanupPipelineResult);
   const writePipelineResultMock = vi.mocked(writePipelineResult);
   const writeTraceFileMock = vi.mocked(writeTraceFile);
+  const writeProvenanceFileMock = vi.mocked(writeProvenanceFile);
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -138,6 +140,67 @@ describe('runCli()', () => {
       debug: false,
       noAi: true,
     });
+  });
+
+  it('forces verbose and trace, writes trace.json and provenance.json, and logs debug summary when --debug is set', async () => {
+    const result = makePipelineResult();
+    result.findings = [
+      {
+        id: 'finding:ai:0',
+        title: 'Root cause',
+        severity: 'high',
+        confidence: 0.8,
+        affectedComponents: ['Pod/default/api'],
+        reasoningSummary: 'AI finding',
+        evidence: [{ path: 'cluster-resources/pods/default/api.yaml', note: 'evidence' }],
+        contradictionsChecked: [],
+        recommendedAction: 'Investigate',
+        missingEvidence: [],
+        provenance: {
+          investigator: 'ai',
+          seedId: 'seed:merged:1',
+          generatedAt: new Date().toISOString(),
+          mergedFrom: ['finding:k8s:1'],
+          confidenceDelta: 0.15,
+        },
+      },
+    ];
+
+    parseArgsMock.mockReturnValue({
+      bundlePath: '/tmp/bundle.tar.gz',
+      format: 'json',
+      outputDir: '/tmp/out',
+      verbose: false,
+      trace: false,
+      debug: true,
+      noAi: false,
+      tui: false,
+    });
+    analyzeBundlePipelineMock.mockResolvedValue(result);
+    writePipelineResultMock.mockResolvedValue();
+    writeTraceFileMock.mockResolvedValue();
+    writeProvenanceFileMock.mockResolvedValue();
+    cleanupPipelineResultMock.mockResolvedValue();
+
+    await expect(runCli(['node', 'sbi', 'analyze', '/tmp/bundle.tar.gz', '--debug'])).resolves.toBe(0);
+
+    expect(analyzeBundlePipelineMock).toHaveBeenCalledWith('/tmp/bundle.tar.gz', {
+      outputDir: '/tmp/out',
+      verbose: true,
+      trace: true,
+      debug: true,
+      noAi: false,
+    });
+    expect(writePipelineResultMock).toHaveBeenCalledWith(result, {
+      format: 'json',
+      outputDir: '/tmp/out',
+      verbose: true,
+      debug: true,
+    });
+    expect(writeTraceFileMock).toHaveBeenCalledWith(result.trace, '/tmp/out');
+    expect(writeProvenanceFileMock).toHaveBeenCalledWith(result.findings, '/tmp/out');
+    expect(console.error).toHaveBeenCalledWith('Debug finding provenance summary');
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('finding:ai:0'));
   });
 
   it('still cleans up extracted artifacts when report writing fails', async () => {
