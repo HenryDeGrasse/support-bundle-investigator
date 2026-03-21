@@ -170,6 +170,85 @@ describe('investigateWithAI', () => {
     });
     expect(result.findings).toHaveLength(0);
     expect(result.edges).toHaveLength(0);
+    expect(result.metadata?.aiRunStats).toEqual({
+      model: 'unknown',
+      totalCalls: 0,
+      successfulCalls: 0,
+      failedCalls: 0,
+      totalLatencyMs: 0,
+      avgLatencyMs: 0,
+    });
+  });
+
+  it('aggregates AI call telemetry into metadata.aiRunStats', async () => {
+    const deps = makeMockDeps(async () => ({
+      findings: [VALID_AI_FINDING],
+      telemetry: {
+        model: 'gpt-4o',
+        latencyMs: 125,
+        success: true,
+        promptTokens: 120,
+        completionTokens: 40,
+        estimatedCostUsd: 0.0012,
+      },
+    }));
+
+    const seeds = [makeSeed('seed:k8s:0', 'kubernetes', 'Pod app-pod is in CrashLoopBackOff')];
+    const result = await investigateWithAI(makeContext(), seeds, deps);
+
+    expect(result.metadata?.aiRunStats).toEqual({
+      model: 'gpt-4o',
+      totalCalls: 1,
+      successfulCalls: 1,
+      failedCalls: 0,
+      totalLatencyMs: 125,
+      avgLatencyMs: 125,
+      totalPromptTokens: 120,
+      totalCompletionTokens: 40,
+      estimatedCostUsd: 0.0012,
+    });
+  });
+
+  it('does not double-count telemetry when post-call response processing throws', async () => {
+    const deps = makeMockDeps(async () => {
+      const response: AIFindingResponse = {
+        findings: [],
+        telemetry: {
+          model: 'gpt-4o',
+          latencyMs: 90,
+          success: true,
+          promptTokens: 100,
+          completionTokens: 20,
+          estimatedCostUsd: 0.0008,
+        },
+      };
+
+      Object.defineProperty(response, 'findings', {
+        enumerable: true,
+        configurable: true,
+        get() {
+          throw new Error('response findings accessor failed');
+        },
+      });
+
+      return response;
+    });
+
+    const seeds = [makeSeed('seed:k8s:0', 'kubernetes', 'Pod app-pod is in CrashLoopBackOff')];
+    const result = await investigateWithAI(makeContext(), seeds, deps);
+
+    expect(result.findings).toEqual([]);
+    expect(result.metadata?.aiRunStats).toEqual({
+      model: 'gpt-4o',
+      totalCalls: 1,
+      successfulCalls: 1,
+      failedCalls: 0,
+      totalLatencyMs: 90,
+      avgLatencyMs: 90,
+      totalPromptTokens: 100,
+      totalCompletionTokens: 20,
+      estimatedCostUsd: 0.0008,
+    });
   });
 
   // ── Finding generation from LLM response ──────────────────────────────────

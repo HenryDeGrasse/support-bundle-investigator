@@ -46,8 +46,12 @@ import {
   createEmbeddingClient,
   VectorStore,
   lateChunkEmbed,
+  toAIRunSummary,
+  zeroAIRunStats,
 } from '../ai/index.js';
 import type {
+  AIRunStats,
+  AIRunSummary,
   EmbeddingClientInterface,
   InvestigationLLMClient,
   LateChunkEmbeddingClient,
@@ -195,6 +199,15 @@ function zeroRetrievalStats(): RetrievalStats {
     semanticChunks: 0,
     mergedChunks: 0,
   };
+}
+
+function buildTraceAISummary(
+  aiMode: AIMode,
+  model: string,
+  stats?: AIRunStats,
+): AIRunSummary {
+  const backend: AIRunSummary['backend'] = aiMode === 'off' ? 'off' : aiMode;
+  return toAIRunSummary(stats ?? zeroAIRunStats(model), backend, model);
 }
 
 function addInvestigationEvidenceNode(
@@ -766,6 +779,11 @@ export async function analyzeBundlePipeline(
     verified: investigationResult.metadata.hypothesesVerified,
     converted: investigationResult.metadata.hypothesesConverted,
   };
+  trace.aiSummary = buildTraceAISummary(
+    aiMode,
+    aiConfig.model,
+    investigationResult.metadata.aiRunStats,
+  );
 
   // ── 10. Complete trace ────────────────────────────────────────────────────
   completeTrace(trace, profile, {

@@ -81,6 +81,19 @@ vi.mock('../../ai/index.js', () => ({
   EmbeddingClient: vi.fn(),
   createEmbeddingClient: vi.fn(),
   VectorStore: vi.fn(),
+  zeroAIRunStats: vi.fn((model = 'unknown') => ({
+    model,
+    totalCalls: 0,
+    successfulCalls: 0,
+    failedCalls: 0,
+    totalLatencyMs: 0,
+    avgLatencyMs: 0,
+  })),
+  toAIRunSummary: vi.fn((stats, backend, fallbackModel) => ({
+    ...stats,
+    model: backend === 'off' ? 'off' : (stats?.model ?? fallbackModel ?? 'unknown'),
+    backend,
+  })),
 }));
 
 // ---------------------------------------------------------------------------
@@ -164,6 +177,14 @@ function makeInvestigationResult(partial: Record<string, unknown> = {}) {
         lexicalChunks: 0,
         semanticChunks: 0,
         mergedChunks: 0,
+      },
+      aiRunStats: {
+        model: 'unknown',
+        totalCalls: 0,
+        successfulCalls: 0,
+        failedCalls: 0,
+        totalLatencyMs: 0,
+        avgLatencyMs: 0,
       },
       graphMatchedSymptoms: 0,
       seedClusterCount: 0,

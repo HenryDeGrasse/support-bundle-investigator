@@ -1,7 +1,7 @@
 {
   "version": 1,
   "phase": "plan_approved",
-  "updatedAt": "2026-03-21T19:06:32.724Z",
+  "updatedAt": "2026-03-21T19:31:26.256Z",
   "runId": "2026-03-21T16-42-16-431Z-28161f03",
   "handoffMode": "summary",
   "postPlanMode": "review",
@@ -69,11 +69,11 @@
     "persistSessionAcrossSteps": true
   },
   "goal": "I'd like you to go deep on improving the evals and observability and robustness. covering these: Build a real eval scorecard across all scenarios, Add AI replay/cassette evals, Expand scenario corpus to include newer investigators, Enrich trace.json with seed/retrieval/confidence telemetry, Add a debug mode that emits per-finding provenance, Add cost/latency/model summaries for AI runs,  Robustness- Corrupt/partial/oversized bundle tests, Stress/perf benchmarks, Sensitive-data leakage tests",
-  "round": 2,
+  "round": 4,
   "resumeAction": "run",
   "activeSummary": {
-    "stepId": "step-7",
-    "stepTitle": "Add per-finding provenance to Finding type and populate in investigators",
+    "stepId": "step-8",
+    "stepTitle": "Add AI cost/latency/model summary to trace and report",
     "gateResults": [
       {
         "id": "lint",
@@ -261,5 +261,5 @@
       }
     ]
   },
-  "stepIndex": 8
+  "stepIndex": 9
 }

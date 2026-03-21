@@ -36,5 +36,12 @@ export { VectorStore, cosineSimilarity } from './vector-store.js';
 export type { ScoredChunk } from './vector-store.js';
 export { generateHypotheticalDocument, HYDE_SYSTEM_PROMPT } from './hyde.js';
 export type { HydeLLMClient } from './hyde.js';
+export {
+  aggregateAIRunStats,
+  estimateLLMCostUsd,
+  toAIRunSummary,
+  zeroAIRunStats,
+} from './telemetry.js';
+export type { AICallMetrics, AIRunStats, AIRunSummary } from './telemetry.js';
 export { computeRetrievalMetrics, aggregateRetrievalMetrics } from './retrieval-metrics.js';
 export type { RetrievalMetrics } from './retrieval-metrics.js';

@@ -1,4 +1,5 @@
 import type { Finding } from '../types/index.js';
+import type { AIRunSummary } from '../ai/telemetry.js';
 
 // ---------------------------------------------------------------------------
 // SpecRecommendation
@@ -115,4 +116,7 @@ export interface InvestigationReport {
    * bundles.  Empty when the investigation found sufficient coverage.
    */
   specRecommendations: SpecRecommendation[];
+
+  /** Summary of AI model usage, latency, and token/cost telemetry for this run. */
+  aiSummary?: AIRunSummary;
 }

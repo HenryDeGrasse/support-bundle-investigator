@@ -1,0 +1,72 @@
+Reviewed:
+- `src/ai/llm-client.ts`
+- `src/ai/replayable-llm-client.ts`
+- `src/investigators/ai-investigator.ts`
+- `src/investigators/orchestrator.ts`
+- `src/investigators/types.ts`
+- `src/pipeline/trace.ts`
+- `src/pipeline/analyze.ts`
+- `src/reporters/types.ts`
+- `src/reporters/report-builder.ts`
+- `src/reporters/json-reporter.ts`
+- related AI/pipeline/report tests
+
+What I changed:
+- Added AI telemetry types/aggregation in new file:
+  - `src/ai/telemetry.ts`
+  - includes:
+    - `AICallMetrics`
+    - `AIRunStats`
+    - `AIRunSummary`
+    - aggregation helpers
+    - simple OpenAI cost estimation for known models
+- Extended `AIFindingResponse` in `src/ai/llm-client.ts` with per-call `telemetry`
+- Instrumented `LLMClient.investigateSeed()` to return:
+  - latency
+  - success/failure
+  - prompt/completion token usage from `response.usage`
+  - estimated cost when model/backend pricing is known
+- Updated `ReplayableLLMClient` so replay/missing-cassette paths also return telemetry
+- Updated `investigateWithAI()` to accumulate per-call stats and return them as:
+  - `metadata.aiRunStats`
+- Extended orchestrator metadata to carry `aiRunStats`
+- Added `aiSummary?: AIRunSummary` to `InvestigationTrace`
+- Updated `analyzeBundlePipeline()` to populate `trace.aiSummary`
+- Added `aiSummary?: AIRunSummary` to `InvestigationReport`
+- Updated `buildReport()` to pass through `result.trace.aiSummary`
+- Updated JSON report output to emit top-level `aiSummary`
+- Exported telemetry helpers/types from `src/ai/index.ts`
+
+Tests added/updated:
+- `src/ai/__tests__/llm-client.test.ts`
+  - success latency/token/cost telemetry
+  - failure telemetry
+- new `src/ai/__tests__/telemetry.test.ts`
+  - aggregation logic
+  - summary conversion
+  - cost estimation
+- `src/ai/__tests__/replayable-llm-client.test.ts`
+  - adjusted for telemetry on replay miss
+- `src/investigators/__tests__/ai-investigator.test.ts`
+  - asserts `metadata.aiRunStats`
+- `src/reporters/__tests__/json-reporter.test.ts`
+  - asserts top-level `aiSummary`
+- `test/integration/__tests__/pipeline.test.ts`
+  - asserts generated `findings.json` includes `aiSummary`
+- updated pipeline mock helpers:
+  - `src/pipeline/__tests__/analyze-ai.test.ts`
+  - `src/pipeline/__tests__/analyze-progress.test.ts`
+
+Assessment:
+- Step 9 is implemented.
+- The real LLM path now captures per-call latency/token/cost telemetry.
+- The AI investigator aggregates it.
+- The pipeline exposes it in `trace.aiSummary`.
+- The JSON report includes a top-level `aiSummary`.
+
+Checks run:
+- `npm run lint` ✅
+- `npm run typecheck` ✅
+- `npm run unit` ✅
+
+Verdict: changes_made

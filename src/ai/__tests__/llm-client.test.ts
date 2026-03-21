@@ -62,7 +62,13 @@ const VALID_FINDING = {
   missingEvidence: [],
 };
 
-function makeApiResponse(findings: unknown[]): { choices: { message: { content: string } }[] } {
+function makeApiResponse(
+  findings: unknown[],
+  usage?: { prompt_tokens?: number; completion_tokens?: number },
+): {
+  choices: { message: { content: string } }[];
+  usage?: { prompt_tokens?: number; completion_tokens?: number };
+} {
   return {
     choices: [
       {
@@ -71,6 +77,7 @@ function makeApiResponse(findings: unknown[]): { choices: { message: { content: 
         },
       },
     ],
+    ...(usage !== undefined ? { usage } : {}),
   };
 }
 
@@ -81,6 +88,7 @@ function makeApiResponse(findings: unknown[]): { choices: { message: { content: 
 beforeEach(() => {
   mockCreate.mockReset();
 });
+
 
 // ---------------------------------------------------------------------------
 // Construction
@@ -134,6 +142,27 @@ describe('LLMClient.investigateSeed — happy path', () => {
     const result = await client.investigateSeed('system', 'user');
 
     expect(result.rawResponse).toBe(rawContent);
+  });
+
+  it('captures latency, token usage, and estimated cost telemetry on success', async () => {
+    vi.spyOn(Date, 'now')
+      .mockImplementationOnce(() => 1_000)
+      .mockImplementation(() => 1_125);
+    mockCreate.mockResolvedValueOnce(
+      makeApiResponse([VALID_FINDING], { prompt_tokens: 123, completion_tokens: 45 }),
+    );
+
+    const client = new LLMClient(TEST_CONFIG);
+    const result = await client.investigateSeed('system', 'user');
+
+    expect(result.telemetry).toMatchObject({
+      model: 'gpt-4o',
+      latencyMs: 125,
+      success: true,
+      promptTokens: 123,
+      completionTokens: 45,
+    });
+    expect(result.telemetry?.estimatedCostUsd).toBeCloseTo(0.00129, 6);
   });
 
   it('returns multiple findings when API returns multiple', async () => {
@@ -227,6 +256,22 @@ describe('LLMClient.investigateSeed — graceful degradation', () => {
     const result = await client.investigateSeed('system', 'user');
 
     expect(result.findings).toHaveLength(0);
+  });
+
+  it('captures failure telemetry when the API call rejects', async () => {
+    vi.spyOn(Date, 'now')
+      .mockImplementationOnce(() => 2_000)
+      .mockImplementation(() => 2_080);
+    mockCreate.mockRejectedValueOnce(new Error('OpenAI API error: 500 Internal Server Error'));
+
+    const client = new LLMClient(TEST_CONFIG);
+    const result = await client.investigateSeed('system', 'user');
+
+    expect(result.telemetry).toEqual({
+      model: 'gpt-4o',
+      latencyMs: 80,
+      success: false,
+    });
   });
 
   it('returns empty findings on network timeout without throwing', async () => {

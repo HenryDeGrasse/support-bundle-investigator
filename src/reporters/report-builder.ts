@@ -217,5 +217,6 @@ export function buildReport(result: PipelineResult): InvestigationReport {
     nextSteps,
     missingEvidence,
     specRecommendations,
+    aiSummary: result.trace.aiSummary,
   };
 }

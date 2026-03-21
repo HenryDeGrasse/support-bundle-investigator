@@ -2,6 +2,7 @@ import type { AnalyzerResult, BundleProfile, K8sEvent, K8sResource } from '../ty
 import type { Finding } from '../types/index.js';
 import type { GraphEdge } from '../types/index.js';
 import type { LogFile, HelmRelease } from '../parsers/index.js';
+import type { AIRunStats } from '../ai/telemetry.js';
 
 // ---------------------------------------------------------------------------
 // Seed categories
@@ -195,5 +196,6 @@ export interface InvestigatorResult {
       semanticChunks: number;
       mergedChunks: number;
     };
+    aiRunStats?: AIRunStats;
   };
 }

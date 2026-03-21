@@ -18,6 +18,8 @@ import type { AIConfig } from './config.js';
 import type { AIFinding } from './schemas.js';
 import { validateAIFindings } from './schemas.js';
 import type { HydeLLMClient } from './hyde.js';
+import { estimateLLMCostUsd } from './telemetry.js';
+import type { AICallMetrics } from './telemetry.js';
 
 // ---------------------------------------------------------------------------
 // AIFindingResponse
@@ -35,6 +37,8 @@ export interface AIFindingResponse {
   findings: AIFinding[];
   /** Raw JSON string returned by the model (present even on validation failure). */
   rawResponse?: string;
+  /** Per-call latency/token/cost telemetry for this investigation request. */
+  telemetry?: AICallMetrics;
 }
 
 /**
@@ -80,6 +84,7 @@ export interface SeedAwareInvestigationLLMClient extends InvestigationLLMClient 
 export class LLMClient implements InvestigationLLMClient {
   private readonly client: OpenAI;
   private readonly model: string;
+  private readonly backend: AIConfig['llmBackend'];
 
   constructor(config: AIConfig) {
     this.client = new OpenAI({
@@ -87,6 +92,7 @@ export class LLMClient implements InvestigationLLMClient {
       baseURL: config.llmUrl,
     });
     this.model = config.model;
+    this.backend = config.llmBackend;
   }
 
   getModel(): string {
@@ -140,6 +146,7 @@ export class LLMClient implements InvestigationLLMClient {
     userPrompt: string,
   ): Promise<AIFindingResponse> {
     let rawResponse: string | undefined;
+    const startedAt = Date.now();
 
     try {
       const response = await this.client.chat.completions.create({
@@ -152,6 +159,14 @@ export class LLMClient implements InvestigationLLMClient {
       });
 
       rawResponse = response.choices[0]?.message?.content ?? '{}';
+      const promptTokens = response.usage?.prompt_tokens;
+      const completionTokens = response.usage?.completion_tokens;
+      const estimatedCostUsd = estimateLLMCostUsd(
+        this.model,
+        promptTokens,
+        completionTokens,
+        this.backend,
+      );
 
       let parsed: unknown;
       try {
@@ -160,7 +175,18 @@ export class LLMClient implements InvestigationLLMClient {
         console.warn(
           `[LLMClient] Failed to parse JSON response: ${parseError instanceof Error ? parseError.message : String(parseError)}`,
         );
-        return { findings: [], rawResponse };
+        return {
+          findings: [],
+          rawResponse,
+          telemetry: {
+            model: this.model,
+            latencyMs: Date.now() - startedAt,
+            success: false,
+            ...(promptTokens != null ? { promptTokens } : {}),
+            ...(completionTokens != null ? { completionTokens } : {}),
+            ...(estimatedCostUsd != null ? { estimatedCostUsd } : {}),
+          },
+        };
       }
 
       // Extract the `findings` array from the parsed JSON object
@@ -174,12 +200,30 @@ export class LLMClient implements InvestigationLLMClient {
 
       const findings = validateAIFindings(rawFindings);
 
-      return { findings, rawResponse };
+      return {
+        findings,
+        rawResponse,
+        telemetry: {
+          model: this.model,
+          latencyMs: Date.now() - startedAt,
+          success: true,
+          ...(promptTokens != null ? { promptTokens } : {}),
+          ...(completionTokens != null ? { completionTokens } : {}),
+          ...(estimatedCostUsd != null ? { estimatedCostUsd } : {}),
+        },
+      };
     } catch (error) {
       console.warn(
         `[LLMClient] API call failed: ${error instanceof Error ? error.message : String(error)}`,
       );
-      return { findings: [] };
+      return {
+        findings: [],
+        telemetry: {
+          model: this.model,
+          latencyMs: Date.now() - startedAt,
+          success: false,
+        },
+      };
     }
   }
 }

@@ -175,6 +175,21 @@ describe('Pipeline Integration', () => {
         expect(typeof step.artifactsProcessed).toBe('number');
       }
     });
+
+    it('trace includes aiSummary with backend and aggregate call counters', async () => {
+      const result = await runPipeline(wrongDbBundlePath);
+
+      expect(result.trace.aiSummary).toBeDefined();
+      expect(result.trace.aiSummary).toMatchObject({
+        model: expect.any(String),
+        backend: expect.stringMatching(/^(cloud|local|off)$/),
+        totalCalls: expect.any(Number),
+        successfulCalls: expect.any(Number),
+        failedCalls: expect.any(Number),
+        totalLatencyMs: expect.any(Number),
+        avgLatencyMs: expect.any(Number),
+      });
+    });
   });
 
   describe('investigation graph', () => {
@@ -335,6 +350,7 @@ describe('Pipeline Integration', () => {
         expect(Array.isArray(parsed['findings'])).toBe(true);
         expect(typeof parsed['executiveSummary']).toBe('string');
         expect(parsed['schemaVersion']).toBeDefined();
+        expect(parsed['aiSummary']).toBeDefined();
       } finally {
         fs.rmSync(outputDir, { recursive: true, force: true });
       }

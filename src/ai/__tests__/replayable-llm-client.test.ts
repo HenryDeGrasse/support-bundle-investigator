@@ -63,6 +63,17 @@ describe('ReplayableLLMClient', () => {
     expect(cassette?.model).toBe('gpt-4o');
   });
 
+  it('exposes the wrapped model via getModel', () => {
+    const inner = makeInnerClient();
+    const client = new ReplayableLLMClient(
+      inner,
+      new CassetteRecorder('live', tmpDir),
+      () => ({ seedId: 'seed:k8s:model', seedCategory: 'kubernetes' }),
+    );
+
+    expect(client.getModel()).toBe('gpt-4o');
+  });
+
   it('replays cached responses without calling the inner client', async () => {
     const recordRecorder = new CassetteRecorder('record', tmpDir);
     recordRecorder.record(
@@ -105,7 +116,15 @@ describe('ReplayableLLMClient', () => {
     client.setSeedContext('seed:k8s:missing', 'kubernetes');
     const result = await client.investigateSeed('system prompt', 'user prompt');
 
-    expect(result).toEqual({ findings: [], rawResponse: undefined });
+    expect(result).toMatchObject({
+      findings: [],
+      rawResponse: undefined,
+      telemetry: {
+        model: 'gpt-4o',
+        latencyMs: 0,
+        success: false,
+      },
+    });
     expect(inner.investigateSeed).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining(cassetteSeedKey('seed:k8s:missing', 'kubernetes')),

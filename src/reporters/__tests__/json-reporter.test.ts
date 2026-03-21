@@ -157,6 +157,25 @@ describe('generateJsonReport — top-level report fields', () => {
     expect(Array.isArray(parsed['findings'])).toBe(true);
     expect((parsed['findings'] as unknown[]).length).toBe(report.findings.length);
   });
+
+  it('includes aiSummary when present on the report', () => {
+    const report = makeReport({
+      aiSummary: {
+        model: 'gpt-4o',
+        backend: 'cloud',
+        totalCalls: 2,
+        successfulCalls: 2,
+        failedCalls: 0,
+        totalLatencyMs: 240,
+        avgLatencyMs: 120,
+        totalPromptTokens: 200,
+        totalCompletionTokens: 80,
+        estimatedCostUsd: 0.0042,
+      },
+    });
+    const parsed = JSON.parse(generateJsonReport(report)) as Record<string, unknown>;
+    expect(parsed['aiSummary']).toEqual(report.aiSummary);
+  });
 });
 
 // ---------------------------------------------------------------------------

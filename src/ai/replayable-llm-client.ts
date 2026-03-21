@@ -26,6 +26,10 @@ export class ReplayableLLMClient implements SeedAwareInvestigationLLMClient {
     private readonly seedResolver: (system: string, user: string) => SeedIdentity,
   ) {}
 
+  getModel(): string {
+    return getInnerModel(this.inner);
+  }
+
   setSeedContext(seedId: string, seedCategory: string): void {
     this.currentSeed = { seedId, seedCategory };
   }
@@ -46,13 +50,26 @@ export class ReplayableLLMClient implements SeedAwareInvestigationLLMClient {
         return {
           findings: cassette.response.findings,
           rawResponse: cassette.response.rawResponse,
+          telemetry: {
+            model: cassette.model,
+            latencyMs: 0,
+            success: true,
+          },
         };
       }
 
       console.warn(
         `[ReplayableLLMClient] Missing cassette for ${cassetteSeedKey(seed.seedId, seed.seedCategory)} (${seed.seedId}, ${seed.seedCategory})`,
       );
-      return { findings: [], rawResponse: undefined };
+      return {
+        findings: [],
+        rawResponse: undefined,
+        telemetry: {
+          model: getInnerModel(this.inner),
+          latencyMs: 0,
+          success: false,
+        },
+      };
     }
 
     const response = await this.inner.investigateSeed(systemPrompt, userPrompt);

@@ -22,6 +22,8 @@ import {
   applyFindingProvenance,
   collectMergedFindingIds,
 } from './finding-provenance.js';
+import { zeroAIRunStats } from '../ai/telemetry.js';
+import type { AIRunStats } from '../ai/telemetry.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -78,6 +80,8 @@ export interface InvestigationResult {
       semanticChunks: number;
       mergedChunks: number;
     };
+    /** Aggregated latency/token/cost telemetry for AI investigation calls. */
+    aiRunStats: AIRunStats;
     /**
      * Number of symptom findings matched by causal template analysis.
      * These findings were excluded from the hypothesis generator and handled
@@ -1313,6 +1317,7 @@ export async function runInvestigation(
     semanticChunks: 0,
     mergedChunks: 0,
   };
+  let aiRunStats = zeroAIRunStats('unknown');
 
   if (aiDeps !== undefined) {
     try {
@@ -1325,6 +1330,7 @@ export async function runInvestigation(
       aiEnabled = true;
       aiFindings = aiResult.findings.length;
       retrievalStats = aiResult.metadata?.retrievalStats ?? retrievalStats;
+      aiRunStats = aiResult.metadata?.aiRunStats ?? aiRunStats;
     } catch (error) {
       // Graceful degradation: log the failure, continue with heuristic results
       console.warn(
@@ -1492,6 +1498,7 @@ export async function runInvestigation(
       hypothesesVerified,
       hypothesesConverted: convertedHypothesisFindings.length,
       retrievalStats,
+      aiRunStats,
       graphMatchedSymptoms,
       seedClusterCount: clusteredSeeds.length,
       seedClusteringEnabled,

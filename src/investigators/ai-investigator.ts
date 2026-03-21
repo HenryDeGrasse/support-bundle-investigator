@@ -35,6 +35,8 @@ import { buildInvestigationPrompt } from '../ai/prompts.js';
 import { estimateTokens } from '../ai/chunk-indexer.js';
 import { generateHypotheticalDocument } from '../ai/hyde.js';
 import { applyFindingProvenance } from './finding-provenance.js';
+import { aggregateAIRunStats } from '../ai/telemetry.js';
+import type { AICallMetrics } from '../ai/telemetry.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -263,6 +265,17 @@ function nextFindingId(category: string, counter: Counter): string {
 
 function nextEdgeId(counter: Counter): string {
   return `edge:ai:${counter.value++}`;
+}
+
+function getInvestigationClientModel(client: InvestigationLLMClient): string {
+  const candidate = client as InvestigationLLMClient & { getModel?: () => string; model?: string };
+  if (typeof candidate.getModel === 'function') {
+    return candidate.getModel();
+  }
+  if (typeof candidate.model === 'string' && candidate.model.trim().length > 0) {
+    return candidate.model;
+  }
+  return 'unknown';
 }
 
 // ---------------------------------------------------------------------------
@@ -858,6 +871,8 @@ export async function investigateWithAI(
   const allEdges: GraphEdge[] = [];
   const counter: Counter = { value: 0 };
   const seedTotal = deduplicatedSeeds.length;
+  const callMetrics: AICallMetrics[] = [];
+  const fallbackModel = getInvestigationClientModel(llmClient);
   const retrievalStats = {
     graphChunks: 0,
     lexicalChunks: 0,
@@ -867,6 +882,8 @@ export async function investigateWithAI(
 
   for (let seedIdx = 0; seedIdx < deduplicatedSeeds.length; seedIdx++) {
     const seed = deduplicatedSeeds[seedIdx]!;
+    let callStartedAt = 0;
+    let telemetryRecorded = false;
     try {
       // Emit per-seed progress for TUI
       onSeedProgress?.(seedIdx + 1, seedTotal, seed.hypothesis);
@@ -976,12 +993,22 @@ export async function investigateWithAI(
       const seedAwareClient = llmClient as Partial<SeedAwareInvestigationLLMClient>;
       seedAwareClient.setSeedContext?.(seed.id, seed.category);
 
+      callStartedAt = Date.now();
       let response;
       try {
         response = await llmClient.investigateSeed(system, user);
       } finally {
         seedAwareClient.clearSeedContext?.();
       }
+
+      callMetrics.push(
+        response.telemetry ?? {
+          model: fallbackModel,
+          latencyMs: Date.now() - callStartedAt,
+          success: true,
+        },
+      );
+      telemetryRecorded = true;
 
       const validatedFindings = validateAIFindings(response.findings);
 
@@ -996,6 +1023,14 @@ export async function investigateWithAI(
       allFindings.push(...findings);
       allEdges.push(...edges);
     } catch (error) {
+      if (!telemetryRecorded) {
+        callMetrics.push({
+          model: fallbackModel,
+          latencyMs: callStartedAt > 0 ? Date.now() - callStartedAt : 0,
+          success: false,
+        });
+      }
+
       // Graceful degradation: log and continue with remaining seeds
       console.warn(
         `[AIInvestigator] Failed to investigate seed '${seed.id}' (${seed.category}): ` +
@@ -1009,6 +1044,7 @@ export async function investigateWithAI(
     edges: allEdges,
     metadata: {
       retrievalStats,
+      aiRunStats: aggregateAIRunStats(callMetrics, fallbackModel),
     },
   };
 }

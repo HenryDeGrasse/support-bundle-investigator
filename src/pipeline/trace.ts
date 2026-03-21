@@ -1,4 +1,5 @@
 import type { BundleProfile } from '../types/index.js';
+import type { AIRunSummary } from '../ai/telemetry.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -44,6 +45,7 @@ export interface InvestigationTrace {
   steps: TraceStep[];
   profile?: BundleProfile;
   metadata?: Record<string, unknown>;
+  aiSummary?: AIRunSummary;
 }
 
 // ---------------------------------------------------------------------------
