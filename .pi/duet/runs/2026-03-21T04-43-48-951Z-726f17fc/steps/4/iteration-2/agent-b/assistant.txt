@@ -1,0 +1,24 @@
+Reviewed:
+- `src/investigators/__tests__/orchestrator.test.ts`
+- `src/investigators/orchestrator.ts`
+
+What I changed:
+- No code changes needed.
+
+Assessment:
+- Step 4 is complete and correct.
+- The added orchestrator integration coverage proves the end-to-end path:
+  - same-namespace multi-pod DNS convergence produces a `finding:meta:cluster-wide:dns-failure:*` meta-finding
+  - the meta-finding confidence exceeds individual DNS hypothesis confidence
+  - `affectedComponents` includes all correlated pods
+  - namespace isolation prevents cross-namespace meta-findings
+  - the meta-finding survives dedup/final sorting
+- I reviewed the wiring in `src/investigators/orchestrator.ts` and it matches the intended flow: hypothesis generation → scoring → `correlateAcrossSymptoms()` → conversion/dedup/sorting.
+
+Checks run:
+- `npm run lint` ✅
+- `npm run typecheck` ✅
+- `npm run unit` ✅
+- `npm run build` ✅
+
+Verdict: approve

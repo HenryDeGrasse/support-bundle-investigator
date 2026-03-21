@@ -1001,6 +1001,143 @@ describe('runInvestigation', () => {
     });
   });
 
+  describe('cross-symptom correlation integration (7.5)', () => {
+    function makeCrashLoopDnsPod(namespace: string, podName: string): K8sResource {
+      return {
+        apiVersion: 'v1',
+        kind: 'Pod',
+        metadata: { name: podName, namespace },
+        spec: {
+          containers: [
+            {
+              name: 'app',
+              image: 'example:v1',
+            },
+          ],
+        },
+        status: {
+          phase: 'Running',
+          conditions: [{ type: 'Ready', status: 'False', reason: 'ContainersNotReady' }],
+          containerStatuses: [
+            {
+              name: 'app',
+              ready: false,
+              restartCount: 6,
+              state: {
+                waiting: {
+                  reason: 'CrashLoopBackOff',
+                  message: 'back-off restarting failed container app',
+                },
+              },
+            },
+          ],
+        },
+      };
+    }
+
+    function makeCrashLoopDnsLog(namespace: string, podName: string): LogFile {
+      return makeLogFile(`pod-logs/${namespace}/${podName}.log`, [
+        'INFO starting application',
+        'ERROR lookup db: no such host',
+      ]);
+    }
+
+    it('produces a cluster-wide DNS meta-finding for 3 crashlooping pods in the same namespace', async () => {
+      const pods = [
+        makeCrashLoopDnsPod('default', 'dns-app-0'),
+        makeCrashLoopDnsPod('default', 'dns-app-1'),
+        makeCrashLoopDnsPod('default', 'dns-app-2'),
+      ];
+      const logs = [
+        makeCrashLoopDnsLog('default', 'dns-app-0'),
+        makeCrashLoopDnsLog('default', 'dns-app-1'),
+        makeCrashLoopDnsLog('default', 'dns-app-2'),
+      ];
+
+      const result = await runInvestigation(makeContext({ resources: pods, logs }));
+
+      const metaFinding = result.findings.find((f) =>
+        /^finding:meta:cluster-wide:dns-failure:default:/.test(f.id),
+      );
+      expect(metaFinding).toBeDefined();
+      expect(metaFinding!.title).toMatch(/cluster-wide dns failure/i);
+      expect(metaFinding!.affectedComponents).toEqual(
+        expect.arrayContaining([
+          'Pod/default/dns-app-0',
+          'Pod/default/dns-app-1',
+          'Pod/default/dns-app-2',
+        ]),
+      );
+    });
+
+    it('gives the cluster-wide meta-finding higher confidence than any individual DNS hypothesis', async () => {
+      const pods = [
+        makeCrashLoopDnsPod('default', 'dns-app-0'),
+        makeCrashLoopDnsPod('default', 'dns-app-1'),
+        makeCrashLoopDnsPod('default', 'dns-app-2'),
+      ];
+      const logs = [
+        makeCrashLoopDnsLog('default', 'dns-app-0'),
+        makeCrashLoopDnsLog('default', 'dns-app-1'),
+        makeCrashLoopDnsLog('default', 'dns-app-2'),
+      ];
+
+      const result = await runInvestigation(makeContext({ resources: pods, logs }));
+
+      const metaFinding = result.findings.find((f) =>
+        /^finding:meta:cluster-wide:dns-failure:default:/.test(f.id),
+      );
+      const individualDnsHypotheses = result.findings.filter((f) =>
+        f.id.startsWith('finding:hypothesis:dns-failure:'),
+      );
+
+      expect(metaFinding).toBeDefined();
+      expect(individualDnsHypotheses.length).toBeGreaterThan(0);
+
+      const maxIndividualConfidence = Math.max(...individualDnsHypotheses.map((f) => f.confidence));
+      expect(metaFinding!.confidence).toBeGreaterThan(maxIndividualConfidence);
+    });
+
+    it('does not correlate the same DNS failure across namespaces', async () => {
+      const pods = [
+        makeCrashLoopDnsPod('default', 'dns-app-a'),
+        makeCrashLoopDnsPod('production', 'dns-app-b'),
+      ];
+      const logs = [
+        makeCrashLoopDnsLog('default', 'dns-app-a'),
+        makeCrashLoopDnsLog('production', 'dns-app-b'),
+      ];
+
+      const result = await runInvestigation(makeContext({ resources: pods, logs }));
+
+      const metaFindings = result.findings.filter((f) =>
+        f.id.startsWith('finding:meta:cluster-wide:dns-failure:'),
+      );
+      expect(metaFindings).toHaveLength(0);
+    });
+
+    it('retains the meta-finding after pass1/pass2 dedup and final sorting', async () => {
+      const pods = [
+        makeCrashLoopDnsPod('default', 'dns-app-0'),
+        makeCrashLoopDnsPod('default', 'dns-app-1'),
+        makeCrashLoopDnsPod('default', 'dns-app-2'),
+      ];
+      const logs = [
+        makeCrashLoopDnsLog('default', 'dns-app-0'),
+        makeCrashLoopDnsLog('default', 'dns-app-1'),
+        makeCrashLoopDnsLog('default', 'dns-app-2'),
+      ];
+
+      const result = await runInvestigation(makeContext({ resources: pods, logs }));
+
+      const metaFindings = result.findings.filter((f) =>
+        /^finding:meta:cluster-wide:dns-failure:default:/.test(f.id),
+      );
+      expect(metaFindings).toHaveLength(1);
+      expect(result.findings.some((f) => f.id.startsWith('finding:hypothesis:dns-failure:'))).toBe(true);
+    });
+  });
+
   // ── Two-pass dedup strategy (7.8) ──────────────────────────────────────────
   //
   // The orchestrator must implement exactly two dedup passes:

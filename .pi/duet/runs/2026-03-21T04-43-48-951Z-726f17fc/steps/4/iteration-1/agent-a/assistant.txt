@@ -1,0 +1,27 @@
+Reviewed:
+- `src/investigators/__tests__/orchestrator.test.ts`
+- `src/investigators/orchestrator.ts`
+
+Changed:
+- Added new E2E orchestrator coverage in `src/investigators/__tests__/orchestrator.test.ts` for cross-symptom correlation (`7.5`):
+  - 3 CrashLoopBackOff pods in the same namespace with DNS-failure logs produce a final `finding:meta:cluster-wide:dns-failure:...` meta-finding
+  - meta-finding confidence is higher than any surviving individual DNS hypothesis finding
+  - meta-finding `affectedComponents` includes all 3 pods
+  - same DNS failure across different namespaces does **not** produce a meta-finding
+  - meta-finding survives dedup/final sorting and remains in final output
+- Added small local fixture helpers in the test for CrashLoop+DNS pods/logs.
+
+Notes:
+- I initially used pod env-based service refs in the fixture, which drove individual DNS hypotheses to confidence `1.0` because evidence collection is global across the scenario. I tightened the fixture to use only DNS log evidence so the test now validates the intended convergence boost behavior instead of saturating both individual and meta confidence.
+
+Checks run:
+- `npm run lint` ✅
+- `npm run typecheck` ✅
+- `npm run unit` ✅
+- `npm run build` ✅
+
+Assessment:
+- Step 4 is implemented as requested.
+- The integration test now proves the full pipeline produces and retains the cluster-wide cross-symptom meta-finding under realistic same-namespace convergence, while respecting namespace isolation.
+
+Verdict: changes_made
