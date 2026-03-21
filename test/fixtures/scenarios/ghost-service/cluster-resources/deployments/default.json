@@ -1,0 +1,113 @@
+{
+  "apiVersion": "v1",
+  "kind": "DeploymentList",
+  "items": [
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "web-app",
+        "namespace": "default",
+        "labels": { "app": "web-app" },
+        "creationTimestamp": "2024-03-19T09:28:00Z",
+        "annotations": {
+          "deployment.kubernetes.io/revision": "3",
+          "kubectl.kubernetes.io/last-applied-configuration": "{\"env\":[{\"name\":\"API_URL\",\"value\":\"http://api-service.staging:8080\"}]}"
+        }
+      },
+      "spec": {
+        "replicas": 2,
+        "selector": { "matchLabels": { "app": "web-app" } },
+        "template": {
+          "metadata": { "labels": { "app": "web-app" } },
+          "spec": {
+            "containers": [
+              {
+                "name": "web-app",
+                "image": "mycompany/web-app:v2.4.1",
+                "env": [
+                  { "name": "API_URL", "value": "http://api-service.staging:8080" },
+                  { "name": "API_TIMEOUT", "value": "5000" },
+                  { "name": "LOG_LEVEL", "value": "info" },
+                  { "name": "PORT", "value": "3000" }
+                ],
+                "ports": [{ "containerPort": 3000 }],
+                "resources": {
+                  "requests": { "cpu": "100m", "memory": "128Mi" },
+                  "limits": { "cpu": "500m", "memory": "256Mi" }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "status": {
+        "replicas": 1,
+        "updatedReplicas": 1,
+        "readyReplicas": 0,
+        "availableReplicas": 0,
+        "conditions": [
+          {
+            "type": "Available",
+            "status": "False",
+            "reason": "MinimumReplicasUnavailable",
+            "message": "Deployment does not have minimum availability.",
+            "lastTransitionTime": "2024-03-19T09:31:00Z"
+          },
+          {
+            "type": "Progressing",
+            "status": "True",
+            "reason": "ReplicaSetUpdated",
+            "message": "ReplicaSet \"web-app-7d9f4b8c6\" is progressing.",
+            "lastTransitionTime": "2024-03-19T09:30:00Z"
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "api-service",
+        "namespace": "default",
+        "labels": { "app": "api-service" },
+        "creationTimestamp": "2024-03-18T14:00:00Z"
+      },
+      "spec": {
+        "replicas": 2,
+        "selector": { "matchLabels": { "app": "api-service" } },
+        "template": {
+          "metadata": { "labels": { "app": "api-service" } },
+          "spec": {
+            "containers": [
+              {
+                "name": "api",
+                "image": "mycompany/api-service:v1.8.0",
+                "ports": [{ "containerPort": 8080 }],
+                "resources": {
+                  "requests": { "cpu": "200m", "memory": "256Mi" },
+                  "limits": { "cpu": "1000m", "memory": "512Mi" }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "status": {
+        "replicas": 2,
+        "updatedReplicas": 2,
+        "readyReplicas": 2,
+        "availableReplicas": 2,
+        "conditions": [
+          {
+            "type": "Available",
+            "status": "True",
+            "reason": "MinimumReplicasAvailable",
+            "message": "Deployment has minimum availability.",
+            "lastTransitionTime": "2024-03-18T14:01:00Z"
+          }
+        ]
+      }
+    }
+  ]
+}

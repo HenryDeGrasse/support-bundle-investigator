@@ -50,13 +50,20 @@ export interface AIFindingResponse {
  * Instantiate with a loaded {@link AIConfig} (must have `enabled: true` and a
  * valid `apiKey`). If the config is disabled, callers should not construct
  * this class — use the `isAIEnabled` guard from `config.ts` first.
+ *
+ * Supports both cloud (OpenAI) and local (Ollama, llama.cpp, vLLM, LM Studio)
+ * backends via the `llmUrl` config field. Local backends use an OpenAI-
+ * compatible API, so the same client works for both.
  */
 export class LLMClient implements HydeLLMClient {
   private readonly client: OpenAI;
   private readonly model: string;
 
   constructor(config: AIConfig) {
-    this.client = new OpenAI({ apiKey: config.apiKey });
+    this.client = new OpenAI({
+      apiKey: config.apiKey,
+      baseURL: config.llmUrl,
+    });
     this.model = config.model;
   }
 

@@ -1156,6 +1156,62 @@ describe('computeConfidenceQuality — moderate quality', () => {
   });
 });
 
+describe('computeConfidenceQuality — cross-namespace evidence returns "strong" (priority-0 override)', () => {
+  const crossNamespaceNote =
+    "Service 'my-svc' exists in namespace 'staging' (not 'default' as referenced).";
+
+  it('returns "strong" for 2 evidence items with cross-namespace note, even with 1 missing decisive', () => {
+    const finding = makeFinding({
+      evidence: [
+        {
+          path: 'cluster-resources/services/default.json',
+          note: crossNamespaceNote,
+          artifactType: 'kubernetes-resource',
+        },
+        {
+          path: 'cluster-resources/pods/default/app-pod.yaml',
+          note: 'Pod is not ready',
+          artifactType: 'kubernetes-resource',
+        },
+      ],
+      missingEvidence: ['CoreDNS logs needed to confirm DNS failures'],
+    });
+    expect(computeConfidenceQuality(finding)).toBe('strong');
+  });
+
+  it('returns "strong" with 1 evidence item matching cross-namespace pattern, even with 2 missing decisive', () => {
+    const finding = makeFinding({
+      evidence: [
+        {
+          path: 'cluster-resources/services/default.json',
+          note: crossNamespaceNote,
+          artifactType: 'kubernetes-resource',
+        },
+      ],
+      missingEvidence: [
+        'CoreDNS logs needed to confirm DNS failures',
+        'Network policy resources to confirm traffic is not blocked',
+      ],
+    });
+    // Without the priority-0 check this would be 'weak' (1 evidence item + 2 missing).
+    expect(computeConfidenceQuality(finding)).toBe('strong');
+  });
+});
+
+describe('computeConfidenceQuality — 3 items from 3 distinct sources, 0 missing → still strong (no regression)', () => {
+  it('returns "strong" for 3 evidence items from 3 distinct source types with 0 missing decisive', () => {
+    const finding = makeFinding({
+      evidence: [
+        { path: 'pods/default/app.yaml', note: 'n1', artifactType: 'kubernetes-resource' },
+        { path: 'events/default.json', note: 'n2', artifactType: 'event' },
+        { path: 'pods/logs/app.log', note: 'n3', artifactType: 'log' },
+      ],
+      missingEvidence: [],
+    });
+    expect(computeConfidenceQuality(finding)).toBe('strong');
+  });
+});
+
 describe('computeConfidenceQuality — applied during verifyFindings', () => {
   it('sets confidenceQuality on each verified finding', () => {
     const finding = makeFinding({

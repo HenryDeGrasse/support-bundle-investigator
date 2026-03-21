@@ -1,0 +1,16 @@
+The implementation is complete and correct. Here's my assessment:
+
+**What I reviewed:**
+
+`src/tui/state-machine.ts` — The previous agent added an optional `currentSelectedIndex = 0` parameter to `mapKeyToAction`, which is a sensible improvement: when Enter/Return is pressed in dashboard view, the action carries the real cursor position rather than a hardcoded `0`. The rest of the reducer logic (immutability via spread, clamping, no-op guards by view) is correct.
+
+`src/tui/__tests__/state-machine.test.ts` — Tests cover every requirement from the spec: all transitions, clamping at both ends (including `findingsCount === 0`), `detailScrollOffset` reset on BACK, immutability assertions using reference equality for no-ops and value equality for mutating transitions, and full `mapKeyToAction` coverage including the new `currentSelectedIndex` forwarding test.
+
+**No changes needed.** The step satisfies all spec requirements:
+- All three exported types match the spec exactly
+- `initialState()` returns the specified defaults
+- `transition()` is a pure reducer with correct behavior for all 7 action types
+- `mapKeyToAction()` maps every listed key correctly, returns null for unknown keys, and the `currentSelectedIndex` improvement closes the spec's "using current selectedIndex" requirement cleanly
+- 2,157 tests pass (59 test files), lint is clean, typecheck passes, build succeeds
+
+Verdict: approve

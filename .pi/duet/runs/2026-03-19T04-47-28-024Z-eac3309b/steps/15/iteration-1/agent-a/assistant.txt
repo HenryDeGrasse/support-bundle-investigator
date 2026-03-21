@@ -1,0 +1,22 @@
+All four checks pass cleanly:
+
+- **lint**: ✅ No warnings  
+- **typecheck**: ✅ No errors  
+- **unit**: ✅ 76 test files, 2883 tests passed (2 skipped)  
+- **build**: ✅ ESM + CJS + DTS all succeeded  
+
+**What I reviewed:**
+
+Phase 5a is fully implemented across steps 11–14:
+
+1. **Unified diagnostic graph** (`src/graph/diagnostic-graph.ts`) — `DiagnosticGraph` class with `DiagnosticNodeType` (6 types) and `DiagnosticEdgeType` (14 types), `buildDiagnosticGraph()`, and `asResourceRelationshipGraph()` adapter.
+
+2. **Label-selector and service-selector edges** (4.3) — `extractLabelSelectorEdges()` and `extractServiceSelectorEdges()` inside `buildDiagnosticGraph`, with proper namespace isolation and AND-semantics for multi-label selectors.
+
+3. **Typed weighted directional traversal engine** (4.4) — `traverse()` and `traverseForChunks()` in `src/graph/traversal.ts`, with forward/backward/both directions, `minWeight` filter, `scoreDecay` parameter, and `getRelatedChunks()` overloaded to accept `DiagnosticGraph`.
+
+4. **Orchestrator dedup consolidation** (7.8) — Pass 1 component-based merge and Pass 2 title-based dedup in `src/investigators/orchestrator.ts`.
+
+All tests are comprehensive and cover the exact behaviors. No issues found.
+
+Verdict: approve

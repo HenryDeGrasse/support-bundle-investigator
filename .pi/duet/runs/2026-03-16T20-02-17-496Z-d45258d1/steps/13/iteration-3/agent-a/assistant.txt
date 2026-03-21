@@ -1,0 +1,32 @@
+Every requirement in step 13 is fully satisfied. Here's my complete assessment:
+
+**README.md** — all required updates are present:
+- ✅ Status line: "Day 1–4 complete" with full Day 3 + Day 4 capability summary
+- ✅ Test count table: includes all `src/investigators/__tests__/` and `src/reporters/__tests__/` files (6 + 5 = 11 new rows)
+- ✅ Total test count: 1089 across 29 files
+- ✅ Architecture mermaid diagram: Investigators and Reporters subgraphs present with all required nodes
+- ✅ Data-dependency edges from Parsers/Graph → Investigators in inline diagram
+- ✅ Pipeline Data Flow ASCII: Step 8 (Investigation Orchestrator / `runInvestigation`) and Step 9 (Report Builder / `buildReport`) clearly labeled
+- ✅ PipelineResult: `findings[]` noted with "← findings[] added by orchestrator"
+- ✅ Project Structure tree: `src/investigators/` and `src/reporters/` fully documented
+- ✅ Domain Types: InvestigationSeed, InvestigatorContext, InvestigatorResult, InvestigationReport, SpecRecommendation all present
+- ✅ CLI Reference: `--format markdown` and `--format html` documented in table and prose
+- ✅ "What to expect from each scenario": all three rows updated with investigation findings and report output detail
+- ✅ Roadmap: Day 3 and Day 4 both marked ✅ Complete with detailed summaries
+- ✅ "Report Output" section: added with example CLI usage, format comparison table, stdout vs. file-write explanation
+- ✅ Design Decisions: "Why separate investigators?", "Why a Verifier pass?", "Why data-first reporters?" all present with PRD references
+
+**docs/architecture.mmd** — all required updates present:
+- ✅ Investigators subgraph: Seed Generator, Kubernetes Investigator, Log Investigator, Config Investigator, Verifier, Orchestrator
+- ✅ Reporters subgraph: Report Builder, Spec Recommender, JSON Reporter, Markdown Reporter, HTML Reporter
+- ✅ Edges: Pipeline P7→P8→I6→investigators→verifier→reporters→CLI output
+- ✅ Data-dependency edges: SP1/SP2/SP4/SP7 → I1/I2/I3/I4, G1 → I2/I3/I4
+- ✅ Output Formatters node: "json | text | summary | markdown | html"
+
+**docs/architecture.svg** — regenerated at 19:19 (118KB, up from 101KB) reflecting all new subgraphs and edges.
+
+All four required checks pass: lint ✅, typecheck ✅, unit (1089/1089) ✅, build ✅.
+
+No changes needed — the step is complete and correct.
+
+Verdict: approve

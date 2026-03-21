@@ -1,0 +1,22 @@
+All four checks pass:
+- **Tests**: 45 new tests pass in `seed-clustering-prompt.test.ts`; full suite 3508 passed (+ 2 skipped), 85 files
+- **TypeCheck**: no type errors
+- **Build**: succeeds
+- **Lint**: clean
+
+Let me also quickly review the test quality against the step requirements:
+
+| Requirement | Covered? |
+|---|---|
+| `SEED_CLUSTERING_SYSTEM_PROMPT` is non-empty with grounding constraints | ✅ Tests 1-8 in first describe block |
+| `buildSeedClusteringPrompt` returns `{ system, user }` strings | ✅ "output structure" describe block |
+| User prompt contains each seed's ID, hypothesis, and priority | ✅ "seed field serialisation" block |
+| User prompt contains JSON output schema with `clusters` array | ✅ "output schema and rules" block |
+| User prompt includes rule that every seed must appear in exactly one cluster | ✅ Explicit test for "exactly one cluster" |
+| System prompt establishes SRE triage role | ✅ Test for "site-reliability engineer" |
+| Works with empty seed array (edge case) | ✅ Three tests for empty array |
+| Works with single seed | ✅ Three tests for single seed |
+
+The test file is well-structured, follows existing patterns from `prompts.test.ts`, and thoroughly covers all step requirements plus additional robustness checks (category serialisation, multiple seeds, seed count reporting). No issues found.
+
+Verdict: approve

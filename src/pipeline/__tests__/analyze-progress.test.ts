@@ -141,6 +141,7 @@ function makeInvestigationResult() {
     edges: [],
     findingTree: [],
     seeds: [],
+    clusteredSeeds: [],
     metadata: {
       seedCount: 0,
       rawFindingCount: 0,
@@ -150,6 +151,8 @@ function makeInvestigationResult() {
       hypothesesGenerated: 0,
       hypothesesVerified: 0,
       graphMatchedSymptoms: 0,
+      seedClusterCount: 0,
+      seedClusteringEnabled: false,
     },
   };
 }
@@ -192,6 +195,9 @@ beforeEach(() => {
     embeddingModel: 'text-embedding-3-small',
     embeddingBackend: 'none',
     embeddingUrl: 'http://localhost:8080',
+    llmBackend: 'openai',
+    llmUrl: 'https://api.openai.com/v1',
+    tokenBudget: 100000,
     enabled: false,
   });
   vi.mocked(isAIEnabled).mockReturnValue(false);
@@ -355,6 +361,9 @@ describe('analyzeBundlePipeline — onProgress callback', () => {
       embeddingModel: 'text-embedding-3-small',
       embeddingBackend: 'openai',
       embeddingUrl: 'http://localhost:8080',
+    llmBackend: 'openai',
+    llmUrl: 'https://api.openai.com/v1',
+    tokenBudget: 100000,
       enabled: true,
     });
     vi.mocked(isAIEnabled).mockReturnValue(true);
@@ -404,6 +413,9 @@ describe('analyzeBundlePipeline — onProgress callback', () => {
       embeddingModel: 'text-embedding-3-small',
       embeddingBackend: 'openai',
       embeddingUrl: 'http://localhost:8080',
+    llmBackend: 'openai',
+    llmUrl: 'https://api.openai.com/v1',
+    tokenBudget: 100000,
       enabled: true,
     });
     vi.mocked(isAIEnabled).mockReturnValue(true);
@@ -444,6 +456,9 @@ describe('analyzeBundlePipeline — onProgress callback', () => {
       embeddingModel: 'text-embedding-3-small',
       embeddingBackend: 'openai',
       embeddingUrl: 'http://localhost:8080',
+    llmBackend: 'openai',
+    llmUrl: 'https://api.openai.com/v1',
+    tokenBudget: 100000,
       enabled: true,
     });
     vi.mocked(isAIEnabled).mockReturnValue(true);

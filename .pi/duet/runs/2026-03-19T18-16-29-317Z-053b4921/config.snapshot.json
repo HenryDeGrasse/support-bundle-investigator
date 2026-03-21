@@ -1,0 +1,61 @@
+{
+  "sideA": {
+    "label": "Claude Opus 4.6",
+    "model": "anthropic/claude-opus-4-6",
+    "thinking": "xhigh"
+  },
+  "sideB": {
+    "label": "GPT-5.4",
+    "model": "openai-codex/gpt-5.4",
+    "thinking": "xhigh"
+  },
+  "planner": {
+    "label": "Claude Opus 4.6",
+    "model": "anthropic/claude-opus-4-6",
+    "thinking": "xhigh"
+  },
+  "critic": {
+    "label": "GPT-5.4",
+    "model": "openai-codex/gpt-5.4",
+    "thinking": "xhigh"
+  },
+  "implementer": {
+    "label": "Claude Sonnet 4.6",
+    "model": "anthropic/claude-sonnet-4-6",
+    "thinking": "high"
+  },
+  "reviewer": {
+    "label": "Claude Opus 4.6",
+    "model": "anthropic/claude-opus-4-6",
+    "thinking": "high"
+  },
+  "executionMode": "relay",
+  "startImplementer": "A",
+  "maxPlanRounds": 4,
+  "maxExecutionRounds": 5,
+  "alternateByStep": true,
+  "checks": {
+    "lint": {
+      "cmd": "npm run lint",
+      "timeoutSec": 300
+    },
+    "typecheck": {
+      "cmd": "npm run typecheck",
+      "timeoutSec": 300
+    },
+    "unit": {
+      "cmd": "npm test",
+      "timeoutSec": 600
+    },
+    "build": {
+      "cmd": "npm run build",
+      "timeoutSec": 600
+    }
+  },
+  "repo": {
+    "requireGit": true,
+    "requireCleanStart": false,
+    "enforceCleanAfterStep": false,
+    "captureDiffCheck": true
+  }
+}

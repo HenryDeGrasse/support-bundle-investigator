@@ -1,0 +1,11 @@
+ M README.md
+ M docs/architecture.mmd
+ M docs/architecture.svg
+ M package.json
+ M src/pipeline/analyze.ts
+ M test/e2e/__tests__/scenarios.test.ts
+ M test/integration/__tests__/pipeline.test.ts
+?? .pi/duet/runs/2026-03-16T19-55-28-917Z-c283c28f/
+?? .pi/duet/runs/2026-03-16T20-02-17-496Z-d45258d1/
+?? src/investigators/
+?? src/reporters/

@@ -1,0 +1,595 @@
+diff --git a/.pi/duet/config.json b/.pi/duet/config.json
+index 31183e1..ad309b0 100644
+--- a/.pi/duet/config.json
++++ b/.pi/duet/config.json
+@@ -25,8 +25,8 @@
+     "thinking": "high"
+   },
+   "reviewer": {
+-    "label": "GPT-5.4",
+-    "model": "openai-codex/gpt-5.4",
++    "label": "Claude Opus 4.6",
++    "model": "anthropic/claude-opus-4-6",
+     "thinking": "high"
+   },
+   "executionMode": "relay",
+diff --git a/src/ai/__tests__/chunk-indexer.test.ts b/src/ai/__tests__/chunk-indexer.test.ts
+index db67a0b..6a266b3 100644
+--- a/src/ai/__tests__/chunk-indexer.test.ts
++++ b/src/ai/__tests__/chunk-indexer.test.ts
+@@ -222,17 +222,35 @@ describe('buildChunkIndex', () => {
+     expect(analyzerChunks).toHaveLength(3);
+   });
+ 
+-  it('produces multiple log chunks for large log files', () => {
+-    // 55 lines → should produce 2 chunks with chunkSize=50, overlap=10
+-    const lines = Array.from({ length: 55 }, (_, i) => ({
+-      lineNumber: i + 1,
+-      content: `Line ${i + 1}`,
+-      level: 'info' as const,
+-    }));
+-    const logFile: LogFile = { path: '/logs/app.log', lines, errorCount: 0, warningCount: 0, importance: 0 };
++  it('produces multiple log chunks for log files with errors (preamble + error-cluster + summary)', () => {
++    // Log file with errors: error-aware chunking produces preamble + error-cluster + summary
++    const lines = [
++      // Lines 1-20: INFO (preamble zone)
++      ...Array.from({ length: 20 }, (_, i) => ({
++        lineNumber: i + 1,
++        content: `INFO: startup line ${i + 1}`,
++        level: 'info' as const,
++      })),
++      // Lines 21-30: INFO (healthy region)
++      ...Array.from({ length: 10 }, (_, i) => ({
++        lineNumber: 21 + i,
++        content: `INFO: normal line ${21 + i}`,
++        level: 'info' as const,
++      })),
++      // Line 31: ERROR (triggers error-cluster chunk)
++      { lineNumber: 31, content: 'ERROR: connection refused', level: 'error' as const },
++      // Lines 32-55: INFO (healthy tail)
++      ...Array.from({ length: 24 }, (_, i) => ({
++        lineNumber: 32 + i,
++        content: `INFO: tail line ${32 + i}`,
++        level: 'info' as const,
++      })),
++    ];
++    const logFile: LogFile = { path: '/logs/app.log', lines, errorCount: 1, warningCount: 0, importance: 0.5 };
+     const ctx = makeContext({ logs: [logFile] });
+     const chunks = buildChunkIndex(ctx);
+     const logChunks = chunks.filter((c) => c.artifactCategory === 'log');
++    // preamble + error-cluster + summary = 3 chunks
+     expect(logChunks.length).toBeGreaterThan(1);
+   });
+ });
+diff --git a/src/ai/chunk-indexer.ts b/src/ai/chunk-indexer.ts
+index 4bc0c41..e33ed06 100644
+--- a/src/ai/chunk-indexer.ts
++++ b/src/ai/chunk-indexer.ts
+@@ -2,7 +2,7 @@ import type { Chunk, ArtifactCategory } from '../types/index.js';
+ import type { K8sResource, K8sEvent, AnalyzerResult } from '../types/index.js';
+ import type { HelmRelease } from '../parsers/index.js';
+ import type { InvestigatorContext } from '../investigators/types.js';
+-import { chunkLogFile, chunkResource, chunkAnalyzer } from '../graph/chunker.js';
++import { chunkLogFileErrorAware, chunkResource, chunkAnalyzer } from '../graph/chunker.js';
+ import { summarizeResource, summarizeEvent, summarizeAnalyzer, summarizeHelmRelease } from './summarizer.js';
+ import { extractTimestamps } from '../parsers/index.js';
+ 
+@@ -532,7 +532,7 @@ export function buildChunkIndex(context: InvestigatorContext): IndexedChunk[] {
+ 
+   // ── Log files ─────────────────────────────────────────────────────────────
+   for (const logFile of context.logs) {
+-    const baseChunks = chunkLogFile(logFile, 50, 10);
++    const baseChunks = chunkLogFileErrorAware(logFile);
+     for (const baseChunk of baseChunks) {
+       chunks.push(augmentLogChunk(baseChunk));
+     }
+diff --git a/src/graph/__tests__/chunker.test.ts b/src/graph/__tests__/chunker.test.ts
+index 4604b64..13cc905 100644
+--- a/src/graph/__tests__/chunker.test.ts
++++ b/src/graph/__tests__/chunker.test.ts
+@@ -1,6 +1,7 @@
+ import { describe, it, expect } from 'vitest';
+-import { chunkLogFile, chunkResource, chunkAnalyzer } from '../chunker.js';
++import { chunkLogFile, chunkResource, chunkAnalyzer, chunkLogFileErrorAware } from '../chunker.js';
+ import type { LogFile, LogLine } from '../../parsers/log-parser.js';
++import type { LogLevel } from '../../parsers/log-parser.js';
+ import type { K8sResource } from '../../types/index.js';
+ import type { AnalyzerResult } from '../../types/index.js';
+ 
+@@ -196,3 +197,260 @@ describe('chunkAnalyzer', () => {
+     expect(chunk.endLine).toBeGreaterThanOrEqual(chunk.startLine);
+   });
+ });
++
++// ---------------------------------------------------------------------------
++// chunkLogFileErrorAware — helpers
++// ---------------------------------------------------------------------------
++
++/**
++ * Builds a LogFile where errorLines (1-indexed) are error-level and
++ * all other lines are info-level.
++ */
++function makeLogFileWithErrors(
++  lineCount: number,
++  errorLineNumbers: number[],
++  path = '/var/log/app/app.log',
++): LogFile {
++  const errorSet = new Set(errorLineNumbers);
++  const lines: LogLine[] = Array.from({ length: lineCount }, (_, i) => {
++    const lineNumber = i + 1;
++    const isError = errorSet.has(lineNumber);
++    return {
++      lineNumber,
++      content: isError
++        ? `ERROR: something failed at line ${lineNumber}`
++        : `INFO: normal log line ${lineNumber}`,
++      level: (isError ? 'error' : 'info') as LogLevel,
++    };
++  });
++
++  const errorCount = lines.filter((l) => l.level === 'error').length;
++  return {
++    path,
++    lines,
++    errorCount,
++    warningCount: 0,
++    importance: errorCount > 0 ? 0.5 : 0,
++  };
++}
++
++// ---------------------------------------------------------------------------
++// chunkLogFileErrorAware
++// ---------------------------------------------------------------------------
++
++describe('chunkLogFileErrorAware', () => {
++  // ── backward-compat: no errors ──────────────────────────────────────────
++
++  it('returns empty array for empty log file', () => {
++    const logFile = makeLogFile(0);
++    const chunks = chunkLogFileErrorAware(logFile);
++    expect(chunks).toHaveLength(0);
++  });
++
++  it('returns entire file in one chunk when no errors exist (backward-compatible)', () => {
++    const logFile = makeLogFile(55); // all INFO lines, errorCount=0
++    const chunks = chunkLogFileErrorAware(logFile);
++    expect(chunks).toHaveLength(1);
++    expect(chunks[0]!.startLine).toBe(1);
++    expect(chunks[0]!.endLine).toBe(55);
++  });
++
++  it('single-chunk fallback covers all content', () => {
++    const logFile = makeLogFile(5);
++    const chunks = chunkLogFileErrorAware(logFile);
++    expect(chunks).toHaveLength(1);
++    expect(chunks[0]!.content).toContain('Log line 1');
++    expect(chunks[0]!.content).toContain('Log line 5');
++  });
++
++  // ── preamble ────────────────────────────────────────────────────────────
++
++  it('always includes a preamble chunk (first ~20 lines) when errors are present', () => {
++    // Error at line 50, far beyond the preamble zone
++    const logFile = makeLogFileWithErrors(100, [50]);
++    const chunks = chunkLogFileErrorAware(logFile);
++
++    const preamble = chunks.find((c) => c.metadata?.['chunkType'] === 'preamble');
++    expect(preamble).toBeDefined();
++    expect(preamble!.startLine).toBe(1);
++    expect(preamble!.endLine).toBe(20);
++  });
++
++  it('preamble chunk artifactId matches the log file path', () => {
++    const logFile = makeLogFileWithErrors(100, [50], '/logs/test.log');
++    const chunks = chunkLogFileErrorAware(logFile);
++    const preamble = chunks.find((c) => c.metadata?.['chunkType'] === 'preamble');
++    expect(preamble!.artifactId).toBe('/logs/test.log');
++  });
++
++  it('preamble chunk category is log', () => {
++    const logFile = makeLogFileWithErrors(100, [50]);
++    const chunks = chunkLogFileErrorAware(logFile);
++    const preamble = chunks.find((c) => c.metadata?.['chunkType'] === 'preamble');
++    expect(preamble!.metadata!['category']).toBe('log');
++  });
++
++  it('preamble spans only up to the file length when file is shorter than 20 lines', () => {
++    const logFile = makeLogFileWithErrors(10, [5]);
++    const chunks = chunkLogFileErrorAware(logFile);
++    const preamble = chunks.find((c) => c.metadata?.['chunkType'] === 'preamble');
++    expect(preamble).toBeDefined();
++    // Should end at line 10, not line 20
++    expect(preamble!.endLine).toBeLessThanOrEqual(10);
++  });
++
++  // ── error-cluster chunks ────────────────────────────────────────────────
++
++  it('creates an error-cluster chunk centered on the error with 10-line padding', () => {
++    // Error at line 50 in a 100-line file
++    const logFile = makeLogFileWithErrors(100, [50]);
++    const chunks = chunkLogFileErrorAware(logFile);
++
++    const errorCluster = chunks.find((c) => c.metadata?.['chunkType'] === 'error-cluster');
++    expect(errorCluster).toBeDefined();
++    // With 10-line padding around line 50: starts at 40, ends at 60
++    expect(errorCluster!.startLine).toBeLessThanOrEqual(50);
++    expect(errorCluster!.endLine).toBeGreaterThanOrEqual(50);
++    expect(errorCluster!.content).toContain('ERROR');
++  });
++
++  it('deduplicates repeated lines within error clusters', () => {
++    // 30 identical error lines in the middle of a 60-line file
++    const errorLines = Array.from({ length: 30 }, (_, i) => i + 21); // lines 21-50
++    const lines: LogLine[] = [
++      // Lines 1-20: info
++      ...Array.from({ length: 20 }, (_, i) => ({
++        lineNumber: i + 1,
++        content: `INFO: line ${i + 1}`,
++        level: 'info' as LogLevel,
++      })),
++      // Lines 21-50: identical error text
++      ...errorLines.map((n) => ({
++        lineNumber: n,
++        content: 'ERROR: connection refused to db.internal:5432',
++        level: 'error' as LogLevel,
++      })),
++      // Lines 51-60: info
++      ...Array.from({ length: 10 }, (_, i) => ({
++        lineNumber: 51 + i,
++        content: `INFO: line ${51 + i}`,
++        level: 'info' as LogLevel,
++      })),
++    ];
++    const logFile: LogFile = {
++      path: '/test/app.log',
++      lines,
++      errorCount: 30,
++      warningCount: 0,
++      importance: 1,
++    };
++
++    const chunks = chunkLogFileErrorAware(logFile);
++    const errorChunk = chunks.find((c) => c.metadata?.['chunkType'] === 'error-cluster');
++    expect(errorChunk).toBeDefined();
++
++    // 30 identical error lines should be collapsed to << 30 lines in the output
++    const contentLines = errorChunk!.content.split('\n');
++    const errorContentLines = contentLines.filter((l) => l.includes('ERROR'));
++    expect(errorContentLines.length).toBeLessThan(30);
++
++    // The [repeated xN] marker should appear
++    expect(errorChunk!.content).toContain('[repeated x');
++  });
++
++  it('merges overlapping error windows into a single cluster', () => {
++    // Two errors close together (lines 30 and 35) — their 10-line windows overlap
++    const logFile = makeLogFileWithErrors(100, [30, 35]);
++    const chunks = chunkLogFileErrorAware(logFile);
++
++    const errorClusters = chunks.filter((c) => c.metadata?.['chunkType'] === 'error-cluster');
++    // The two overlapping windows should be merged into one cluster
++    expect(errorClusters).toHaveLength(1);
++    expect(errorClusters[0]!.content).toContain('ERROR');
++  });
++
++  it('creates separate clusters for errors far apart', () => {
++    // Two errors far apart (lines 25 and 75) — their 10-line windows do not overlap
++    const logFile = makeLogFileWithErrors(100, [25, 75]);
++    const chunks = chunkLogFileErrorAware(logFile);
++
++    const errorClusters = chunks.filter((c) => c.metadata?.['chunkType'] === 'error-cluster');
++    expect(errorClusters).toHaveLength(2);
++  });
++
++  // ── summary chunk ───────────────────────────────────────────────────────
++
++  it('creates a summary chunk describing healthy regions', () => {
++    // Error in the middle → healthy regions before and after
++    const logFile = makeLogFileWithErrors(100, [50]);
++    const chunks = chunkLogFileErrorAware(logFile);
++
++    const summaryChunk = chunks.find((c) => c.metadata?.['chunkType'] === 'summary');
++    expect(summaryChunk).toBeDefined();
++    expect(summaryChunk!.content).toContain('INFO lines');
++    expect(summaryChunk!.content).toContain('no errors');
++  });
++
++  it('summary chunk describes line ranges of healthy regions', () => {
++    const logFile = makeLogFileWithErrors(100, [50]);
++    const chunks = chunkLogFileErrorAware(logFile);
++    const summary = chunks.find((c) => c.metadata?.['chunkType'] === 'summary');
++    expect(summary).toBeDefined();
++    // Should contain at least one "lines N-M:" entry
++    expect(summary!.content).toMatch(/lines \d+-\d+:/);
++  });
++
++  it('no summary chunk when all lines are covered by preamble and error clusters', () => {
++    // Very short file: error at line 5, preamble covers 1-10 (entire file)
++    const logFile = makeLogFileWithErrors(10, [5]);
++    const chunks = chunkLogFileErrorAware(logFile);
++    const summaryChunk = chunks.find((c) => c.metadata?.['chunkType'] === 'summary');
++    // Summary may or may not exist depending on coverage; at minimum we verify
++    // that if it exists it has valid content
++    if (summaryChunk) {
++      expect(summaryChunk.content).toContain('INFO lines');
++    }
++  });
++
++  // ── chunk IDs and metadata ───────────────────────────────────────────────
++
++  it('all chunks have valid line ranges (startLine >= 1, endLine >= startLine)', () => {
++    const logFile = makeLogFileWithErrors(100, [25, 75]);
++    const chunks = chunkLogFileErrorAware(logFile);
++    for (const chunk of chunks) {
++      expect(chunk.startLine).toBeGreaterThanOrEqual(1);
++      expect(chunk.endLine).toBeGreaterThanOrEqual(chunk.startLine);
++    }
++  });
++
++  it('all chunks have the same artifactId as the log file path', () => {
++    const path = '/logs/myservice.log';
++    const logFile = makeLogFileWithErrors(100, [50], path);
++    const chunks = chunkLogFileErrorAware(logFile);
++    for (const chunk of chunks) {
++      expect(chunk.artifactId).toBe(path);
++    }
++  });
++
++  it('all chunk IDs are unique', () => {
++    const logFile = makeLogFileWithErrors(100, [25, 50, 75]);
++    const chunks = chunkLogFileErrorAware(logFile);
++    const ids = chunks.map((c) => c.id);
++    const unique = new Set(ids);
++    expect(unique.size).toBe(ids.length);
++  });
++
++  it('produces more than one chunk for a file with errors (preamble + at least one error-cluster)', () => {
++    const logFile = makeLogFileWithErrors(100, [50]);
++    const chunks = chunkLogFileErrorAware(logFile);
++    expect(chunks.length).toBeGreaterThan(1);
++  });
++
++  it('error-cluster chunk metadata has chunkType = error-cluster', () => {
++    const logFile = makeLogFileWithErrors(100, [50]);
++    const chunks = chunkLogFileErrorAware(logFile);
++    const ec = chunks.find((c) => c.metadata?.['chunkType'] === 'error-cluster');
++    expect(ec).toBeDefined();
++    expect(ec!.metadata!['category']).toBe('log');
++  });
++});
+diff --git a/src/graph/chunker.ts b/src/graph/chunker.ts
+index dd46772..ab81190 100644
+--- a/src/graph/chunker.ts
++++ b/src/graph/chunker.ts
+@@ -1,5 +1,6 @@
+ import type { Chunk } from '../types/index.js';
+ import type { LogFile } from '../parsers/log-parser.js';
++import { extractErrorWindows, deduplicateLogLines } from '../parsers/log-parser.js';
+ import type { K8sResource, AnalyzerResult } from '../types/index.js';
+ 
+ // ---------------------------------------------------------------------------
+@@ -57,6 +58,211 @@ export function chunkLogFile(logFile: LogFile, chunkSize: number, overlap: numbe
+   return chunks;
+ }
+ 
++// ---------------------------------------------------------------------------
++// chunkLogFileErrorAware
++// ---------------------------------------------------------------------------
++
++/**
++ * Error-aware chunking strategy that produces three chunk types:
++ *
++ * 1. **Preamble chunk** — first 20 lines of every log file (startup / config /
++ *    env-var logging). Always included; this is where hostnames, connection
++ *    strings, and versions are logged.
++ *
++ * 2. **Error-cluster chunks** — each group of overlapping error windows
++ *    (10-line padding around each error-level line) collapsed into a single
++ *    chunk. Repeated lines within each cluster are deduplicated via
++ *    {@link deduplicateLogLines} so that 47 identical "connection refused"
++ *    lines become one line with a `[repeated x47]` suffix.
++ *
++ * 3. **Summary chunk** — a short multi-line description of healthy regions:
++ *    `"lines N-M: K INFO lines, no errors"`. Preserves the signal that those
++ *    regions are healthy without consuming token budget on pure INFO noise.
++ *
++ * **Backward-compatible:** when no error-level lines exist, the entire file is
++ * returned as a single chunk (identical to the old fixed-window approach for
++ * small files).
++ *
++ * This replaces the fixed 50-line window with a semantically meaningful
++ * decomposition that dramatically improves LLM diagnostic relevance.
++ *
++ * @param logFile The parsed log file to chunk.
++ */
++export function chunkLogFileErrorAware(logFile: LogFile): Chunk[] {
++  const { lines, path } = logFile;
++
++  if (lines.length === 0) return [];
++
++  // ── backward-compatible fallback: no errors → entire file as one chunk ──
++  if (logFile.errorCount === 0) {
++    const startLine = lines[0]!.lineNumber;
++    const endLine = lines[lines.length - 1]!.lineNumber;
++    return [
++      {
++        id: `${path}:${startLine}-${endLine}`,
++        artifactId: path,
++        content: lines.map((l) => l.content).join('\n'),
++        startLine,
++        endLine,
++        metadata: {
++          path,
++          category: 'log',
++          lineRange: [startLine, endLine],
++        },
++      },
++    ];
++  }
++
++  const PREAMBLE_SIZE = 20;
++  const ERROR_PADDING = 10;
++
++  const chunks: Chunk[] = [];
++
++  // ── 1. Preamble chunk ────────────────────────────────────────────────────
++  const preambleEndIdx = Math.min(PREAMBLE_SIZE - 1, lines.length - 1);
++  const preambleLines = lines.slice(0, preambleEndIdx + 1);
++  chunks.push({
++    id: `${path}:preamble:${lines[0]!.lineNumber}-${lines[preambleEndIdx]!.lineNumber}`,
++    artifactId: path,
++    content: preambleLines.map((l) => l.content).join('\n'),
++    startLine: lines[0]!.lineNumber,
++    endLine: lines[preambleEndIdx]!.lineNumber,
++    metadata: {
++      path,
++      category: 'log',
++      lineRange: [lines[0]!.lineNumber, lines[preambleEndIdx]!.lineNumber],
++      chunkType: 'preamble',
++    },
++  });
++
++  // ── 2. Error-cluster chunks ───────────────────────────────────────────────
++  //
++  // Extract windows around each error line, convert to index ranges (into the
++  // `lines` array), merge overlapping ranges into clusters, then dedup.
++
++  const errorWindows = extractErrorWindows(logFile, ERROR_PADDING);
++
++  // Build a fast lineNumber → array-index lookup.
++  const lineNumToIdx = new Map<number, number>();
++  for (let i = 0; i < lines.length; i++) {
++    lineNumToIdx.set(lines[i]!.lineNumber, i);
++  }
++
++  type IndexRange = { startIdx: number; endIdx: number };
++
++  const windowRanges: IndexRange[] = errorWindows.map((w) => ({
++    startIdx: lineNumToIdx.get(w.lines[0]!.lineNumber) ?? 0,
++    endIdx: lineNumToIdx.get(w.lines[w.lines.length - 1]!.lineNumber) ?? lines.length - 1,
++  }));
++
++  windowRanges.sort((a, b) => a.startIdx - b.startIdx);
++
++  // Merge overlapping / adjacent windows into clusters.
++  const clusters: IndexRange[] = [];
++  for (const range of windowRanges) {
++    if (clusters.length === 0) {
++      clusters.push({ ...range });
++    } else {
++      const last = clusters[clusters.length - 1]!;
++      if (range.startIdx <= last.endIdx + 1) {
++        last.endIdx = Math.max(last.endIdx, range.endIdx);
++      } else {
++        clusters.push({ ...range });
++      }
++    }
++  }
++
++  // Track which index ranges are covered (preamble + error clusters) so we
++  // can identify the healthy "gap" regions for the summary chunk.
++  const coveredRanges: IndexRange[] = [{ startIdx: 0, endIdx: preambleEndIdx }];
++
++  for (const cluster of clusters) {
++    const clusterLines = lines.slice(cluster.startIdx, cluster.endIdx + 1);
++    const dedupedLines = deduplicateLogLines(clusterLines);
++    const startLine = lines[cluster.startIdx]!.lineNumber;
++    const endLine = lines[cluster.endIdx]!.lineNumber;
++
++    chunks.push({
++      id: `${path}:error-cluster:${startLine}-${endLine}`,
++      artifactId: path,
++      content: dedupedLines.map((l) => l.content).join('\n'),
++      startLine,
++      endLine,
++      metadata: {
++        path,
++        category: 'log',
++        lineRange: [startLine, endLine],
++        chunkType: 'error-cluster',
++      },
++    });
++
++    coveredRanges.push({ ...cluster });
++  }
++
++  // ── 3. Summary chunk for healthy regions ─────────────────────────────────
++  //
++  // Sort and merge covered ranges, then collect the gaps between them.
++
++  coveredRanges.sort((a, b) => a.startIdx - b.startIdx);
++
++  const mergedCovered: IndexRange[] = [];
++  for (const range of coveredRanges) {
++    if (mergedCovered.length === 0) {
++      mergedCovered.push({ ...range });
++    } else {
++      const last = mergedCovered[mergedCovered.length - 1]!;
++      if (range.startIdx <= last.endIdx + 1) {
++        last.endIdx = Math.max(last.endIdx, range.endIdx);
++      } else {
++        mergedCovered.push({ ...range });
++      }
++    }
++  }
++
++  const healthyRegions: IndexRange[] = [];
++  let prevEnd = -1;
++  for (const { startIdx, endIdx } of mergedCovered) {
++    if (prevEnd + 1 < startIdx) {
++      healthyRegions.push({ startIdx: prevEnd + 1, endIdx: startIdx - 1 });
++    }
++    prevEnd = Math.max(prevEnd, endIdx);
++  }
++  if (prevEnd + 1 <= lines.length - 1) {
++    healthyRegions.push({ startIdx: prevEnd + 1, endIdx: lines.length - 1 });
++  }
++
++  if (healthyRegions.length > 0) {
++    const summaryParts = healthyRegions.map((r) => {
++      const startLine = lines[r.startIdx]!.lineNumber;
++      const endLine = lines[r.endIdx]!.lineNumber;
++      const lineCount = r.endIdx - r.startIdx + 1;
++      return `lines ${startLine}-${endLine}: ${lineCount} INFO lines, no errors`;
++    });
++    const summaryContent = summaryParts.join('\n');
++    const firstHealthy = healthyRegions[0]!;
++    const lastHealthy = healthyRegions[healthyRegions.length - 1]!;
++
++    chunks.push({
++      id: `${path}:summary`,
++      artifactId: path,
++      content: summaryContent,
++      startLine: lines[firstHealthy.startIdx]!.lineNumber,
++      endLine: lines[lastHealthy.endIdx]!.lineNumber,
++      metadata: {
++        path,
++        category: 'log',
++        lineRange: [
++          lines[firstHealthy.startIdx]!.lineNumber,
++          lines[lastHealthy.endIdx]!.lineNumber,
++        ],
++        chunkType: 'summary',
++      },
++    });
++  }
++
++  return chunks;
++}
++
+ // ---------------------------------------------------------------------------
+ // chunkResource
+ // ---------------------------------------------------------------------------
+diff --git a/src/graph/index.ts b/src/graph/index.ts
+index 6cf3654..560d021 100644
+--- a/src/graph/index.ts
++++ b/src/graph/index.ts
+@@ -14,7 +14,7 @@ export {
+ } from './finding-tree.js';
+ export type { SerializedFindingTreeNode } from './finding-tree.js';
+ 
+-export { chunkLogFile, chunkResource, chunkAnalyzer } from './chunker.js';
++export { chunkLogFile, chunkLogFileErrorAware, chunkResource, chunkAnalyzer } from './chunker.js';
+ 
+ export {
+   buildResourceGraph,

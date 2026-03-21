@@ -1,6 +1,7 @@
 import React from 'react';
 import { Box, Text } from 'ink';
 import type { DashboardPane, DashboardPhase } from '../dashboard-state.js';
+import type { AIMode } from '../../pipeline/analyze.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -14,6 +15,28 @@ export interface StatusBarProps {
   activePane: DashboardPane;
   /** Dashboard lifecycle phase. */
   phase: DashboardPhase;
+  /** How the AI layer was configured: 'cloud', 'local', or 'off'. */
+  aiMode?: AIMode;
+}
+
+// ---------------------------------------------------------------------------
+// AI mode display helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns a human-readable label and color for the AI mode indicator.
+ */
+function aiModeDisplay(mode: AIMode | undefined): { label: string; color: string } {
+  switch (mode) {
+    case 'cloud':
+      return { label: 'AI:cloud', color: 'green' };
+    case 'local':
+      return { label: 'AI:local', color: 'yellow' };
+    case 'off':
+      return { label: 'AI:off', color: 'gray' };
+    default:
+      return { label: '', color: 'gray' };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -21,21 +44,30 @@ export interface StatusBarProps {
 // ---------------------------------------------------------------------------
 
 /**
- * Top bar displaying the application name and finding count.
+ * Top bar displaying the application name, finding count, and AI mode.
  *
  * Renders:
  * - Bold cyan application title
  * - Gray finding count
+ * - AI mode indicator (cloud/local/off)
  */
 export function StatusBarHeader(
-  props: Pick<StatusBarProps, 'findingCount' | 'activePane' | 'phase'>,
+  props: Pick<StatusBarProps, 'findingCount' | 'activePane' | 'phase' | 'aiMode'>,
 ): React.ReactElement {
+  const { label: aiLabel, color: aiColor } = aiModeDisplay(props.aiMode);
+
   return (
     <Box>
       <Text bold color="cyan">
         Support Bundle Investigator
       </Text>
       <Text color="gray"> — {props.findingCount} finding(s)</Text>
+      {aiLabel.length > 0 && (
+        <>
+          <Text color="gray">{' | '}</Text>
+          <Text color={aiColor}>{aiLabel}</Text>
+        </>
+      )}
     </Box>
   );
 }

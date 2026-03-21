@@ -278,6 +278,7 @@ export function App({
           height={termHeight}
           width={termWidth}
           findingTree={result?.findingTree}
+          aiMode={result?.aiMode}
         />
       )}
 

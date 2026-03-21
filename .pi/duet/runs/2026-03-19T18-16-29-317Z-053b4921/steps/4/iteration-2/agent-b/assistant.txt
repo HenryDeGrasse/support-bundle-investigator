@@ -1,0 +1,31 @@
+All 3449 tests pass, 2 skipped (pre-existing). Let me do a final review of the implementation:
+
+## Review Summary
+
+### What was implemented (by previous agent):
+
+1. **`SYSTEM_NAMESPACES` constant** — A `ReadonlySet<string>` with `'kube-system'`, `'kube-public'`, `'kube-node-lease'`. Well-placed just before the readiness function, with a clear doc comment.
+
+2. **`isPodUnhealthy()` helper** — Correctly checks all three unhealthy conditions: (a) phase not Running/Succeeded, (b) no Ready=True condition, (c) any container with `ready: false`. Also handles the edge case of missing `status` field (considered unhealthy). Well-documented JSDoc.
+
+3. **Modified `collectReadinessFailureEvidence()`** — After collecting Unhealthy events, it:
+   - Builds `affectedNamespaces` from those events
+   - Filters the pod loop: only processes pods in affected namespaces OR (unhealthy AND not in system namespaces)
+   - Both supporting (probe config) and contradicting (Ready=True, container ready) evidence are properly scoped
+
+4. **Tests** — Four well-structured test blocks covering:
+   - Unhealthy event in default → kube-system healthy coredns excluded
+   - No events → unhealthy non-system pod included, healthy system etcd excluded
+   - Unhealthy event in staging → healthy nginx in default excluded, unhealthy api in staging included
+   - Existing behavior preserved
+
+### Verification Results:
+- **lint**: ✅ 0 warnings, 0 errors
+- **typecheck**: ✅ No type errors
+- **unit**: ✅ 3449 passed, 2 skipped
+- **build**: ✅ Build success
+
+### Assessment:
+The implementation is clean, correct, and thorough. The filtering logic is sound — it correctly prevents healthy system pods from polluting readiness probe evidence while preserving all relevant pods. The helper functions are well-documented and the tests cover the specified scenarios plus backward compatibility. No issues found.
+
+Verdict: approve

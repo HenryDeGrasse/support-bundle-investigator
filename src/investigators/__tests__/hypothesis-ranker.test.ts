@@ -270,6 +270,118 @@ describe('scoreHypothesis — cross-source evidence scores higher than same-sour
 });
 
 // ---------------------------------------------------------------------------
+// scoreHypothesis — evidence diversity bonus (3+ artifact types)
+// ---------------------------------------------------------------------------
+
+describe('scoreHypothesis — evidence diversity bonus: 3 types scores higher than 2 types', () => {
+  // Three items from 3 distinct artifact types — no category-decisive patterns
+  // so the only scoring difference is the diversity bonus.
+  const item1: Evidence = {
+    path: 'logs/a.log',
+    note: 'Log line shows: "no such host backend"',
+    artifactType: 'log',
+  };
+  const item2: Evidence = {
+    path: 'cluster-resources/pods/default/app.yaml',
+    note: 'Log line shows: "connection refused to db:5432"',
+    artifactType: 'kubernetes-resource',
+  };
+  // Third item as 'event' type
+  const item3event: Evidence = {
+    path: 'cluster-resources/events/default.json',
+    note: 'Log line shows: "context deadline exceeded"',
+    artifactType: 'event',
+  };
+  // Third item as 'log' type — keeps type count at 2
+  const item3log: Evidence = {
+    path: 'logs/c.log',
+    note: 'Log line shows: "context deadline exceeded"',
+    artifactType: 'log',
+  };
+
+  const scoreThreeTypes = scoreHypothesis(
+    makeHypothesis({ category: 'connectivity-failure', supporting: [item1, item2, item3event] }),
+  );
+  const scoreTwoTypes = scoreHypothesis(
+    makeHypothesis({ category: 'connectivity-failure', supporting: [item1, item2, item3log] }),
+  );
+
+  it('3 distinct artifact types scores higher than 2 distinct artifact types', () => {
+    expect(scoreThreeTypes).toBeGreaterThan(scoreTwoTypes);
+  });
+
+  it('the difference equals the evidence diversity bonus (0.05)', () => {
+    expect(scoreThreeTypes - scoreTwoTypes).toBeCloseTo(0.05, 5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// scoreHypothesis — cross-namespace corroboration bonus
+// ---------------------------------------------------------------------------
+
+describe('scoreHypothesis — cross-namespace bonus: evidence with cross-namespace match scores higher', () => {
+  const crossNamespaceNote =
+    "Service 'my-svc' exists in namespace 'staging' (not 'default' as referenced). " +
+    "Did you mean to reference 'my-svc.staging.svc.cluster.local'?";
+  const plainMissingNote = "Service 'my-svc' was not found in namespace 'default'";
+
+  const withCrossNamespace = makeHypothesis({
+    category: 'dns-failure',
+    supporting: [
+      {
+        path: 'cluster-resources/services/default.json',
+        note: crossNamespaceNote,
+        artifactType: 'kubernetes-resource',
+      },
+    ],
+  });
+
+  const withoutCrossNamespace = makeHypothesis({
+    category: 'dns-failure',
+    supporting: [
+      {
+        path: 'cluster-resources/services/default.json',
+        note: plainMissingNote,
+        artifactType: 'kubernetes-resource',
+      },
+    ],
+  });
+
+  const scoreWith = scoreHypothesis(withCrossNamespace);
+  const scoreWithout = scoreHypothesis(withoutCrossNamespace);
+
+  it('cross-namespace evidence scores significantly higher', () => {
+    expect(scoreWith).toBeGreaterThan(scoreWithout);
+  });
+
+  it('the difference is at least the cross-namespace bonus (0.15)', () => {
+    expect(scoreWith - scoreWithout).toBeGreaterThanOrEqual(0.15);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildConfidenceRationale — cross-namespace mention
+// ---------------------------------------------------------------------------
+
+describe('buildConfidenceRationale — mentions cross-namespace when cross-namespace evidence present', () => {
+  const crossNamespaceEvidence: Evidence = {
+    path: 'cluster-resources/services/default.json',
+    note: "Service 'my-svc' exists in namespace 'staging' (not 'default' as referenced).",
+    artifactType: 'kubernetes-resource',
+  };
+
+  const hyp = makeHypothesis({
+    category: 'dns-failure',
+    supporting: [crossNamespaceEvidence],
+  });
+
+  it('rationale mentions "cross-namespace"', () => {
+    const rationale = buildConfidenceRationale(hyp);
+    expect(rationale.toLowerCase()).toMatch(/cross.namespace/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // scoreHypothesis — generic symptom-only evidence cap
 // ---------------------------------------------------------------------------
 

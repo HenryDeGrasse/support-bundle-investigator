@@ -3,6 +3,7 @@ import { Box } from 'ink';
 import type { Finding, FindingTreeNode } from '../../types/index.js';
 import type { SpecRecommendation } from '../../reporters/index.js';
 import type { DashboardState } from '../dashboard-state.js';
+import type { AIMode } from '../../pipeline/analyze.js';
 import { StatusBarHeader, StatusBarFooter } from './StatusBar.js';
 import { FindingsPane } from './FindingsPane.js';
 import { DetailPane } from './DetailPane.js';
@@ -29,6 +30,8 @@ export interface DashboardLayoutProps {
    * Used to show causal chain indicators in the findings pane.
    */
   findingTree?: FindingTreeNode[];
+  /** How the AI layer was configured: 'cloud', 'local', or 'off'. */
+  aiMode?: AIMode;
 }
 
 // ---------------------------------------------------------------------------
@@ -62,6 +65,7 @@ export function DashboardLayout({
   height,
   width,
   findingTree,
+  aiMode,
 }: DashboardLayoutProps): React.ReactElement {
   const selectedFinding = findings[state.selectedIndex] ?? null;
 
@@ -95,6 +99,7 @@ export function DashboardLayout({
         findingCount={findings.length}
         activePane={state.activePane}
         phase={state.phase}
+        aiMode={aiMode}
       />
 
       {/* Main content area */}

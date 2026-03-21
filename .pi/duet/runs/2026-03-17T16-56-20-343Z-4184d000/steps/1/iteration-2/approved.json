@@ -1,0 +1,25 @@
+{
+  "stepId": "step-1",
+  "round": 2,
+  "gates": [
+    {
+      "checkId": "lint",
+      "cmd": "npm run lint",
+      "exitCode": 0,
+      "passed": true,
+      "stdoutPath": "/Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/.pi/duet/runs/2026-03-17T16-56-20-343Z-4184d000/steps/1/iteration-2/controller/outputs/lint.stdout.txt",
+      "stderrPath": "/Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/.pi/duet/runs/2026-03-17T16-56-20-343Z-4184d000/steps/1/iteration-2/controller/outputs/lint.stderr.txt",
+      "truncatedPreview": "> support-bundle-investigator@0.1.0 lint\n> eslint \"src/**/*.ts\" \"test/**/*.ts\" --max-warnings 0"
+    },
+    {
+      "checkId": "typecheck",
+      "cmd": "npm run typecheck",
+      "exitCode": 0,
+      "passed": true,
+      "stdoutPath": "/Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/.pi/duet/runs/2026-03-17T16-56-20-343Z-4184d000/steps/1/iteration-2/controller/outputs/typecheck.stdout.txt",
+      "stderrPath": "/Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/.pi/duet/runs/2026-03-17T16-56-20-343Z-4184d000/steps/1/iteration-2/controller/outputs/typecheck.stderr.txt",
+      "truncatedPreview": "> support-bundle-investigator@0.1.0 typecheck\n> tsc --noEmit"
+    }
+  ],
+  "verdict": "approve"
+}

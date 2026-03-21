@@ -1,4 +1,5 @@
 import type { Evidence } from '../types/index.js';
+import type { EvidenceRule } from './hypothesis-templates.js';
 
 // ---------------------------------------------------------------------------
 // HypothesisCategory
@@ -78,6 +79,8 @@ export interface Hypothesis {
   category: HypothesisCategory;
   /** Structured evidence gathered for and against this hypothesis. */
   evidenceAssessment: EvidenceAssessment;
+  /** Declarative template evidence rules used by the evidence collector. */
+  evidenceRules?: EvidenceRule[];
   /**
    * Calibrated confidence that this hypothesis is the true root cause,
    * in the range [0, 1]. Penalised when decisive evidence is missing.

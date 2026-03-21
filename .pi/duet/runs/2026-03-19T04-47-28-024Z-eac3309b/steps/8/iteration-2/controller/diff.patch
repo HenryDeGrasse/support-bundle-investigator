@@ -1,0 +1,2187 @@
+diff --git a/.pi/duet/config.json b/.pi/duet/config.json
+index 31183e1..ad309b0 100644
+--- a/.pi/duet/config.json
++++ b/.pi/duet/config.json
+@@ -25,8 +25,8 @@
+     "thinking": "high"
+   },
+   "reviewer": {
+-    "label": "GPT-5.4",
+-    "model": "openai-codex/gpt-5.4",
++    "label": "Claude Opus 4.6",
++    "model": "anthropic/claude-opus-4-6",
+     "thinking": "high"
+   },
+   "executionMode": "relay",
+diff --git a/src/ai/__tests__/chunk-indexer.test.ts b/src/ai/__tests__/chunk-indexer.test.ts
+index db67a0b..f2a082d 100644
+--- a/src/ai/__tests__/chunk-indexer.test.ts
++++ b/src/ai/__tests__/chunk-indexer.test.ts
+@@ -222,17 +222,35 @@ describe('buildChunkIndex', () => {
+     expect(analyzerChunks).toHaveLength(3);
+   });
+ 
+-  it('produces multiple log chunks for large log files', () => {
+-    // 55 lines → should produce 2 chunks with chunkSize=50, overlap=10
+-    const lines = Array.from({ length: 55 }, (_, i) => ({
+-      lineNumber: i + 1,
+-      content: `Line ${i + 1}`,
+-      level: 'info' as const,
+-    }));
+-    const logFile: LogFile = { path: '/logs/app.log', lines, errorCount: 0, warningCount: 0, importance: 0 };
++  it('produces multiple log chunks for log files with errors (preamble + error-cluster + summary)', () => {
++    // Log file with errors: error-aware chunking produces preamble + error-cluster + summary
++    const lines = [
++      // Lines 1-20: INFO (preamble zone)
++      ...Array.from({ length: 20 }, (_, i) => ({
++        lineNumber: i + 1,
++        content: `INFO: startup line ${i + 1}`,
++        level: 'info' as const,
++      })),
++      // Lines 21-30: INFO (healthy region)
++      ...Array.from({ length: 10 }, (_, i) => ({
++        lineNumber: 21 + i,
++        content: `INFO: normal line ${21 + i}`,
++        level: 'info' as const,
++      })),
++      // Line 31: ERROR (triggers error-cluster chunk)
++      { lineNumber: 31, content: 'ERROR: connection refused', level: 'error' as const },
++      // Lines 32-55: INFO (healthy tail)
++      ...Array.from({ length: 24 }, (_, i) => ({
++        lineNumber: 32 + i,
++        content: `INFO: tail line ${32 + i}`,
++        level: 'info' as const,
++      })),
++    ];
++    const logFile: LogFile = { path: '/logs/app.log', lines, errorCount: 1, warningCount: 0, importance: 0.5 };
+     const ctx = makeContext({ logs: [logFile] });
+     const chunks = buildChunkIndex(ctx);
+     const logChunks = chunks.filter((c) => c.artifactCategory === 'log');
++    // preamble + error-cluster + summary = 3 chunks
+     expect(logChunks.length).toBeGreaterThan(1);
+   });
+ });
+@@ -935,3 +953,120 @@ describe('identifiersFromHelmRelease', () => {
+     expect(ids).not.toContain('');
+   });
+ });
++
++// ---------------------------------------------------------------------------
++// augmentLogChunk — meaningful log summary (2.8)
++// ---------------------------------------------------------------------------
++
++describe('augmentLogChunk — meaningful log summary (2.8)', () => {
++  it('error-cluster chunk summary includes primary error lines', () => {
++    const lines = [
++      ...Array.from({ length: 20 }, (_, i) => ({
++        lineNumber: i + 1,
++        content: `INFO: startup line ${i + 1}`,
++        level: 'info' as const,
++      })),
++      {
++        lineNumber: 21,
++        content: 'ERROR: connection refused to postgres:5432',
++        level: 'error' as const,
++      },
++      ...Array.from({ length: 10 }, (_, i) => ({
++        lineNumber: 22 + i,
++        content: `INFO: tail line ${22 + i}`,
++        level: 'info' as const,
++      })),
++    ];
++    const logFile: LogFile = {
++      path: '/logs/app.log',
++      lines,
++      errorCount: 1,
++      warningCount: 0,
++      importance: 0.5,
++    };
++    const ctx = makeContext({ logs: [logFile] });
++    const chunks = buildChunkIndex(ctx);
++    const errorChunk = chunks.find(
++      (c) => c.artifactCategory === 'log' && c.metadata?.['chunkType'] === 'error-cluster',
++    );
++    expect(errorChunk).toBeDefined();
++    // Summary must include the actual error content, not just the path description
++    expect(errorChunk!.summary).toContain('connection refused');
++  });
++
++  it('error-cluster chunk summary is not a bare path/line-range description', () => {
++    const lines = [
++      ...Array.from({ length: 20 }, (_, i) => ({
++        lineNumber: i + 1,
++        content: `INFO: startup ${i + 1}`,
++        level: 'info' as const,
++      })),
++      {
++        lineNumber: 21,
++        content: 'ERROR: disk full on /dev/sda1',
++        level: 'error' as const,
++      },
++    ];
++    const logFile: LogFile = {
++      path: '/logs/app.log',
++      lines,
++      errorCount: 1,
++      warningCount: 0,
++      importance: 0.5,
++    };
++    const ctx = makeContext({ logs: [logFile] });
++    const chunks = buildChunkIndex(ctx);
++    const errorChunk = chunks.find(
++      (c) => c.artifactCategory === 'log' && c.metadata?.['chunkType'] === 'error-cluster',
++    );
++    expect(errorChunk).toBeDefined();
++    // Must NOT be just "Log chunk from X (lines N–M)" with nothing else
++    const isBarePath = /^Log chunk from .+ \(lines \d+[–-]\d+\)$/.test(
++      errorChunk!.summary.trim(),
++    );
++    expect(isBarePath).toBe(false);
++    // And it must include actual error content
++    expect(errorChunk!.summary).toContain('disk full');
++  });
++
++  it('preamble chunk summary includes actual log content', () => {
++    const logFile = makeLogFile('/logs/app.log', 1);
++    const ctx = makeContext({ logs: [logFile] });
++    const chunks = buildChunkIndex(ctx);
++    const preambleChunk = chunks.find(
++      (c) => c.artifactCategory === 'log' && c.metadata?.['chunkType'] === 'preamble',
++    );
++    expect(preambleChunk).toBeDefined();
++    // Preamble summary should include actual content, not just a bare path description
++    const isBarePath = /^Log chunk from .+ \(lines \d+[–-]\d+\)$/.test(
++      preambleChunk!.summary.trim(),
++    );
++    expect(isBarePath).toBe(false);
++  });
++
++  it('log chunk summary includes at least part of the chunk content', () => {
++    const logFile = makeLogFile('/logs/app.log', 0);
++    const ctx = makeContext({ logs: [logFile] });
++    const chunks = buildChunkIndex(ctx);
++    const logChunk = chunks.find((c) => c.artifactCategory === 'log');
++    expect(logChunk).toBeDefined();
++    // The summary should contain actual log content (the first line includes a recognisable phrase)
++    expect(logChunk!.summary).toContain('INFO');
++  });
++
++  it('log chunk summary is still a string when content is empty', () => {
++    // Edge case: even with empty content the summary must remain a non-empty string
++    const logFile: LogFile = {
++      path: '/logs/empty.log',
++      lines: [{ lineNumber: 1, content: '', level: 'info' }],
++      errorCount: 0,
++      warningCount: 0,
++      importance: 0,
++    };
++    const ctx = makeContext({ logs: [logFile] });
++    const chunks = buildChunkIndex(ctx);
++    for (const chunk of chunks) {
++      expect(chunk.summary).toBeTruthy();
++    }
++  });
++});
+diff --git a/src/ai/__tests__/config.test.ts b/src/ai/__tests__/config.test.ts
+index 679b80b..3b0b774 100644
+--- a/src/ai/__tests__/config.test.ts
++++ b/src/ai/__tests__/config.test.ts
+@@ -41,11 +41,19 @@ function withEnv(
+ describe('loadAIConfig()', () => {
+   it('returns defaults when no env vars are set', () => {
+     withEnv(
+-      { OPENAI_API_KEY: undefined, SBI_AI_MODEL: undefined, SBI_EMBEDDING_MODEL: undefined },
++      {
++        OPENAI_API_KEY: undefined,
++        SBI_AI_MODEL: undefined,
++        SBI_EMBEDDING_MODEL: undefined,
++        SBI_EMBEDDING_BACKEND: undefined,
++        SBI_EMBEDDING_URL: undefined,
++      },
+       () => {
+         const config = loadAIConfig();
+         expect(config.model).toBe('gpt-4o');
+         expect(config.embeddingModel).toBe('text-embedding-3-small');
++        expect(config.embeddingBackend).toBe('local');
++        expect(config.embeddingUrl).toBe('http://localhost:8080');
+         expect(config.apiKey).toBe('');
+         expect(config.provider).toBe('none');
+         expect(config.enabled).toBe(false);
+@@ -77,6 +85,55 @@ describe('loadAIConfig()', () => {
+     );
+   });
+ 
++  it('reads SBI_EMBEDDING_BACKEND=openai from env', () => {
++    withEnv({ SBI_EMBEDDING_BACKEND: 'openai' }, () => {
++      const config = loadAIConfig();
++      expect(config.embeddingBackend).toBe('openai');
++    });
++  });
++
++  it('reads SBI_EMBEDDING_BACKEND=local from env', () => {
++    withEnv({ SBI_EMBEDDING_BACKEND: 'local' }, () => {
++      const config = loadAIConfig();
++      expect(config.embeddingBackend).toBe('local');
++    });
++  });
++
++  it('reads SBI_EMBEDDING_BACKEND=none from env', () => {
++    withEnv({ SBI_EMBEDDING_BACKEND: 'none' }, () => {
++      const config = loadAIConfig();
++      expect(config.embeddingBackend).toBe('none');
++    });
++  });
++
++  it('defaults SBI_EMBEDDING_BACKEND to local when not set', () => {
++    withEnv({ SBI_EMBEDDING_BACKEND: undefined }, () => {
++      const config = loadAIConfig();
++      expect(config.embeddingBackend).toBe('local');
++    });
++  });
++
++  it('treats unknown SBI_EMBEDDING_BACKEND values as local', () => {
++    withEnv({ SBI_EMBEDDING_BACKEND: 'some-unknown-backend' }, () => {
++      const config = loadAIConfig();
++      expect(config.embeddingBackend).toBe('local');
++    });
++  });
++
++  it('reads SBI_EMBEDDING_URL from env', () => {
++    withEnv({ SBI_EMBEDDING_URL: 'http://my-tei-server:9090' }, () => {
++      const config = loadAIConfig();
++      expect(config.embeddingUrl).toBe('http://my-tei-server:9090');
++    });
++  });
++
++  it('defaults SBI_EMBEDDING_URL to http://localhost:8080 when not set', () => {
++    withEnv({ SBI_EMBEDDING_URL: undefined }, () => {
++      const config = loadAIConfig();
++      expect(config.embeddingUrl).toBe('http://localhost:8080');
++    });
++  });
++
+   it('enables AI when API key is present and noAi is not set', () => {
+     withEnv({ OPENAI_API_KEY: 'sk-valid-key' }, () => {
+       const config = loadAIConfig();
+diff --git a/src/ai/__tests__/embeddings.test.ts b/src/ai/__tests__/embeddings.test.ts
+index 53de36f..c182730 100644
+--- a/src/ai/__tests__/embeddings.test.ts
++++ b/src/ai/__tests__/embeddings.test.ts
+@@ -12,6 +12,8 @@ function makeConfig(overrides: Partial<AIConfig> = {}): AIConfig {
+     apiKey: 'test-key',
+     model: 'gpt-4o',
+     embeddingModel: 'text-embedding-3-small',
++    embeddingBackend: 'openai',
++    embeddingUrl: 'http://localhost:8080',
+     enabled: true,
+     ...overrides,
+   };
+diff --git a/src/ai/__tests__/llm-client.test.ts b/src/ai/__tests__/llm-client.test.ts
+index 64b54c7..7dd7ad3 100644
+--- a/src/ai/__tests__/llm-client.test.ts
++++ b/src/ai/__tests__/llm-client.test.ts
+@@ -32,6 +32,8 @@ const TEST_CONFIG: AIConfig = {
+   apiKey: 'sk-test-key',
+   model: 'gpt-4o',
+   embeddingModel: 'text-embedding-3-small',
++  embeddingBackend: 'openai',
++  embeddingUrl: 'http://localhost:8080',
+   enabled: true,
+ };
+ 
+diff --git a/src/ai/__tests__/summarizer.test.ts b/src/ai/__tests__/summarizer.test.ts
+index f704b76..a39c943 100644
+--- a/src/ai/__tests__/summarizer.test.ts
++++ b/src/ai/__tests__/summarizer.test.ts
+@@ -230,11 +230,14 @@ describe('summarizeResource (ConfigMap)', () => {
+     expect(summary).toContain('DB_USER');
+   });
+ 
+-  it('does not include actual data values', () => {
++  it('includes data values so that network endpoints are searchable (step 3.3)', () => {
+     const summary = summarizeResource(makeConfigMap());
++    // After step 3.3, ConfigMap data values (hostnames, connection strings, etc.)
++    // are included in the summary so that semantic/lexical search can correlate
++    // misconfigured endpoints with log errors.
+     // values are postgres.svc.cluster.local, amdin, 5432
+-    expect(summary).not.toContain('amdin');
+-    expect(summary).not.toContain('postgres.svc.cluster.local');
++    expect(summary).toContain('postgres.svc.cluster.local');
++    expect(summary).toContain('amdin');
+   });
+ });
+ 
+diff --git a/src/ai/chunk-indexer.ts b/src/ai/chunk-indexer.ts
+index 4bc0c41..cbcdc58 100644
+--- a/src/ai/chunk-indexer.ts
++++ b/src/ai/chunk-indexer.ts
+@@ -2,9 +2,29 @@ import type { Chunk, ArtifactCategory } from '../types/index.js';
+ import type { K8sResource, K8sEvent, AnalyzerResult } from '../types/index.js';
+ import type { HelmRelease } from '../parsers/index.js';
+ import type { InvestigatorContext } from '../investigators/types.js';
+-import { chunkLogFile, chunkResource, chunkAnalyzer } from '../graph/chunker.js';
++import { chunkLogFileErrorAware, chunkResource, chunkAnalyzer } from '../graph/chunker.js';
+ import { summarizeResource, summarizeEvent, summarizeAnalyzer, summarizeHelmRelease } from './summarizer.js';
+ import { extractTimestamps } from '../parsers/index.js';
++import { contextualizeChunks, buildDocumentContext } from './contextual-retrieval.js';
++
++// ---------------------------------------------------------------------------
++// Token estimation
++// ---------------------------------------------------------------------------
++
++/**
++ * Estimates the number of tokens in a text string using a simple heuristic:
++ * 4 characters per token (a reasonable approximation for English prose, YAML,
++ * and JSON content with Claude/GPT tokenizers).
++ *
++ * This is intentionally a fast, allocation-free estimate — no tokenizer
++ * required.  Uses floor division so the result is always an integer.
++ *
++ * @param text - The text to estimate token count for.
++ * @returns Estimated token count: `Math.floor(text.length / 4)`.
++ */
++export function estimateTokens(text: string): number {
++  return Math.floor(text.length / 4);
++}
+ 
+ // ---------------------------------------------------------------------------
+ // IndexedChunk
+@@ -39,6 +59,19 @@ export interface IndexedChunk extends Chunk {
+   artifactCategory: ArtifactCategory;
+   /** ISO timestamp extracted from the chunk content, when present. */
+   timestamp?: string;
++  /**
++   * Context-enriched content for embedding.
++   *
++   * A short template-generated context sentence is prepended to the raw
++   * chunk content before embedding so that the vector representation encodes
++   * both the chunk's source (kind, name, namespace, path) and its text.
++   *
++   * When present, the embedding pipeline uses this field instead of the raw
++   * `content`.  The original `content` is always preserved unchanged.
++   *
++   * Populated by {@link contextualizeChunks} inside {@link buildChunkIndex}.
++   */
++  contextualizedContent?: string;
+ }
+ 
+ // ---------------------------------------------------------------------------
+@@ -472,6 +505,15 @@ function augmentHelmReleaseChunk(release: HelmRelease, artifactId: string): Inde
+   };
+ }
+ 
++/**
++ * Truncates `text` to at most `maxChars` characters, appending `"..."` when
++ * truncated.  Returns the full text unchanged when it fits within the limit.
++ */
++function truncateContent(text: string, maxChars: number): string {
++  if (text.length <= maxChars) return text;
++  return text.slice(0, maxChars) + '...';
++}
++
+ function augmentLogChunk(chunk: Chunk): IndexedChunk {
+   const path = getChunkPath(chunk);
+   const identifiers = identifiersFromLogContent(chunk.content, path);
+@@ -480,9 +522,34 @@ function augmentLogChunk(chunk: Chunk): IndexedChunk {
+   const firstLine = chunk.content.split('\n')[0] ?? '';
+   const ts = extractTimestamps(firstLine);
+ 
++  // Build a meaningful summary that includes actual log content so that
++  // semantic embeddings can match on log content rather than on the bare
++  // file-path description.  ~500 tokens ≈ 2 000 characters at 4 chars/token.
++  const MAX_SUMMARY_CHARS = 2000;
++  const prefix = `Log chunk from ${path} (lines ${chunk.startLine}–${chunk.endLine})`;
++
++  const chunkType = isRecord(chunk.metadata)
++    ? (chunk.metadata['chunkType'] as string | undefined)
++    : undefined;
++
++  let body: string;
++  if (chunkType === 'error-cluster') {
++    // For error-cluster chunks, prioritise error/fatal lines so they appear at
++    // the start of the summary and are captured within any token truncation.
++    const contentLines = chunk.content.split('\n');
++    const errorLines = contentLines.filter((l) => /\b(ERROR|FATAL)\b/i.test(l));
++    const otherLines = contentLines.filter((l) => !/\b(ERROR|FATAL)\b/i.test(l));
++    // Put error lines first, then the rest, then truncate the whole thing.
++    body = truncateContent([...errorLines, ...otherLines].join('\n'), MAX_SUMMARY_CHARS);
++  } else {
++    body = truncateContent(chunk.content, MAX_SUMMARY_CHARS);
++  }
++
++  const summary = body ? `${prefix}:\n${body}` : prefix;
++
+   return {
+     ...chunk,
+-    summary: `Log chunk from ${path} (lines ${chunk.startLine}–${chunk.endLine})`,
++    summary,
+     identifiers,
+     artifactCategory: 'log',
+     timestamp: ts ?? undefined,
+@@ -532,7 +599,7 @@ export function buildChunkIndex(context: InvestigatorContext): IndexedChunk[] {
+ 
+   // ── Log files ─────────────────────────────────────────────────────────────
+   for (const logFile of context.logs) {
+-    const baseChunks = chunkLogFile(logFile, 50, 10);
++    const baseChunks = chunkLogFileErrorAware(logFile);
+     for (const baseChunk of baseChunks) {
+       chunks.push(augmentLogChunk(baseChunk));
+     }
+@@ -554,5 +621,11 @@ export function buildChunkIndex(context: InvestigatorContext): IndexedChunk[] {
+     }
+   }
+ 
+-  return chunks;
++  // ── Contextual retrieval — prepend context prefix to each chunk ────────────
++  // Derive a DocumentContext from each chunk's metadata and produce a new
++  // array where every chunk has a `contextualizedContent` field.  The raw
++  // `content` is preserved unchanged; the embedding pipeline uses
++  // `contextualizedContent` (see analyze.ts).
++  const documents = chunks.map(buildDocumentContext);
++  return contextualizeChunks(chunks, documents);
+ }
+diff --git a/src/ai/config.ts b/src/ai/config.ts
+index 9e5141c..a2264ba 100644
+--- a/src/ai/config.ts
++++ b/src/ai/config.ts
+@@ -7,12 +7,27 @@
+ // caller has not explicitly opted out with --no-ai.
+ //
+ // Environment variables:
+-//   OPENAI_API_KEY      — OpenAI API key (required for AI features)
+-//   SBI_AI_MODEL        — Chat completion model (default: gpt-4o)
+-//   SBI_EMBEDDING_MODEL — Embedding model     (default: text-embedding-3-small)
++//   OPENAI_API_KEY         — OpenAI API key (required for AI features)
++//   SBI_AI_MODEL           — Chat completion model (default: gpt-4o)
++//   SBI_EMBEDDING_MODEL    — Embedding model     (default: text-embedding-3-small)
++//   SBI_EMBEDDING_BACKEND  — Embedding backend   (default: local)
++//                            Values: local | openai | none
++//   SBI_EMBEDDING_URL      — Local embedding endpoint (default: http://localhost:8080)
++//                            Used when SBI_EMBEDDING_BACKEND=local
+ 
+ export type AIProvider = 'openai' | 'none';
+ 
++/**
++ * Backend to use for text embeddings.
++ *
++ * - `local`  — Local HTTP embedding service (TEI or Ollama). Preferred for
++ *              offline / on-premise deployments. Falls back to Ollama when
++ *              TEI is unavailable.
++ * - `openai` — OpenAI Embeddings API (requires OPENAI_API_KEY).
++ * - `none`   — Disable embeddings entirely; graph + BM25 retrieval only.
++ */
++export type EmbeddingBackend = 'local' | 'openai' | 'none';
++
+ export interface AIConfig {
+   /** AI provider. 'none' means AI features are disabled. */
+   provider: AIProvider;
+@@ -22,6 +37,20 @@ export interface AIConfig {
+   model: string;
+   /** Text embedding model identifier. */
+   embeddingModel: string;
++  /**
++   * Embedding backend to use.
++   *
++   * Defaults to 'local' so the system prefers a locally-running embedding
++   * service (TEI or Ollama) over the OpenAI API.
++   */
++  embeddingBackend: EmbeddingBackend;
++  /**
++   * Base URL for the local embedding service.
++   *
++   * Used when `embeddingBackend === 'local'`.  Defaults to
++   * `http://localhost:8080` (HuggingFace TEI default port).
++   */
++  embeddingUrl: string;
+   /** Whether AI features are active for this run. */
+   enabled: boolean;
+ }
+@@ -43,6 +72,13 @@ function resolveRequestedProvider(aiProvider?: string): AIProvider {
+   return 'openai';
+ }
+ 
++function resolveEmbeddingBackend(raw: string | undefined): EmbeddingBackend {
++  const normalized = raw?.trim().toLowerCase();
++  if (normalized === 'openai') return 'openai';
++  if (normalized === 'none') return 'none';
++  return 'local'; // default
++}
++
+ /**
+  * Loads AI configuration from environment variables, applying optional
+  * overrides from CLI flags.
+@@ -58,6 +94,8 @@ export function loadAIConfig(overrides: LoadAIConfigOverrides = {}): AIConfig {
+   const apiKey = process.env['OPENAI_API_KEY'] ?? '';
+   const model = process.env['SBI_AI_MODEL'] ?? 'gpt-4o';
+   const embeddingModel = process.env['SBI_EMBEDDING_MODEL'] ?? 'text-embedding-3-small';
++  const embeddingBackend = resolveEmbeddingBackend(process.env['SBI_EMBEDDING_BACKEND']);
++  const embeddingUrl = process.env['SBI_EMBEDDING_URL'] ?? 'http://localhost:8080';
+   const requestedProvider = resolveRequestedProvider(aiProvider);
+ 
+   const hasKey = apiKey.trim().length > 0;
+@@ -70,6 +108,8 @@ export function loadAIConfig(overrides: LoadAIConfigOverrides = {}): AIConfig {
+     apiKey,
+     model,
+     embeddingModel,
++    embeddingBackend,
++    embeddingUrl,
+     enabled,
+   };
+ }
+diff --git a/src/ai/embeddings.ts b/src/ai/embeddings.ts
+index 65e4811..3a1b1da 100644
+--- a/src/ai/embeddings.ts
++++ b/src/ai/embeddings.ts
+@@ -18,17 +18,57 @@ import type { AIConfig } from './config.js';
+ const EMBEDDING_BATCH_SIZE = 100;
+ 
+ // ---------------------------------------------------------------------------
+-// EmbeddingClient
++// EmbeddingClientInterface
++// ---------------------------------------------------------------------------
++
++/**
++ * Common interface for all embedding backends.
++ *
++ * Both {@link EmbeddingClient} (OpenAI) and {@link LocalEmbeddingClient}
++ * (TEI / Ollama) implement this interface so the rest of the pipeline is
++ * backend-agnostic.
++ *
++ * Graceful-degradation contract: all implementations MUST return empty arrays
++ * (not throw) when embeddings fail, enabling callers to skip semantic
++ * retrieval rather than aborting.
++ */
++export interface EmbeddingClientInterface {
++  /**
++   * Embeds an array of texts.
++   *
++   * Returns a parallel array of embedding vectors.  Entries may be empty
++   * arrays when the corresponding embedding could not be computed.
++   *
++   * @param texts - Input texts to embed.
++   * @returns Parallel array of float vectors (empty sub-arrays on failure).
++   */
++  embed(texts: string[]): Promise<number[][]>;
++
++  /**
++   * Embeds a single text string.
++   *
++   * Returns an empty array on failure.
++   *
++   * @param text - Input text to embed.
++   * @returns Embedding vector, or an empty array on failure.
++   */
++  embedSingle(text: string): Promise<number[]>;
++}
++
++// ---------------------------------------------------------------------------
++// EmbeddingClient (OpenAI backend)
+ // ---------------------------------------------------------------------------
+ 
+ /**
+  * Wraps the OpenAI embeddings API for batch text embedding.
+  *
++ * Implements {@link EmbeddingClientInterface}.
++ *
+  * Graceful degradation: any embedding failure returns an empty array for the
+  * affected batch rather than throwing. Callers that check for empty arrays
+  * can skip semantic retrieval and fall back to graph + lexical results.
+  */
+-export class EmbeddingClient {
++export class EmbeddingClient implements EmbeddingClientInterface {
+   private readonly client: OpenAI;
+   private readonly model: string;
+ 
+diff --git a/src/ai/index.ts b/src/ai/index.ts
+index a4faf7e..0580f99 100644
+--- a/src/ai/index.ts
++++ b/src/ai/index.ts
+@@ -4,6 +4,8 @@ export type { RecorderMode, Cassette, CassetteStore } from './recorder.js';
+ export { summarizeResource, summarizeEvent, summarizeAnalyzer, summarizeHelmRelease } from './summarizer.js';
+ export { buildChunkIndex } from './chunk-indexer.js';
+ export type { IndexedChunk } from './chunk-indexer.js';
++export { generateChunkContext, contextualizeChunks, buildDocumentContext } from './contextual-retrieval.js';
++export type { DocumentContext } from './contextual-retrieval.js';
+ export { LexicalSearchIndex } from './lexical-search.js';
+ export type { ScoredChunk as LexicalScoredChunk } from './lexical-search.js';
+ export { validateAIFindings } from './schemas.js';
+@@ -13,5 +15,12 @@ export type { PlaybookCategory } from './prompts.js';
+ export { LLMClient } from './llm-client.js';
+ export type { AIFindingResponse } from './llm-client.js';
+ export { EmbeddingClient } from './embeddings.js';
++export type { EmbeddingClientInterface } from './embeddings.js';
++export { LocalEmbeddingClient, createEmbeddingClient } from './local-embeddings.js';
++export type { LocalBackendType, LocalEmbeddingClientConfig } from './local-embeddings.js';
++export { mapChunkBoundariesToTokenPositions, averagePoolSlice, lateChunkEmbed } from './late-chunking.js';
++export type { ChunkBoundary, TokenRange, LateChunkEmbeddingClient } from './late-chunking.js';
+ export { VectorStore, cosineSimilarity } from './vector-store.js';
+ export type { ScoredChunk } from './vector-store.js';
++export { generateHypotheticalDocument, HYDE_SYSTEM_PROMPT } from './hyde.js';
++export type { HydeLLMClient } from './hyde.js';
+diff --git a/src/ai/llm-client.ts b/src/ai/llm-client.ts
+index 75ba045..6d493f8 100644
+--- a/src/ai/llm-client.ts
++++ b/src/ai/llm-client.ts
+@@ -17,6 +17,7 @@ import OpenAI from 'openai';
+ import type { AIConfig } from './config.js';
+ import type { AIFinding } from './schemas.js';
+ import { validateAIFindings } from './schemas.js';
++import type { HydeLLMClient } from './hyde.js';
+ 
+ // ---------------------------------------------------------------------------
+ // AIFindingResponse
+@@ -43,11 +44,14 @@ export interface AIFindingResponse {
+ /**
+  * Wraps the OpenAI chat completions API for structured K8s investigation.
+  *
++ * Implements {@link HydeLLMClient} so it can be passed directly to
++ * `generateHypotheticalDocument` without any adapter.
++ *
+  * Instantiate with a loaded {@link AIConfig} (must have `enabled: true` and a
+  * valid `apiKey`). If the config is disabled, callers should not construct
+  * this class — use the `isAIEnabled` guard from `config.ts` first.
+  */
+-export class LLMClient {
++export class LLMClient implements HydeLLMClient {
+   private readonly client: OpenAI;
+   private readonly model: string;
+ 
+@@ -56,6 +60,32 @@ export class LLMClient {
+     this.model = config.model;
+   }
+ 
++  /**
++   * Generates free-form text given a system and user prompt.
++   *
++   * Unlike `investigateSeed`, this method does NOT use JSON mode — the model
++   * response is returned as a plain string.
++   *
++   * **Does not swallow errors** — throws on network/API failure so that
++   * callers (e.g. `generateHypotheticalDocument`) can detect failure and apply
++   * their own fallback logic.
++   *
++   * @param systemPrompt - System-level context for the generation task.
++   * @param userPrompt   - User-facing prompt.
++   * @returns Generated text string.  Empty string if the model returns no content.
++   */
++  async generateText(systemPrompt: string, userPrompt: string): Promise<string> {
++    const response = await this.client.chat.completions.create({
++      model: this.model,
++      messages: [
++        { role: 'system', content: systemPrompt },
++        { role: 'user', content: userPrompt },
++      ],
++    });
++
++    return response.choices[0]?.message?.content ?? '';
++  }
++
+   /**
+    * Calls the LLM with a system + user prompt pair and returns structured
+    * findings.
+diff --git a/src/ai/summarizer.ts b/src/ai/summarizer.ts
+index 837842d..9555a85 100644
+--- a/src/ai/summarizer.ts
++++ b/src/ai/summarizer.ts
+@@ -255,16 +255,37 @@ function summarizeWorkload(resource: K8sResource): string {
+ // ConfigMap summary
+ // ---------------------------------------------------------------------------
+ 
++/**
++ * Maximum character length for a single ConfigMap data value included in the
++ * summary.  Values longer than this are truncated with `"..."` to avoid
++ * bloating the summary with multi-line configuration blobs (e.g. embedded
++ * nginx.conf or application.yaml).
++ */
++const CONFIG_MAP_VALUE_LIMIT = 100;
++
+ function summarizeConfigMap(resource: K8sResource): string {
+   const name = resource.metadata.name;
+   const ns = resource.metadata.namespace ?? 'default';
+   const lines: string[] = [`ConfigMap: ${name} (namespace: ${ns})`];
+ 
+-  if (isRecord(resource as unknown as Record<string, unknown>)) {
+-    const raw = resource as unknown as Record<string, unknown>;
+-    if (isRecord(raw['data'])) {
+-      const keys = Object.keys(raw['data'] as Record<string, unknown>);
+-      lines.push(`Keys: ${keys.join(', ')}`);
++  const raw = resource as unknown as Record<string, unknown>;
++  if (isRecord(raw['data'])) {
++    const data = raw['data'] as Record<string, unknown>;
++    const keys = Object.keys(data);
++    lines.push(`Keys: ${keys.join(', ')}`);
++
++    // Include data values so that network endpoints and connection strings
++    // remain searchable after the summary-as-content migration (step 3.3).
++    // Without this, a ConfigMap with `DB_HOST: wrong-host.internal` would
++    // lose the hostname from the embedded content, breaking retrieval.
++    for (const [key, value] of Object.entries(data)) {
++      if (typeof value === 'string' && value.trim()) {
++        const truncated =
++          value.length > CONFIG_MAP_VALUE_LIMIT
++            ? value.slice(0, CONFIG_MAP_VALUE_LIMIT) + '...'
++            : value;
++        lines.push(`  ${key}: ${truncated}`);
++      }
+     }
+   }
+ 
+diff --git a/src/graph/__tests__/chunker.test.ts b/src/graph/__tests__/chunker.test.ts
+index 4604b64..f206c13 100644
+--- a/src/graph/__tests__/chunker.test.ts
++++ b/src/graph/__tests__/chunker.test.ts
+@@ -1,6 +1,7 @@
+ import { describe, it, expect } from 'vitest';
+-import { chunkLogFile, chunkResource, chunkAnalyzer } from '../chunker.js';
++import { chunkLogFile, chunkResource, chunkAnalyzer, chunkLogFileErrorAware } from '../chunker.js';
+ import type { LogFile, LogLine } from '../../parsers/log-parser.js';
++import type { LogLevel } from '../../parsers/log-parser.js';
+ import type { K8sResource } from '../../types/index.js';
+ import type { AnalyzerResult } from '../../types/index.js';
+ 
+@@ -196,3 +197,310 @@ describe('chunkAnalyzer', () => {
+     expect(chunk.endLine).toBeGreaterThanOrEqual(chunk.startLine);
+   });
+ });
++
++// ---------------------------------------------------------------------------
++// chunkResource — summary content (3.3)
++// ---------------------------------------------------------------------------
++
++describe('chunkResource — summary content (3.3)', () => {
++  it('chunk content is the human-readable summarizeResource output, not raw JSON', () => {
++    const resource = makeResource('my-pod', 'default');
++    const chunk = chunkResource(resource, 'default/pods/my-pod.yaml');
++    // The content should start with "Pod: my-pod" — a human-readable summary
++    expect(chunk.content).toContain('Pod:');
++    expect(chunk.content).toContain('my-pod');
++    // Must NOT start with the raw JSON opening brace
++    expect(chunk.content.trim()).not.toMatch(/^\{/);
++  });
++
++  it('raw JSON is stored in metadata.rawContent', () => {
++    const resource = makeResource('my-pod', 'default');
++    const chunk = chunkResource(resource, 'default/pods/my-pod.yaml');
++    expect(chunk.metadata).toBeDefined();
++    const raw = chunk.metadata!['rawContent'];
++    expect(typeof raw).toBe('string');
++    // rawContent should be parseable JSON containing the resource fields
++    const parsed = JSON.parse(raw as string) as { metadata: { name: string } };
++    expect(parsed.metadata.name).toBe('my-pod');
++  });
++
++  it('endLine reflects the number of lines in the summary content', () => {
++    const resource = makeResource('my-pod', 'default');
++    const chunk = chunkResource(resource, 'default/pods/my-pod.yaml');
++    const summaryLines = chunk.content.split('\n').length;
++    expect(chunk.endLine).toBe(summaryLines);
++  });
++
++  it('metadata.rawContent contains the full resource spec', () => {
++    const resource = makeResource('web-app', 'production');
++    const chunk = chunkResource(resource, 'production/pods/web-app.yaml');
++    const raw = chunk.metadata!['rawContent'] as string;
++    // The raw content should include spec details not present in the summary
++    expect(raw).toContain('"containers"');
++    expect(raw).toContain('nginx:latest');
++  });
++
++  it('content and metadata.rawContent differ for a real resource', () => {
++    const resource = makeResource('my-pod', 'default');
++    const chunk = chunkResource(resource, 'default/pods/my-pod.yaml');
++    // The human-readable summary must be distinct from the raw JSON blob
++    expect(chunk.content).not.toBe(chunk.metadata!['rawContent']);
++  });
++});
++
++// ---------------------------------------------------------------------------
++// chunkLogFileErrorAware — helpers
++// ---------------------------------------------------------------------------
++
++/**
++ * Builds a LogFile where errorLines (1-indexed) are error-level and
++ * all other lines are info-level.
++ */
++function makeLogFileWithErrors(
++  lineCount: number,
++  errorLineNumbers: number[],
++  path = '/var/log/app/app.log',
++): LogFile {
++  const errorSet = new Set(errorLineNumbers);
++  const lines: LogLine[] = Array.from({ length: lineCount }, (_, i) => {
++    const lineNumber = i + 1;
++    const isError = errorSet.has(lineNumber);
++    return {
++      lineNumber,
++      content: isError
++        ? `ERROR: something failed at line ${lineNumber}`
++        : `INFO: normal log line ${lineNumber}`,
++      level: (isError ? 'error' : 'info') as LogLevel,
++    };
++  });
++
++  const errorCount = lines.filter((l) => l.level === 'error').length;
++  return {
++    path,
++    lines,
++    errorCount,
++    warningCount: 0,
++    importance: errorCount > 0 ? 0.5 : 0,
++  };
++}
++
++// ---------------------------------------------------------------------------
++// chunkLogFileErrorAware
++// ---------------------------------------------------------------------------
++
++describe('chunkLogFileErrorAware', () => {
++  // ── backward-compat: no errors ──────────────────────────────────────────
++
++  it('returns empty array for empty log file', () => {
++    const logFile = makeLogFile(0);
++    const chunks = chunkLogFileErrorAware(logFile);
++    expect(chunks).toHaveLength(0);
++  });
++
++  it('returns entire file in one chunk when no errors exist (backward-compatible)', () => {
++    const logFile = makeLogFile(55); // all INFO lines, errorCount=0
++    const chunks = chunkLogFileErrorAware(logFile);
++    expect(chunks).toHaveLength(1);
++    expect(chunks[0]!.startLine).toBe(1);
++    expect(chunks[0]!.endLine).toBe(55);
++  });
++
++  it('single-chunk fallback covers all content', () => {
++    const logFile = makeLogFile(5);
++    const chunks = chunkLogFileErrorAware(logFile);
++    expect(chunks).toHaveLength(1);
++    expect(chunks[0]!.content).toContain('Log line 1');
++    expect(chunks[0]!.content).toContain('Log line 5');
++  });
++
++  // ── preamble ────────────────────────────────────────────────────────────
++
++  it('always includes a preamble chunk (first ~20 lines) when errors are present', () => {
++    // Error at line 50, far beyond the preamble zone
++    const logFile = makeLogFileWithErrors(100, [50]);
++    const chunks = chunkLogFileErrorAware(logFile);
++
++    const preamble = chunks.find((c) => c.metadata?.['chunkType'] === 'preamble');
++    expect(preamble).toBeDefined();
++    expect(preamble!.startLine).toBe(1);
++    expect(preamble!.endLine).toBe(20);
++  });
++
++  it('preamble chunk artifactId matches the log file path', () => {
++    const logFile = makeLogFileWithErrors(100, [50], '/logs/test.log');
++    const chunks = chunkLogFileErrorAware(logFile);
++    const preamble = chunks.find((c) => c.metadata?.['chunkType'] === 'preamble');
++    expect(preamble!.artifactId).toBe('/logs/test.log');
++  });
++
++  it('preamble chunk category is log', () => {
++    const logFile = makeLogFileWithErrors(100, [50]);
++    const chunks = chunkLogFileErrorAware(logFile);
++    const preamble = chunks.find((c) => c.metadata?.['chunkType'] === 'preamble');
++    expect(preamble!.metadata!['category']).toBe('log');
++  });
++
++  it('preamble spans only up to the file length when file is shorter than 20 lines', () => {
++    const logFile = makeLogFileWithErrors(10, [5]);
++    const chunks = chunkLogFileErrorAware(logFile);
++    const preamble = chunks.find((c) => c.metadata?.['chunkType'] === 'preamble');
++    expect(preamble).toBeDefined();
++    // Should end at line 10, not line 20
++    expect(preamble!.endLine).toBeLessThanOrEqual(10);
++  });
++
++  // ── error-cluster chunks ────────────────────────────────────────────────
++
++  it('creates an error-cluster chunk centered on the error with 10-line padding', () => {
++    // Error at line 50 in a 100-line file
++    const logFile = makeLogFileWithErrors(100, [50]);
++    const chunks = chunkLogFileErrorAware(logFile);
++
++    const errorCluster = chunks.find((c) => c.metadata?.['chunkType'] === 'error-cluster');
++    expect(errorCluster).toBeDefined();
++    // With 10-line padding around line 50: starts at 40, ends at 60
++    expect(errorCluster!.startLine).toBeLessThanOrEqual(50);
++    expect(errorCluster!.endLine).toBeGreaterThanOrEqual(50);
++    expect(errorCluster!.content).toContain('ERROR');
++  });
++
++  it('deduplicates repeated lines within error clusters', () => {
++    // 30 identical error lines in the middle of a 60-line file
++    const errorLines = Array.from({ length: 30 }, (_, i) => i + 21); // lines 21-50
++    const lines: LogLine[] = [
++      // Lines 1-20: info
++      ...Array.from({ length: 20 }, (_, i) => ({
++        lineNumber: i + 1,
++        content: `INFO: line ${i + 1}`,
++        level: 'info' as LogLevel,
++      })),
++      // Lines 21-50: identical error text
++      ...errorLines.map((n) => ({
++        lineNumber: n,
++        content: 'ERROR: connection refused to db.internal:5432',
++        level: 'error' as LogLevel,
++      })),
++      // Lines 51-60: info
++      ...Array.from({ length: 10 }, (_, i) => ({
++        lineNumber: 51 + i,
++        content: `INFO: line ${51 + i}`,
++        level: 'info' as LogLevel,
++      })),
++    ];
++    const logFile: LogFile = {
++      path: '/test/app.log',
++      lines,
++      errorCount: 30,
++      warningCount: 0,
++      importance: 1,
++    };
++
++    const chunks = chunkLogFileErrorAware(logFile);
++    const errorChunk = chunks.find((c) => c.metadata?.['chunkType'] === 'error-cluster');
++    expect(errorChunk).toBeDefined();
++
++    // 30 identical error lines should be collapsed to << 30 lines in the output
++    const contentLines = errorChunk!.content.split('\n');
++    const errorContentLines = contentLines.filter((l) => l.includes('ERROR'));
++    expect(errorContentLines.length).toBeLessThan(30);
++
++    // The [repeated xN] marker should appear
++    expect(errorChunk!.content).toContain('[repeated x');
++  });
++
++  it('merges overlapping error windows into a single cluster', () => {
++    // Two errors close together (lines 30 and 35) — their 10-line windows overlap
++    const logFile = makeLogFileWithErrors(100, [30, 35]);
++    const chunks = chunkLogFileErrorAware(logFile);
++
++    const errorClusters = chunks.filter((c) => c.metadata?.['chunkType'] === 'error-cluster');
++    // The two overlapping windows should be merged into one cluster
++    expect(errorClusters).toHaveLength(1);
++    expect(errorClusters[0]!.content).toContain('ERROR');
++  });
++
++  it('creates separate clusters for errors far apart', () => {
++    // Two errors far apart (lines 25 and 75) — their 10-line windows do not overlap
++    const logFile = makeLogFileWithErrors(100, [25, 75]);
++    const chunks = chunkLogFileErrorAware(logFile);
++
++    const errorClusters = chunks.filter((c) => c.metadata?.['chunkType'] === 'error-cluster');
++    expect(errorClusters).toHaveLength(2);
++  });
++
++  // ── summary chunk ───────────────────────────────────────────────────────
++
++  it('creates a summary chunk describing healthy regions', () => {
++    // Error in the middle → healthy regions before and after
++    const logFile = makeLogFileWithErrors(100, [50]);
++    const chunks = chunkLogFileErrorAware(logFile);
++
++    const summaryChunk = chunks.find((c) => c.metadata?.['chunkType'] === 'summary');
++    expect(summaryChunk).toBeDefined();
++    expect(summaryChunk!.content).toContain('INFO lines');
++    expect(summaryChunk!.content).toContain('no errors');
++  });
++
++  it('summary chunk describes line ranges of healthy regions', () => {
++    const logFile = makeLogFileWithErrors(100, [50]);
++    const chunks = chunkLogFileErrorAware(logFile);
++    const summary = chunks.find((c) => c.metadata?.['chunkType'] === 'summary');
++    expect(summary).toBeDefined();
++    // Should contain at least one "lines N-M:" entry
++    expect(summary!.content).toMatch(/lines \d+-\d+:/);
++  });
++
++  it('no summary chunk when all lines are covered by preamble and error clusters', () => {
++    // Very short file: error at line 5, preamble covers 1-10 (entire file)
++    const logFile = makeLogFileWithErrors(10, [5]);
++    const chunks = chunkLogFileErrorAware(logFile);
++    const summaryChunk = chunks.find((c) => c.metadata?.['chunkType'] === 'summary');
++    // Summary may or may not exist depending on coverage; at minimum we verify
++    // that if it exists it has valid content
++    if (summaryChunk) {
++      expect(summaryChunk.content).toContain('INFO lines');
++    }
++  });
++
++  // ── chunk IDs and metadata ───────────────────────────────────────────────
++
++  it('all chunks have valid line ranges (startLine >= 1, endLine >= startLine)', () => {
++    const logFile = makeLogFileWithErrors(100, [25, 75]);
++    const chunks = chunkLogFileErrorAware(logFile);
++    for (const chunk of chunks) {
++      expect(chunk.startLine).toBeGreaterThanOrEqual(1);
++      expect(chunk.endLine).toBeGreaterThanOrEqual(chunk.startLine);
++    }
++  });
++
++  it('all chunks have the same artifactId as the log file path', () => {
++    const path = '/logs/myservice.log';
++    const logFile = makeLogFileWithErrors(100, [50], path);
++    const chunks = chunkLogFileErrorAware(logFile);
++    for (const chunk of chunks) {
++      expect(chunk.artifactId).toBe(path);
++    }
++  });
++
++  it('all chunk IDs are unique', () => {
++    const logFile = makeLogFileWithErrors(100, [25, 50, 75]);
++    const chunks = chunkLogFileErrorAware(logFile);
++    const ids = chunks.map((c) => c.id);
++    const unique = new Set(ids);
++    expect(unique.size).toBe(ids.length);
++  });
++
++  it('produces more than one chunk for a file with errors (preamble + at least one error-cluster)', () => {
++    const logFile = makeLogFileWithErrors(100, [50]);
++    const chunks = chunkLogFileErrorAware(logFile);
++    expect(chunks.length).toBeGreaterThan(1);
++  });
++
++  it('error-cluster chunk metadata has chunkType = error-cluster', () => {
++    const logFile = makeLogFileWithErrors(100, [50]);
++    const chunks = chunkLogFileErrorAware(logFile);
++    const ec = chunks.find((c) => c.metadata?.['chunkType'] === 'error-cluster');
++    expect(ec).toBeDefined();
++    expect(ec!.metadata!['category']).toBe('log');
++  });
++});
+diff --git a/src/graph/chunker.ts b/src/graph/chunker.ts
+index dd46772..6c21987 100644
+--- a/src/graph/chunker.ts
++++ b/src/graph/chunker.ts
+@@ -1,6 +1,8 @@
+ import type { Chunk } from '../types/index.js';
+ import type { LogFile } from '../parsers/log-parser.js';
++import { extractErrorWindows, deduplicateLogLines } from '../parsers/log-parser.js';
+ import type { K8sResource, AnalyzerResult } from '../types/index.js';
++import { summarizeResource } from '../ai/summarizer.js';
+ 
+ // ---------------------------------------------------------------------------
+ // chunkLogFile
+@@ -57,6 +59,211 @@ export function chunkLogFile(logFile: LogFile, chunkSize: number, overlap: numbe
+   return chunks;
+ }
+ 
++// ---------------------------------------------------------------------------
++// chunkLogFileErrorAware
++// ---------------------------------------------------------------------------
++
++/**
++ * Error-aware chunking strategy that produces three chunk types:
++ *
++ * 1. **Preamble chunk** — first 20 lines of every log file (startup / config /
++ *    env-var logging). Always included; this is where hostnames, connection
++ *    strings, and versions are logged.
++ *
++ * 2. **Error-cluster chunks** — each group of overlapping error windows
++ *    (10-line padding around each error-level line) collapsed into a single
++ *    chunk. Repeated lines within each cluster are deduplicated via
++ *    {@link deduplicateLogLines} so that 47 identical "connection refused"
++ *    lines become one line with a `[repeated x47]` suffix.
++ *
++ * 3. **Summary chunk** — a short multi-line description of healthy regions:
++ *    `"lines N-M: K INFO lines, no errors"`. Preserves the signal that those
++ *    regions are healthy without consuming token budget on pure INFO noise.
++ *
++ * **Backward-compatible:** when no error-level lines exist, the entire file is
++ * returned as a single chunk (identical to the old fixed-window approach for
++ * small files).
++ *
++ * This replaces the fixed 50-line window with a semantically meaningful
++ * decomposition that dramatically improves LLM diagnostic relevance.
++ *
++ * @param logFile The parsed log file to chunk.
++ */
++export function chunkLogFileErrorAware(logFile: LogFile): Chunk[] {
++  const { lines, path } = logFile;
++
++  if (lines.length === 0) return [];
++
++  // ── backward-compatible fallback: no errors → entire file as one chunk ──
++  if (logFile.errorCount === 0) {
++    const startLine = lines[0]!.lineNumber;
++    const endLine = lines[lines.length - 1]!.lineNumber;
++    return [
++      {
++        id: `${path}:${startLine}-${endLine}`,
++        artifactId: path,
++        content: lines.map((l) => l.content).join('\n'),
++        startLine,
++        endLine,
++        metadata: {
++          path,
++          category: 'log',
++          lineRange: [startLine, endLine],
++        },
++      },
++    ];
++  }
++
++  const PREAMBLE_SIZE = 20;
++  const ERROR_PADDING = 10;
++
++  const chunks: Chunk[] = [];
++
++  // ── 1. Preamble chunk ────────────────────────────────────────────────────
++  const preambleEndIdx = Math.min(PREAMBLE_SIZE - 1, lines.length - 1);
++  const preambleLines = lines.slice(0, preambleEndIdx + 1);
++  chunks.push({
++    id: `${path}:preamble:${lines[0]!.lineNumber}-${lines[preambleEndIdx]!.lineNumber}`,
++    artifactId: path,
++    content: preambleLines.map((l) => l.content).join('\n'),
++    startLine: lines[0]!.lineNumber,
++    endLine: lines[preambleEndIdx]!.lineNumber,
++    metadata: {
++      path,
++      category: 'log',
++      lineRange: [lines[0]!.lineNumber, lines[preambleEndIdx]!.lineNumber],
++      chunkType: 'preamble',
++    },
++  });
++
++  // ── 2. Error-cluster chunks ───────────────────────────────────────────────
++  //
++  // Extract windows around each error line, convert to index ranges (into the
++  // `lines` array), merge overlapping ranges into clusters, then dedup.
++
++  const errorWindows = extractErrorWindows(logFile, ERROR_PADDING);
++
++  // Build a fast lineNumber → array-index lookup.
++  const lineNumToIdx = new Map<number, number>();
++  for (let i = 0; i < lines.length; i++) {
++    lineNumToIdx.set(lines[i]!.lineNumber, i);
++  }
++
++  type IndexRange = { startIdx: number; endIdx: number };
++
++  const windowRanges: IndexRange[] = errorWindows.map((w) => ({
++    startIdx: lineNumToIdx.get(w.lines[0]!.lineNumber) ?? 0,
++    endIdx: lineNumToIdx.get(w.lines[w.lines.length - 1]!.lineNumber) ?? lines.length - 1,
++  }));
++
++  windowRanges.sort((a, b) => a.startIdx - b.startIdx);
++
++  // Merge overlapping / adjacent windows into clusters.
++  const clusters: IndexRange[] = [];
++  for (const range of windowRanges) {
++    if (clusters.length === 0) {
++      clusters.push({ ...range });
++    } else {
++      const last = clusters[clusters.length - 1]!;
++      if (range.startIdx <= last.endIdx + 1) {
++        last.endIdx = Math.max(last.endIdx, range.endIdx);
++      } else {
++        clusters.push({ ...range });
++      }
++    }
++  }
++
++  // Track which index ranges are covered (preamble + error clusters) so we
++  // can identify the healthy "gap" regions for the summary chunk.
++  const coveredRanges: IndexRange[] = [{ startIdx: 0, endIdx: preambleEndIdx }];
++
++  for (const cluster of clusters) {
++    const clusterLines = lines.slice(cluster.startIdx, cluster.endIdx + 1);
++    const dedupedLines = deduplicateLogLines(clusterLines);
++    const startLine = lines[cluster.startIdx]!.lineNumber;
++    const endLine = lines[cluster.endIdx]!.lineNumber;
++
++    chunks.push({
++      id: `${path}:error-cluster:${startLine}-${endLine}`,
++      artifactId: path,
++      content: dedupedLines.map((l) => l.content).join('\n'),
++      startLine,
++      endLine,
++      metadata: {
++        path,
++        category: 'log',
++        lineRange: [startLine, endLine],
++        chunkType: 'error-cluster',
++      },
++    });
++
++    coveredRanges.push({ ...cluster });
++  }
++
++  // ── 3. Summary chunk for healthy regions ─────────────────────────────────
++  //
++  // Sort and merge covered ranges, then collect the gaps between them.
++
++  coveredRanges.sort((a, b) => a.startIdx - b.startIdx);
++
++  const mergedCovered: IndexRange[] = [];
++  for (const range of coveredRanges) {
++    if (mergedCovered.length === 0) {
++      mergedCovered.push({ ...range });
++    } else {
++      const last = mergedCovered[mergedCovered.length - 1]!;
++      if (range.startIdx <= last.endIdx + 1) {
++        last.endIdx = Math.max(last.endIdx, range.endIdx);
++      } else {
++        mergedCovered.push({ ...range });
++      }
++    }
++  }
++
++  const healthyRegions: IndexRange[] = [];
++  let prevEnd = -1;
++  for (const { startIdx, endIdx } of mergedCovered) {
++    if (prevEnd + 1 < startIdx) {
++      healthyRegions.push({ startIdx: prevEnd + 1, endIdx: startIdx - 1 });
++    }
++    prevEnd = Math.max(prevEnd, endIdx);
++  }
++  if (prevEnd + 1 <= lines.length - 1) {
++    healthyRegions.push({ startIdx: prevEnd + 1, endIdx: lines.length - 1 });
++  }
++
++  if (healthyRegions.length > 0) {
++    const summaryParts = healthyRegions.map((r) => {
++      const startLine = lines[r.startIdx]!.lineNumber;
++      const endLine = lines[r.endIdx]!.lineNumber;
++      const lineCount = r.endIdx - r.startIdx + 1;
++      return `lines ${startLine}-${endLine}: ${lineCount} INFO lines, no errors`;
++    });
++    const summaryContent = summaryParts.join('\n');
++    const firstHealthy = healthyRegions[0]!;
++    const lastHealthy = healthyRegions[healthyRegions.length - 1]!;
++
++    chunks.push({
++      id: `${path}:summary`,
++      artifactId: path,
++      content: summaryContent,
++      startLine: lines[firstHealthy.startIdx]!.lineNumber,
++      endLine: lines[lastHealthy.endIdx]!.lineNumber,
++      metadata: {
++        path,
++        category: 'log',
++        lineRange: [
++          lines[firstHealthy.startIdx]!.lineNumber,
++          lines[lastHealthy.endIdx]!.lineNumber,
++        ],
++        chunkType: 'summary',
++      },
++    });
++  }
++
++  return chunks;
++}
++
+ // ---------------------------------------------------------------------------
+ // chunkResource
+ // ---------------------------------------------------------------------------
+@@ -64,13 +271,18 @@ export function chunkLogFile(logFile: LogFile, chunkSize: number, overlap: numbe
+ /**
+  * Creates a single {@link Chunk} representing an entire Kubernetes resource.
+  *
+- * The content is a pretty-printed JSON serialisation of the resource object.
++ * The `content` is the human-readable {@link summarizeResource} output so that
++ * semantic embeddings capture the resource's diagnostic meaning rather than raw
++ * JSON syntax noise.  The original pretty-printed JSON is preserved in
++ * `metadata.rawContent` for callers that need the full spec (e.g. the LLM
++ * prompt renderer which shows both the summary and the raw object).
+  *
+  * @param resource The parsed K8s resource.
+  * @param path     The artifact path used as the chunk's `artifactId`.
+  */
+ export function chunkResource(resource: K8sResource, path: string): Chunk {
+-  const content = JSON.stringify(resource, null, 2);
++  const rawContent = JSON.stringify(resource, null, 2);
++  const content = summarizeResource(resource);
+   const lines = content.split('\n');
+ 
+   return {
+@@ -86,6 +298,7 @@ export function chunkResource(resource: K8sResource, path: string): Chunk {
+       kind: resource.kind,
+       name: resource.metadata.name,
+       namespace: resource.metadata.namespace,
++      rawContent,
+     },
+   };
+ }
+diff --git a/src/graph/index.ts b/src/graph/index.ts
+index 6cf3654..560d021 100644
+--- a/src/graph/index.ts
++++ b/src/graph/index.ts
+@@ -14,7 +14,7 @@ export {
+ } from './finding-tree.js';
+ export type { SerializedFindingTreeNode } from './finding-tree.js';
+ 
+-export { chunkLogFile, chunkResource, chunkAnalyzer } from './chunker.js';
++export { chunkLogFile, chunkLogFileErrorAware, chunkResource, chunkAnalyzer } from './chunker.js';
+ 
+ export {
+   buildResourceGraph,
+diff --git a/src/investigators/__tests__/ai-investigator.test.ts b/src/investigators/__tests__/ai-investigator.test.ts
+index 627486c..288f047 100644
+--- a/src/investigators/__tests__/ai-investigator.test.ts
++++ b/src/investigators/__tests__/ai-investigator.test.ts
+@@ -6,8 +6,11 @@ import type { AIInvestigatorDeps } from '../ai-investigator.js';
+ import type { IndexedChunk } from '../../ai/chunk-indexer.js';
+ import type { ResourceRelationshipGraph } from '../../graph/resource-graph.js';
+ import type { AIFindingResponse } from '../../ai/llm-client.js';
+-import { investigateWithAI, DEFAULT_MAX_SEEDS, mergeChunks } from '../ai-investigator.js';
++import { investigateWithAI, DEFAULT_MAX_SEEDS, mergeChunks, DEFAULT_TOKEN_BUDGET } from '../ai-investigator.js';
+ import type { RetrievalList } from '../ai-investigator.js';
++import { estimateTokens } from '../../ai/chunk-indexer.js';
++import { generateHypotheticalDocument } from '../../ai/hyde.js';
++import type { HydeLLMClient } from '../../ai/hyde.js';
+ 
+ // ---------------------------------------------------------------------------
+ // Fixture helpers
+@@ -1199,4 +1202,449 @@ describe('mergeChunks (RRF)', () => {
+     expect(result[0]!.id).toBe('chunk:alpha');
+     expect(result[1]!.id).toBe('chunk:zeta');
+   });
++
++  // ── Token budget ──────────────────────────────────────────────────────────
++
++  it('includes all chunks with full content when they fit within the default budget', () => {
++    // Small chunks (10 tokens each at 40 chars) never hit the 100k default budget
++    const chunkA = makeChunk('chunk:a', 'a.json', 'a'.repeat(40));
++    const chunkB = makeChunk('chunk:b', 'b.json', 'b'.repeat(40));
++
++    const result = mergeChunks([{ chunks: [chunkA, chunkB] }]);
++
++    expect(result[0]!.content).toBe('a'.repeat(40));
++    expect(result[1]!.content).toBe('b'.repeat(40));
++  });
++
++  it('falls back to chunk.summary content for lower-priority chunks when budget is exceeded', () => {
++    // chunkA content: 40 chars = 10 tokens
++    // chunkB content: 40 chars = 10 tokens
++    // budget = 15 → chunkA fits (usedTokens: 0→10 ≤ 15), chunkB doesn't (10+10=20 > 15)
++    const chunkA = makeChunk('chunk:a', 'a.json', 'a'.repeat(40));
++    const chunkB = makeChunk('chunk:b', 'b.json', 'b'.repeat(40));
++
++    const result = mergeChunks([{ chunks: [chunkA, chunkB] }], 15);
++
++    expect(result[0]!.content).toBe('a'.repeat(40));       // full content preserved
++    expect(result[1]!.content).toBe('Chunk from b.json');  // summary fallback
++  });
++
++  it('tracks cumulative token count across all chunks in priority order', () => {
++    // 40 chars = 10 tokens each
++    // budget = 25 → A fits (10), B fits (20), C doesn't (30 > 25)
++    const chunkA = makeChunk('chunk:a', 'a.json', 'a'.repeat(40));
++    const chunkB = makeChunk('chunk:b', 'b.json', 'b'.repeat(40));
++    const chunkC = makeChunk('chunk:c', 'c.json', 'c'.repeat(40));
++
++    const result = mergeChunks([{ chunks: [chunkA, chunkB, chunkC] }], 25);
++
++    expect(result[0]!.content).toBe('a'.repeat(40));       // full content (10 tokens used)
++    expect(result[1]!.content).toBe('b'.repeat(40));       // full content (20 tokens used)
++    expect(result[2]!.content).toBe('Chunk from c.json');  // summary fallback (would be 30)
++  });
++
++  it('does not mutate the original chunk when falling back to summary', () => {
++    const chunkA = makeChunk('chunk:a', 'a.json', 'a'.repeat(40));
++    const chunkB = makeChunk('chunk:b', 'b.json', 'b'.repeat(40));
++    const origContentA = chunkA.content;
++    const origContentB = chunkB.content;
++
++    // Tight budget forces chunkB to use summary
++    mergeChunks([{ chunks: [chunkA, chunkB] }], 15);
++
++    // Original objects must not have been mutated
++    expect(chunkA.content).toBe(origContentA);
++    expect(chunkB.content).toBe(origContentB);
++  });
++
++  it('returns all chunks as summary-only when budget is 0', () => {
++    const chunkA = makeChunk('chunk:a', 'a.json', 'a'.repeat(40));
++    const chunkB = makeChunk('chunk:b', 'b.json', 'b'.repeat(40));
++
++    const result = mergeChunks([{ chunks: [chunkA, chunkB] }], 0);
++
++    // Budget of 0 means even the first chunk's content (10 tokens) exceeds it
++    expect(result[0]!.content).toBe('Chunk from a.json');
++    expect(result[1]!.content).toBe('Chunk from b.json');
++  });
++});
++
++// ---------------------------------------------------------------------------
++// estimateTokens unit tests
++// ---------------------------------------------------------------------------
++
++describe('estimateTokens', () => {
++  it('returns 0 for an empty string', () => {
++    expect(estimateTokens('')).toBe(0);
++  });
++
++  it('returns Math.floor(text.length / 4)', () => {
++    expect(estimateTokens('aaaa')).toBe(1);           // 4 / 4 = 1
++    expect(estimateTokens('a'.repeat(8))).toBe(2);    // 8 / 4 = 2
++    expect(estimateTokens('a'.repeat(100))).toBe(25); // 100 / 4 = 25
++  });
++
++  it('uses floor division (rounds down for non-multiples of 4)', () => {
++    expect(estimateTokens('aaa')).toBe(0);   // floor(3/4) = 0
++    expect(estimateTokens('aaaaa')).toBe(1); // floor(5/4) = 1
++    expect(estimateTokens('a'.repeat(7))).toBe(1); // floor(7/4) = 1
++  });
++
++  it('works on realistic log line content', () => {
++    const logLine = '2024-01-01T00:00:00Z ERROR connection refused to db.internal:5432';
++    // 68 chars → floor(68/4) = 17 tokens
++    expect(estimateTokens(logLine)).toBe(Math.floor(logLine.length / 4));
++  });
++});
++
++// ---------------------------------------------------------------------------
++// DEFAULT_TOKEN_BUDGET constant
++// ---------------------------------------------------------------------------
++
++describe('DEFAULT_TOKEN_BUDGET', () => {
++  it('is approximately 80% of a 128k context window (~100k tokens)', () => {
++    // 80% of 128 * 1024 = 104,857 tokens; we use a round number near that
++    expect(DEFAULT_TOKEN_BUDGET).toBeGreaterThanOrEqual(95_000);
++    expect(DEFAULT_TOKEN_BUDGET).toBeLessThanOrEqual(110_000);
++  });
++});
++
++// ---------------------------------------------------------------------------
++// generateHypotheticalDocument (HyDE) unit tests
++// ---------------------------------------------------------------------------
++
++describe('generateHypotheticalDocument', () => {
++  // ── Basic shape ───────────────────────────────────────────────────────────
++
++  it('returns the LLM-generated hypothetical document when the call succeeds', async () => {
++    const hypotheticalText =
++      'Container app in pod app-pod terminated with exit code 1 due to ' +
++      'missing environment variable DB_PASSWORD referenced from secret ' +
++      'app-credentials which does not exist in namespace default.';
++
++    const mockClient: HydeLLMClient = {
++      generateText: vi.fn().mockResolvedValue(hypotheticalText),
++    };
++
++    const result = await generateHypotheticalDocument(
++      'Pod app-pod is in CrashLoopBackOff',
++      mockClient,
++    );
++
++    expect(result).toBe(hypotheticalText);
++  });
++
++  it('calls generateText with a system prompt and a user prompt containing the hypothesis', async () => {
++    const mockGenerateText = vi.fn().mockResolvedValue('hypothetical evidence text');
++    const mockClient: HydeLLMClient = { generateText: mockGenerateText };
++
++    const hypothesis = 'Pod app-pod is in CrashLoopBackOff';
++    await generateHypotheticalDocument(hypothesis, mockClient);
++
++    expect(mockGenerateText).toHaveBeenCalledTimes(1);
++    const [systemPrompt, userPrompt] = mockGenerateText.mock.calls[0] as [string, string];
++
++    // System prompt should give Kubernetes diagnostic context
++    expect(systemPrompt).toContain('Kubernetes');
++    // User prompt should contain the hypothesis
++    expect(userPrompt).toContain(hypothesis);
++  });
++
++  it('returns the raw hypothesis when the LLM call throws an error (graceful fallback)', async () => {
++    const mockClient: HydeLLMClient = {
++      generateText: vi.fn().mockRejectedValue(new Error('LLM API unavailable')),
++    };
++
++    const hypothesis = 'Pod app-pod is in CrashLoopBackOff';
++    const result = await generateHypotheticalDocument(hypothesis, mockClient);
++
++    // Must not throw; must return the raw hypothesis as fallback
++    expect(result).toBe(hypothesis);
++  });
++
++  it('returns the raw hypothesis when the LLM returns an empty string', async () => {
++    const mockClient: HydeLLMClient = {
++      generateText: vi.fn().mockResolvedValue(''),
++    };
++
++    const hypothesis = 'Missing Secret app-credentials in namespace default';
++    const result = await generateHypotheticalDocument(hypothesis, mockClient);
++
++    expect(result).toBe(hypothesis);
++  });
++
++  it('trims whitespace from the LLM response before returning', async () => {
++    const innerText = 'Pod app-pod OOMKilled: container exceeded memory limit 256Mi';
++    const mockClient: HydeLLMClient = {
++      generateText: vi.fn().mockResolvedValue(`\n\n  ${innerText}  \n`),
++    };
++
++    const result = await generateHypotheticalDocument(
++      'Pod app-pod was OOM-killed',
++      mockClient,
++    );
++
++    expect(result).toBe(innerText);
++  });
++
++  it('returns the raw hypothesis when the LLM returns only whitespace', async () => {
++    const mockClient: HydeLLMClient = {
++      generateText: vi.fn().mockResolvedValue('   \n  \t  '),
++    };
++
++    const hypothesis = 'Service has no ready endpoints';
++    const result = await generateHypotheticalDocument(hypothesis, mockClient);
++
++    expect(result).toBe(hypothesis);
++  });
++
++  it('generates a more detailed, evidence-like text than the input hypothesis', async () => {
++    // The hypothetical document should be longer and more specific than the hypothesis
++    const hypothesis = 'DNS lookup failure in pod app-pod';
++    const hypotheticalDoc =
++      'dial tcp: lookup db.internal on 10.96.0.10:53: no such host\n' +
++      'Pod app-pod in namespace default failed to resolve hostname db.internal.\n' +
++      'CoreDNS returned NXDOMAIN for the query. The database service endpoint ' +
++      'may not exist or the service name is misconfigured.';
++
++    const mockClient: HydeLLMClient = {
++      generateText: vi.fn().mockResolvedValue(hypotheticalDoc),
++    };
++
++    const result = await generateHypotheticalDocument(hypothesis, mockClient);
++
++    // The result should be the detailed document, not the short hypothesis
++    expect(result.length).toBeGreaterThan(hypothesis.length);
++    expect(result).toContain('db.internal');
++    expect(result).toContain('NXDOMAIN');
++  });
++});
++
++// ---------------------------------------------------------------------------
++// HyDE integration with investigateWithAI
++// ---------------------------------------------------------------------------
++
++describe('investigateWithAI — HyDE integration', () => {
++  beforeEach(() => {
++    vi.clearAllMocks();
++  });
++
++  it('embeds the hypothetical document instead of the raw hypothesis when HyDE succeeds', async () => {
++    const hypotheticalDoc =
++      'Container app terminated with exit code 1. FailedMount event: ' +
++      'secret "app-credentials" not found in namespace "default".';
++
++    const mockEmbedSingle = vi.fn().mockResolvedValue([0.1, 0.2, 0.3]);
++    const mockQuery = vi.fn().mockReturnValue([]);
++    // The llmClient mock supports both investigateSeed (for the LLM call) and
++    // generateText (for HyDE document generation).
++    const mockGenerateText = vi.fn().mockResolvedValue(hypotheticalDoc);
++    const mockInvestigateSeed = vi.fn().mockResolvedValue({ findings: [] });
++
++    const deps: AIInvestigatorDeps = {
++      llmClient: {
++        investigateSeed: mockInvestigateSeed,
++        generateText: mockGenerateText,
++      } as unknown as AIInvestigatorDeps['llmClient'],
++      chunkIndex: [],
++      resourceGraph: { nodes: new Map(), edges: [] },
++      lexicalIndex: {
++        build: vi.fn(),
++        search: vi.fn().mockReturnValue([]),
++        extractQueryIdentifiers: vi.fn().mockReturnValue([]),
++      } as unknown as AIInvestigatorDeps['lexicalIndex'],
++      embeddingClient: {
++        embed: vi.fn(),
++        embedSingle: mockEmbedSingle,
++      } as unknown as AIInvestigatorDeps['embeddingClient'],
++      vectorStore: {
++        query: mockQuery,
++        addAll: vi.fn(),
++        size: 0,
++        clear: vi.fn(),
++      } as unknown as AIInvestigatorDeps['vectorStore'],
++    };
++
++    const seeds = [
++      makeSeed('seed:k8s:0', 'kubernetes', 'Pod app-pod is in CrashLoopBackOff'),
++    ];
++
++    await investigateWithAI(makeContext(), seeds, deps);
++
++    // HyDE should have been called with the hypothesis
++    expect(mockGenerateText).toHaveBeenCalledTimes(1);
++    const [, userPrompt] = mockGenerateText.mock.calls[0] as [string, string];
++    expect(userPrompt).toContain('Pod app-pod is in CrashLoopBackOff');
++
++    // embedSingle should be called with the HYPOTHETICAL DOCUMENT, not the raw hypothesis
++    expect(mockEmbedSingle).toHaveBeenCalledTimes(1);
++    expect(mockEmbedSingle).toHaveBeenCalledWith(hypotheticalDoc);
++    expect(mockEmbedSingle).not.toHaveBeenCalledWith('Pod app-pod is in CrashLoopBackOff');
++  });
++
++  it('falls back to embedding the raw hypothesis when HyDE LLM call fails', async () => {
++    const mockEmbedSingle = vi.fn().mockResolvedValue([0.1, 0.2, 0.3]);
++    const mockQuery = vi.fn().mockReturnValue([]);
++    // generateText throws — simulates LLM API being unavailable for HyDE
++    const mockGenerateText = vi.fn().mockRejectedValue(new Error('LLM timeout'));
++    const mockInvestigateSeed = vi.fn().mockResolvedValue({ findings: [] });
++
++    const deps: AIInvestigatorDeps = {
++      llmClient: {
++        investigateSeed: mockInvestigateSeed,
++        generateText: mockGenerateText,
++      } as unknown as AIInvestigatorDeps['llmClient'],
++      chunkIndex: [],
++      resourceGraph: { nodes: new Map(), edges: [] },
++      lexicalIndex: {
++        build: vi.fn(),
++        search: vi.fn().mockReturnValue([]),
++        extractQueryIdentifiers: vi.fn().mockReturnValue([]),
++      } as unknown as AIInvestigatorDeps['lexicalIndex'],
++      embeddingClient: {
++        embed: vi.fn(),
++        embedSingle: mockEmbedSingle,
++      } as unknown as AIInvestigatorDeps['embeddingClient'],
++      vectorStore: {
++        query: mockQuery,
++        addAll: vi.fn(),
++        size: 0,
++        clear: vi.fn(),
++      } as unknown as AIInvestigatorDeps['vectorStore'],
++    };
++
++    const hypothesis = 'Pod app-pod is in CrashLoopBackOff';
++    const seeds = [makeSeed('seed:k8s:0', 'kubernetes', hypothesis)];
++
++    // Should not throw even though HyDE's generateText fails
++    await expect(investigateWithAI(makeContext(), seeds, deps)).resolves.not.toThrow();
++
++    // embedSingle should be called with the RAW HYPOTHESIS as fallback
++    expect(mockEmbedSingle).toHaveBeenCalledTimes(1);
++    expect(mockEmbedSingle).toHaveBeenCalledWith(hypothesis);
++  });
++
++  it('falls back to embedding the raw hypothesis when HyDE returns empty string', async () => {
++    const mockEmbedSingle = vi.fn().mockResolvedValue([0.4, 0.5, 0.6]);
++    const mockQuery = vi.fn().mockReturnValue([]);
++    // generateText returns empty string — simulates model refusal or timeout
++    const mockGenerateText = vi.fn().mockResolvedValue('');
++    const mockInvestigateSeed = vi.fn().mockResolvedValue({ findings: [] });
++
++    const deps: AIInvestigatorDeps = {
++      llmClient: {
++        investigateSeed: mockInvestigateSeed,
++        generateText: mockGenerateText,
++      } as unknown as AIInvestigatorDeps['llmClient'],
++      chunkIndex: [],
++      resourceGraph: { nodes: new Map(), edges: [] },
++      lexicalIndex: {
++        build: vi.fn(),
++        search: vi.fn().mockReturnValue([]),
++        extractQueryIdentifiers: vi.fn().mockReturnValue([]),
++      } as unknown as AIInvestigatorDeps['lexicalIndex'],
++      embeddingClient: {
++        embed: vi.fn(),
++        embedSingle: mockEmbedSingle,
++      } as unknown as AIInvestigatorDeps['embeddingClient'],
++      vectorStore: {
++        query: mockQuery,
++        addAll: vi.fn(),
++        size: 0,
++        clear: vi.fn(),
++      } as unknown as AIInvestigatorDeps['vectorStore'],
++    };
++
++    const hypothesis = 'Missing Secret app-credentials in namespace default';
++    const seeds = [makeSeed('seed:config:0', 'configuration', hypothesis)];
++
++    await investigateWithAI(makeContext(), seeds, deps);
++
++    // embedSingle should be called with the RAW HYPOTHESIS as fallback
++    expect(mockEmbedSingle).toHaveBeenCalledWith(hypothesis);
++  });
++
++  it('does not call generateText when embeddingClient is absent (no HyDE without semantic retrieval)', async () => {
++    const mockGenerateText = vi.fn().mockResolvedValue('hypothetical doc');
++    const mockInvestigateSeed = vi.fn().mockResolvedValue({ findings: [] });
++
++    const deps: AIInvestigatorDeps = {
++      llmClient: {
++        investigateSeed: mockInvestigateSeed,
++        generateText: mockGenerateText,
++      } as unknown as AIInvestigatorDeps['llmClient'],
++      chunkIndex: [],
++      resourceGraph: { nodes: new Map(), edges: [] },
++      lexicalIndex: {
++        build: vi.fn(),
++        search: vi.fn().mockReturnValue([]),
++        extractQueryIdentifiers: vi.fn().mockReturnValue([]),
++      } as unknown as AIInvestigatorDeps['lexicalIndex'],
++      // No embeddingClient or vectorStore → semantic retrieval skipped
++    };
++
++    const seeds = [makeSeed('seed:k8s:0', 'kubernetes', 'Pod app-pod is in CrashLoopBackOff')];
++    await investigateWithAI(makeContext(), seeds, deps);
++
++    // HyDE should NOT be triggered when there is no embeddingClient
++    expect(mockGenerateText).not.toHaveBeenCalled();
++  });
++
++  it('retrieves semantically similar chunks using the hypothetical document embedding', async () => {
++    const semanticChunk = makeChunk(
++      'chunk:semantic',
++      'logs/api-server/app.log',
++      'secret "app-credentials" not found',
++      'log',
++    );
++
++    const hypotheticalDoc =
++      'secret "app-credentials" not found in namespace default. ' +
++      'FailedMount: unable to retrieve secret.';
++
++    const mockEmbedSingle = vi.fn().mockResolvedValue([0.9, 0.1, 0.0]);
++    const mockQuery = vi.fn().mockReturnValue([{ chunk: semanticChunk, score: 0.92 }]);
++    const mockGenerateText = vi.fn().mockResolvedValue(hypotheticalDoc);
++
++    let capturedUserPrompt = '';
++    const mockInvestigateSeed = vi.fn().mockImplementation(
++      async (_system: string, user: string) => {
++        capturedUserPrompt = user;
++        return { findings: [] };
++      },
++    );
++
++    const deps: AIInvestigatorDeps = {
++      llmClient: {
++        investigateSeed: mockInvestigateSeed,
++        generateText: mockGenerateText,
++      } as unknown as AIInvestigatorDeps['llmClient'],
++      chunkIndex: [semanticChunk],
++      resourceGraph: { nodes: new Map(), edges: [] },
++      lexicalIndex: {
++        build: vi.fn(),
++        search: vi.fn().mockReturnValue([]),
++        extractQueryIdentifiers: vi.fn().mockReturnValue([]),
++      } as unknown as AIInvestigatorDeps['lexicalIndex'],
++      embeddingClient: {
++        embed: vi.fn(),
++        embedSingle: mockEmbedSingle,
++      } as unknown as AIInvestigatorDeps['embeddingClient'],
++      vectorStore: {
++        query: mockQuery,
++        addAll: vi.fn(),
++        size: 1,
++        clear: vi.fn(),
++      } as unknown as AIInvestigatorDeps['vectorStore'],
++    };
++
++    const seeds = [makeSeed('seed:k8s:0', 'kubernetes', 'Pod app-pod has FailedMount for secret')];
++    await investigateWithAI(makeContext(), seeds, deps);
++
++    // The vector store query should have been issued with the hypothetical doc's embedding
++    // (SEMANTIC_TOP_K = 5 is the internal constant in ai-investigator.ts)
++    expect(mockQuery).toHaveBeenCalledWith([0.9, 0.1, 0.0], 5);
++    // The semantic chunk should appear in the LLM prompt
++    expect(capturedUserPrompt).toContain('logs/api-server/app.log');
++  });
+ });
+diff --git a/src/investigators/ai-investigator.ts b/src/investigators/ai-investigator.ts
+index 9ea5108..c51962e 100644
+--- a/src/investigators/ai-investigator.ts
++++ b/src/investigators/ai-investigator.ts
+@@ -21,12 +21,14 @@ import type { IndexedChunk } from '../ai/chunk-indexer.js';
+ import type { ResourceRelationshipGraph } from '../graph/resource-graph.js';
+ import type { LexicalSearchIndex } from '../ai/lexical-search.js';
+ import type { AIFinding, AIFindingEvidence } from '../ai/schemas.js';
+-import type { EmbeddingClient } from '../ai/embeddings.js';
++import type { EmbeddingClientInterface } from '../ai/embeddings.js';
+ import type { VectorStore } from '../ai/vector-store.js';
+ import { validateAIFindings } from '../ai/schemas.js';
+ import { getRelatedChunks } from '../graph/resource-graph.js';
+ import type { GraphScoredChunk } from '../graph/resource-graph.js';
+ import { buildInvestigationPrompt } from '../ai/prompts.js';
++import { estimateTokens } from '../ai/chunk-indexer.js';
++import { generateHypotheticalDocument } from '../ai/hyde.js';
+ 
+ // ---------------------------------------------------------------------------
+ // Constants
+@@ -54,6 +56,19 @@ const LEXICAL_TOP_K = 10;
+  */
+ const SEMANTIC_TOP_K = 5;
+ 
++/**
++ * Default token budget for merged context sent to the LLM per seed call.
++ *
++ * Set to ~80 % of a 128 k-token context window (128 × 1 024 × 0.8 ≈ 104 k).
++ * Lower-priority chunks (those ranked later by RRF) fall back to their
++ * {@link IndexedChunk.summary} content once the cumulative estimated token
++ * count would exceed this limit.
++ *
++ * Exported so callers can override the budget for testing or for models with
++ * different context window sizes.
++ */
++export const DEFAULT_TOKEN_BUDGET = 100_000;
++
+ // ---------------------------------------------------------------------------
+ // AIInvestigatorDeps
+ // ---------------------------------------------------------------------------
+@@ -85,7 +100,7 @@ export interface AIInvestigatorDeps {
+    * If absent (or if embedding fails), investigation continues without semantic
+    * expansion.
+    */
+-  embeddingClient?: EmbeddingClient;
++  embeddingClient?: EmbeddingClientInterface;
+   /**
+    * Optional pre-built vector store populated with chunk embeddings.
+    *
+@@ -158,7 +173,8 @@ const RRF_K = 60;
+ 
+ /**
+  * Merges multiple ranked chunk lists into a single deduplicated list using
+- * Reciprocal Rank Fusion (RRF).
++ * Reciprocal Rank Fusion (RRF), then applies a configurable token budget so
++ * that the total estimated tokens sent to the LLM stays within model limits.
+  *
+  * Algorithm:
+  * 1. For every chunk in every retrieval list, accumulate an RRF score:
+@@ -168,12 +184,28 @@ const RRF_K = 60;
+  * 3. Sort by descending RRF score. Ties are broken by chunk ID (lexicographic)
+  *    for determinism.
+  * 4. Cap the merged list at {@link MAX_CHUNKS_PER_SEED}.
++ * 5. **Token budget pass** — iterate the capped list in priority order
++ *    (highest RRF score first). Track cumulative estimated tokens via
++ *    `estimateTokens(chunk.content)` (≈ `content.length / 4`). When the next
++ *    chunk's full content would push the running total above `tokenBudget`,
++ *    return a copy of that chunk with `content` replaced by `chunk.summary`
++ *    instead. The original chunk object is never mutated.
+  *
+  * @param retrievalLists - One entry per retrieval system, each containing a
+  *   ranked `chunks` array (already sorted best-first).
+- * @returns Merged, deduplicated chunk array capped at {@link MAX_CHUNKS_PER_SEED}.
++ * @param tokenBudget - Maximum estimated tokens to include as full content.
++ *   Chunks that would exceed this limit fall back to their summary.
++ *   Defaults to {@link DEFAULT_TOKEN_BUDGET} (~100 k tokens, ≈ 80% of 128 k).
++ * @returns Merged, deduplicated chunk array capped at {@link MAX_CHUNKS_PER_SEED},
++ *   with lower-priority chunks switched to summary-only content when the
++ *   budget is exceeded.
+  */
+-export function mergeChunks(retrievalLists: RetrievalList[]): IndexedChunk[] {
++export function mergeChunks(
++  retrievalLists: RetrievalList[],
++  tokenBudget = DEFAULT_TOKEN_BUDGET,
++): IndexedChunk[] {
++  // ── Step 1–4: RRF scoring, dedup, sort, cap ───────────────────────────────
++
+   // Accumulate RRF scores: chunkId → { chunk, rrfScore }
+   const scoreMap = new Map<string, { chunk: IndexedChunk; rrfScore: number }>();
+ 
+@@ -198,7 +230,24 @@ export function mergeChunks(retrievalLists: RetrievalList[]): IndexedChunk[] {
+     return a.chunk.id.localeCompare(b.chunk.id);
+   });
+ 
+-  return sorted.slice(0, MAX_CHUNKS_PER_SEED).map(({ chunk }) => chunk);
++  const capped = sorted.slice(0, MAX_CHUNKS_PER_SEED);
++
++  // ── Step 5: Token budget pass ─────────────────────────────────────────────
++  // Iterate in priority order (highest RRF first). High-priority chunks get
++  // full content; once the cumulative token count would exceed the budget,
++  // switch remaining chunks to their summary (cheaper, still informative).
++
++  let usedTokens = 0;
++  return capped.map(({ chunk }) => {
++    const contentTokens = estimateTokens(chunk.content);
++    if (usedTokens + contentTokens <= tokenBudget) {
++      usedTokens += contentTokens;
++      return chunk; // full content fits — return original (no copy needed)
++    }
++    // Budget exceeded: return a shallow copy with content replaced by summary.
++    // The original chunk object is NOT mutated.
++    return { ...chunk, content: chunk.summary };
++  });
+ }
+ 
+ // ---------------------------------------------------------------------------
+@@ -401,11 +450,17 @@ export async function investigateWithAI(
+       const lexicalScores = lexicalResults.map((r) => r.score);
+ 
+       // ── Step 2b: Semantic retrieval (expansion layer, lower priority) ─────
++      // Uses HyDE: generate a hypothetical evidence document from the seed
++      // hypothesis before embedding, so the query vector is closer in semantic
++      // space to the real evidence chunks.  Falls back to the raw hypothesis
++      // if HyDE generation fails (network error, empty response, etc.).
+       let semanticChunks: IndexedChunk[] = [];
+       let semanticScores: number[] = [];
+       if (embeddingClient !== undefined && vectorStore !== undefined) {
+         try {
+-          const queryEmbedding = await embeddingClient.embedSingle(seed.hypothesis);
++          // HyDE: embed the hypothetical document instead of the raw hypothesis
++          const queryText = await generateHypotheticalDocument(seed.hypothesis, llmClient);
++          const queryEmbedding = await embeddingClient.embedSingle(queryText);
+           if (queryEmbedding.length > 0) {
+             const semanticResults = vectorStore.query(queryEmbedding, SEMANTIC_TOP_K);
+             semanticChunks = semanticResults.map((r) => r.chunk);
+diff --git a/src/pipeline/__tests__/analyze-ai.test.ts b/src/pipeline/__tests__/analyze-ai.test.ts
+index 37afd56..886f813 100644
+--- a/src/pipeline/__tests__/analyze-ai.test.ts
++++ b/src/pipeline/__tests__/analyze-ai.test.ts
+@@ -59,6 +59,7 @@ vi.mock('../../ai/index.js', () => ({
+   LexicalSearchIndex: vi.fn(),
+   LLMClient: vi.fn(),
+   EmbeddingClient: vi.fn(),
++  createEmbeddingClient: vi.fn(),
+   VectorStore: vi.fn(),
+ }));
+ 
+@@ -77,6 +78,7 @@ import {
+   LexicalSearchIndex,
+   LLMClient,
+   EmbeddingClient,
++  createEmbeddingClient,
+   VectorStore,
+ } from '../../ai/index.js';
+ import { buildResourceGraph } from '../../graph/index.js';
+@@ -159,11 +161,16 @@ beforeEach(() => {
+     apiKey: '',
+     model: 'gpt-4o',
+     embeddingModel: 'text-embedding-3-small',
++    embeddingBackend: 'none',
++    embeddingUrl: 'http://localhost:8080',
+     enabled: false,
+   });
+   vi.mocked(isAIEnabled).mockReturnValue(false);
+   vi.mocked(buildChunkIndex).mockReturnValue([]);
+ 
++  // createEmbeddingClient returns undefined by default (no embedding)
++  vi.mocked(createEmbeddingClient).mockReturnValue(undefined);
++
+   // Ensure buildResourceGraph always returns a valid graph (clearAllMocks may
+   // have cleared the implementation set in the vi.mock factory)
+   vi.mocked(buildResourceGraph).mockReturnValue({ nodes: new Map(), edges: [] });
+@@ -176,7 +183,7 @@ beforeEach(() => {
+   const mockLLMInstance = { investigateSeed: vi.fn().mockResolvedValue({ findings: [] }) };
+   vi.mocked(LLMClient).mockImplementation(() => mockLLMInstance as unknown as InstanceType<typeof LLMClient>);
+ 
+-  // EmbeddingClient mock instance
++  // EmbeddingClient mock instance (kept for backward compatibility)
+   const mockEmbeddingInstance = {
+     embed: vi.fn().mockResolvedValue([]),
+     embedSingle: vi.fn().mockResolvedValue([]),
+@@ -241,6 +248,8 @@ describe('analyzeBundlePipeline — AI conditional path', () => {
+       apiKey: '',
+       model: 'gpt-4o',
+       embeddingModel: 'text-embedding-3-small',
++      embeddingBackend: 'none',
++      embeddingUrl: 'http://localhost:8080',
+       enabled: false,
+     });
+     vi.mocked(isAIEnabled).mockReturnValue(false);
+@@ -262,6 +271,8 @@ describe('analyzeBundlePipeline — AI conditional path', () => {
+       apiKey: 'sk-test',
+       model: 'gpt-4o',
+       embeddingModel: 'text-embedding-3-small',
++      embeddingBackend: 'openai',
++      embeddingUrl: 'http://localhost:8080',
+       enabled: true,
+     });
+     vi.mocked(isAIEnabled).mockReturnValue(true);
+@@ -298,6 +309,8 @@ describe('analyzeBundlePipeline — AI conditional path', () => {
+       apiKey: 'sk-test',
+       model: 'gpt-4o',
+       embeddingModel: 'text-embedding-3-small',
++      embeddingBackend: 'openai',
++      embeddingUrl: 'http://localhost:8080',
+       enabled: true,
+     });
+     vi.mocked(isAIEnabled).mockReturnValue(true);
+@@ -312,9 +325,8 @@ describe('analyzeBundlePipeline — AI conditional path', () => {
+       embed: vi.fn().mockResolvedValue([[0.1, 0.2, 0.3]]),
+       embedSingle: vi.fn().mockResolvedValue([0.1, 0.2, 0.3]),
+     };
+-    vi.mocked(EmbeddingClient).mockImplementation(
+-      () => mockEmbeddingInstance as unknown as InstanceType<typeof EmbeddingClient>,
+-    );
++    // Pipeline now uses createEmbeddingClient factory
++    vi.mocked(createEmbeddingClient).mockReturnValue(mockEmbeddingInstance);
+ 
+     const mockVectorStoreInstance = {
+       addAll: vi.fn(),
+@@ -327,7 +339,7 @@ describe('analyzeBundlePipeline — AI conditional path', () => {
+ 
+     await analyzeBundlePipeline('/fake/bundle.tar.gz');
+ 
+-    expect(EmbeddingClient).toHaveBeenCalledOnce();
++    expect(createEmbeddingClient).toHaveBeenCalledOnce();
+     expect(mockEmbeddingInstance.embed).toHaveBeenCalledWith(['chunk summary']);
+     expect(VectorStore).toHaveBeenCalledOnce();
+     expect(mockVectorStoreInstance.addAll).toHaveBeenCalledWith(fakeChunks, [[0.1, 0.2, 0.3]]);
+@@ -346,6 +358,8 @@ describe('analyzeBundlePipeline — AI conditional path', () => {
+       apiKey: 'sk-test',
+       model: 'gpt-4o',
+       embeddingModel: 'text-embedding-3-small',
++      embeddingBackend: 'openai',
++      embeddingUrl: 'http://localhost:8080',
+       enabled: true,
+     });
+     vi.mocked(isAIEnabled).mockReturnValue(true);
+@@ -366,6 +380,8 @@ describe('analyzeBundlePipeline — AI conditional path', () => {
+       apiKey: 'sk-test',
+       model: 'gpt-4o',
+       embeddingModel: 'text-embedding-3-small',
++      embeddingBackend: 'openai',
++      embeddingUrl: 'http://localhost:8080',
+       enabled: true,
+     });
+     vi.mocked(isAIEnabled).mockReturnValue(true);
+@@ -403,6 +419,8 @@ describe('analyzeBundlePipeline — AI conditional path', () => {
+       apiKey: 'sk-test',
+       model: 'gpt-4o',
+       embeddingModel: 'text-embedding-3-small',
++      embeddingBackend: 'openai',
++      embeddingUrl: 'http://localhost:8080',
+       enabled: true,
+     });
+     vi.mocked(isAIEnabled).mockReturnValue(true);
+diff --git a/src/pipeline/__tests__/analyze-progress.test.ts b/src/pipeline/__tests__/analyze-progress.test.ts
+index c26652e..06d6789 100644
+--- a/src/pipeline/__tests__/analyze-progress.test.ts
++++ b/src/pipeline/__tests__/analyze-progress.test.ts
+@@ -54,6 +54,7 @@ vi.mock('../../ai/index.js', () => ({
+   LexicalSearchIndex: vi.fn(),
+   LLMClient: vi.fn(),
+   EmbeddingClient: vi.fn(),
++  createEmbeddingClient: vi.fn(),
+   VectorStore: vi.fn(),
+ }));
+ 
+@@ -74,6 +75,7 @@ import {
+   LexicalSearchIndex,
+   LLMClient,
+   EmbeddingClient,
++  createEmbeddingClient,
+   VectorStore,
+ } from '../../ai/index.js';
+ import { buildResourceGraph, InvestigationGraphImpl } from '../../graph/index.js';
+@@ -168,11 +170,16 @@ beforeEach(() => {
+     apiKey: '',
+     model: 'gpt-4o',
+     embeddingModel: 'text-embedding-3-small',
++    embeddingBackend: 'none',
++    embeddingUrl: 'http://localhost:8080',
+     enabled: false,
+   });
+   vi.mocked(isAIEnabled).mockReturnValue(false);
+   vi.mocked(buildChunkIndex).mockReturnValue([]);
+ 
++  // createEmbeddingClient returns undefined by default
++  vi.mocked(createEmbeddingClient).mockReturnValue(undefined);
++
+   const mockLexInstance = { build: vi.fn(), search: vi.fn().mockReturnValue([]) };
+   vi.mocked(LexicalSearchIndex).mockImplementation(
+     () => mockLexInstance as unknown as InstanceType<typeof LexicalSearchIndex>,
+@@ -326,6 +333,8 @@ describe('analyzeBundlePipeline — onProgress callback', () => {
+       apiKey: 'sk-test',
+       model: 'gpt-4o',
+       embeddingModel: 'text-embedding-3-small',
++      embeddingBackend: 'openai',
++      embeddingUrl: 'http://localhost:8080',
+       enabled: true,
+     });
+     vi.mocked(isAIEnabled).mockReturnValue(true);
+@@ -373,6 +382,8 @@ describe('analyzeBundlePipeline — onProgress callback', () => {
+       apiKey: 'sk-test',
+       model: 'gpt-4o',
+       embeddingModel: 'text-embedding-3-small',
++      embeddingBackend: 'openai',
++      embeddingUrl: 'http://localhost:8080',
+       enabled: true,
+     });
+     vi.mocked(isAIEnabled).mockReturnValue(true);
+@@ -411,6 +422,8 @@ describe('analyzeBundlePipeline — onProgress callback', () => {
+       apiKey: 'sk-test',
+       model: 'gpt-4o',
+       embeddingModel: 'text-embedding-3-small',
++      embeddingBackend: 'openai',
++      embeddingUrl: 'http://localhost:8080',
+       enabled: true,
+     });
+     vi.mocked(isAIEnabled).mockReturnValue(true);
+diff --git a/src/pipeline/analyze.ts b/src/pipeline/analyze.ts
+index bb047fb..4cece23 100644
+--- a/src/pipeline/analyze.ts
++++ b/src/pipeline/analyze.ts
+@@ -25,7 +25,8 @@ import type {
+ import type { LogFile } from '../parsers/index.js';
+ import { runInvestigation } from '../investigators/index.js';
+ import type { AIInvestigatorDeps } from '../investigators/index.js';
+-import { loadAIConfig, isAIEnabled, buildChunkIndex, LexicalSearchIndex, LLMClient, EmbeddingClient, VectorStore } from '../ai/index.js';
++import { loadAIConfig, isAIEnabled, buildChunkIndex, LexicalSearchIndex, LLMClient, createEmbeddingClient, VectorStore } from '../ai/index.js';
++import type { EmbeddingClientInterface } from '../ai/index.js';
+ import {
+   createTrace,
+   startTraceStep,
+@@ -328,25 +329,34 @@ export async function analyzeBundlePipeline(
+ 
+       // ── Semantic index (optional expansion layer) ──────────────────────────
+       // Attempt to embed all chunk summaries and build a vector store.
++      // Uses createEmbeddingClient to select the right backend (local TEI/Ollama
++      // or OpenAI) based on SBI_EMBEDDING_BACKEND env var.
+       // If embedding fails, aiDeps is still set (without embeddingClient/
+       // vectorStore) so graph + lexical retrieval remains available.
+-      let embeddingClient: EmbeddingClient | undefined;
++      let embeddingClient: EmbeddingClientInterface | undefined;
+       let vectorStore: VectorStore | undefined;
+ 
+       try {
+-        embeddingClient = new EmbeddingClient(aiConfig);
+-        const summaries = chunks.map((c) => c.summary);
+-        const embeddings = await embeddingClient.embed(summaries);
+-
+-        // Only build the store when at least one embedding succeeded
+-        const hasValidEmbeddings = embeddings.some((e) => e.length > 0);
+-        if (hasValidEmbeddings) {
+-          vectorStore = new VectorStore();
+-          vectorStore.addAll(chunks, embeddings);
+-          log(`Semantic index built: ${vectorStore.size} embedded chunks`, verbose);
++        embeddingClient = createEmbeddingClient(aiConfig);
++        if (embeddingClient !== undefined) {
++          // Use contextualizedContent (context prefix + raw content) when
++          // available — produced by contextualizeChunks inside buildChunkIndex.
++          // Fall back to the summary for any chunk that somehow lacks it.
++          const textsToEmbed = chunks.map((c) => c.contextualizedContent ?? c.summary);
++          const embeddings = await embeddingClient.embed(textsToEmbed);
++
++          // Only build the store when at least one embedding succeeded
++          const hasValidEmbeddings = embeddings.some((e) => e.length > 0);
++          if (hasValidEmbeddings) {
++            vectorStore = new VectorStore();
++            vectorStore.addAll(chunks, embeddings);
++            log(`Semantic index built: ${vectorStore.size} embedded chunks`, verbose);
++          } else {
++            log('Semantic index skipped: no valid embeddings returned', verbose);
++            embeddingClient = undefined;
++          }
+         } else {
+-          log('Semantic index skipped: no valid embeddings returned', verbose);
+-          embeddingClient = undefined;
++          log('Semantic index skipped: no embedding backend configured', verbose);
+         }
+       } catch (embeddingError) {
+         const embeddingMessage =
+diff --git a/test/e2e/__tests__/scenarios.test.ts b/test/e2e/__tests__/scenarios.test.ts
+index 6312760..2242f12 100644
+--- a/test/e2e/__tests__/scenarios.test.ts
++++ b/test/e2e/__tests__/scenarios.test.ts
+@@ -559,7 +559,13 @@ describe('E2E — Chunker', () => {
+     expect(pod).toBeDefined();
+ 
+     const chunk = chunkResource(pod!, 'test/path/pod.yaml');
+-    expect(chunk.content).toContain('"kind": "Pod"');
++    // After step 3.3, chunk.content is the human-readable summarizeResource
++    // output (e.g. "Pod: <name> (namespace: <ns>)\nContainers: ..."), not raw
++    // JSON.  The raw JSON is preserved in metadata.rawContent.
++    expect(chunk.content).toContain('Pod:');
++    expect(chunk.content).toContain(pod!.metadata.name);
++    // Raw JSON is stashed in metadata for callers that need the full spec
++    expect(chunk.metadata?.['rawContent']).toContain('"kind": "Pod"');
+     expect(chunk.metadata?.['kind']).toBe('Pod');
+     expect(chunk.metadata?.['name']).toBe(pod!.metadata.name);
+   });

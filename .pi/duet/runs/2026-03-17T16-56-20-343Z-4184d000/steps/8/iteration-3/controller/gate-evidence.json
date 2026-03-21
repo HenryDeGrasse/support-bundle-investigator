@@ -1,0 +1,38 @@
+[
+  {
+    "checkId": "lint",
+    "cmd": "npm run lint",
+    "exitCode": 0,
+    "passed": true,
+    "stdoutPath": "/Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/.pi/duet/runs/2026-03-17T16-56-20-343Z-4184d000/steps/8/iteration-3/controller/outputs/lint.stdout.txt",
+    "stderrPath": "/Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/.pi/duet/runs/2026-03-17T16-56-20-343Z-4184d000/steps/8/iteration-3/controller/outputs/lint.stderr.txt",
+    "truncatedPreview": "> support-bundle-investigator@0.1.0 lint\n> eslint \"src/**/*.ts\" \"test/**/*.ts\" --max-warnings 0"
+  },
+  {
+    "checkId": "typecheck",
+    "cmd": "npm run typecheck",
+    "exitCode": 0,
+    "passed": true,
+    "stdoutPath": "/Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/.pi/duet/runs/2026-03-17T16-56-20-343Z-4184d000/steps/8/iteration-3/controller/outputs/typecheck.stdout.txt",
+    "stderrPath": "/Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/.pi/duet/runs/2026-03-17T16-56-20-343Z-4184d000/steps/8/iteration-3/controller/outputs/typecheck.stderr.txt",
+    "truncatedPreview": "> support-bundle-investigator@0.1.0 typecheck\n> tsc --noEmit"
+  },
+  {
+    "checkId": "unit",
+    "cmd": "npm test",
+    "exitCode": 0,
+    "passed": true,
+    "stdoutPath": "/Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/.pi/duet/runs/2026-03-17T16-56-20-343Z-4184d000/steps/8/iteration-3/controller/outputs/unit.stdout.txt",
+    "stderrPath": "/Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/.pi/duet/runs/2026-03-17T16-56-20-343Z-4184d000/steps/8/iteration-3/controller/outputs/unit.stderr.txt",
+    "truncatedPreview": "> support-bundle-investigator@0.1.0 test\n> vitest run\n\n\n RUN  v2.1.9 /Users/henrydegrasse/Development/GauntletAi/HPP/Replicated\n\n ✓ src/investigators/__tests__/config-investigator.test.ts (71 tests) 8ms\n ✓ src/investigators/__tests__/hypothesis-generator.test.ts (71 tests) 8ms\n ✓ src/reporters/__tests__/spec-recommender.test.ts (51 tests) 9ms\n ✓ src/investigators/__tests__/hypothesis-ranker.test.ts (65 tests) 8ms\n ✓ src/ai/__tests__/lexical-search.test.ts (42 tests) 14ms\n ✓ src/investigators/__tests__/hypothesis-evidence-collector.test.ts (55 tests) 7ms\n ✓ src/investigators/__tests__/hypothesis-ranking-integration.test.ts (56 tests) 8ms\n ✓ src/investigators/__tests__/differential-diagnosis.test.ts (70 tests) 9ms\n ✓ src/parsers/__tests__/log-parser.test.ts (39 tests) 25ms\n ✓ src/investigators/__tests__/ai-investigator.test.ts (31 tests) 13ms\n ✓ src/investigators/__tests__/kubernetes-investigator.test.ts (71 tests) 6ms\n ✓ src/reporters/__tests__/markdown-reporter.test.ts (64 tests) 48ms\n ✓ src/investigators/__tests__/verifier.test.ts (57 tests) 7ms\n ✓ src/investigators/__tests__/log-investigator.test.ts (77 tests) 10ms\n ✓ src/reporters/__tests__/html-reporter.test.ts (93 tests) 68ms\n ✓ src/investigators/__tests__/hypothesis-converter.test.ts (41 tests) 19ms\n ✓ src/parsers/__tests__/k8s-helpers.test.ts (41 tests) 6ms\n ✓ src/ai/__tests__/prompts.test.ts (50 tests) 6ms\n ✓ src/graph/__tests__/resource-graph.test.ts (26 tests) 5ms\n ✓ src/reporters/__tests__/json-reporter.test.ts (51 tests) 22ms\n ✓ src/investigators/__tests__/seed-generator.test.ts (37 tests) 13ms\n ✓ src/ai/__tests__/schemas.test.ts (60 tests) 9ms\n ✓ src/ingestion/__tests__/profiler.test.ts (30 tests) 6ms\n ✓ src/reporters/__tests__/report-builder.test.ts (42 tests) 13ms\n ✓ src/investigators/__tests__/orchestrator.test.ts (20 tests) 26ms\n ✓ src/parsers/__tests__/timeline.test.ts (30 tests) 6ms\n ✓ src/pipeline/__tests__/analyze-ai.test.ts (10 tests) 9ms\n ✓ src/ai/__tests__/chunk-indexer.test.ts (22 tests) 11m\n...[truncated]"
+  },
+  {
+    "checkId": "build",
+    "cmd": "npm run build",
+    "exitCode": 0,
+    "passed": true,
+    "stdoutPath": "/Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/.pi/duet/runs/2026-03-17T16-56-20-343Z-4184d000/steps/8/iteration-3/controller/outputs/build.stdout.txt",
+    "stderrPath": "/Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/.pi/duet/runs/2026-03-17T16-56-20-343Z-4184d000/steps/8/iteration-3/controller/outputs/build.stderr.txt",
+    "truncatedPreview": "> support-bundle-investigator@0.1.0 build\n> tsup\n\nCLI Building entry: {\"index\":\"src/index.ts\",\"cli/run\":\"src/cli/run.ts\"}\nCLI Using tsconfig: tsconfig.json\nCLI tsup v8.5.1\nCLI Using tsup config: /Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/tsup.config.ts\nCLI Target: es2022\nCLI Cleaning output folder\nCJS Build start\nESM Build start\nESM dist/index.mjs              761.00 B\nESM dist/chunk-KE7PYPFM.mjs     287.25 KB\nESM dist/cli/run.mjs            418.00 B\nESM dist/index.mjs.map          1.29 KB\nESM dist/cli/run.mjs.map        949.00 B\nESM dist/chunk-KE7PYPFM.mjs.map 659.71 KB\nESM ⚡️ Build success in 38ms\nCJS dist/cli/run.js     288.19 KB\nCJS dist/index.js       289.43 KB\nCJS dist/cli/run.js.map 660.18 KB\nCJS dist/index.js.map   661.02 KB\nCJS ⚡️ Build success in 38ms\nDTS Build start\nDTS ⚡️ Build success in 1180ms\nDTS dist/index.d.ts    10.15 KB\nDTS dist/cli/run.d.ts  239.00 B\nDTS dist/index.d.mts   10.15 KB\nDTS dist/cli/run.d.mts 239.00 B"
+  }
+]

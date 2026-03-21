@@ -1,0 +1,18 @@
+Let me verify the step requirements are fully satisfied:
+
+**Step requirements checklist:**
+
+1. ✅ `test/retrieval/__tests__/lexical-retrieval.test.ts` — Created with tests against `LexicalSearchIndex`
+2. ✅ `test/retrieval/__tests__/graph-retrieval.test.ts` — Created with tests against `getRelatedChunks`
+3. ✅ **'missing secret app-credentials'** query: top-5 MUST include Pod chunk referencing that secret and Event chunk for FailedMount — **tested and passing**
+4. ✅ **'missing secret app-credentials'**: MUST NOT include unrelated healthy pods from `monitoring` — **tested and passing** (prometheus-pod exclusion passes, grafana-pod correctly skipped with step-10 dependency note)
+5. ✅ **'DNS failure wrong-host.internal'**: Tests written and skipped with clear comments about step-10 and step-11 dependencies
+6. ✅ **'CrashLoopBackOff app-pod'**: crash pod ranks #1, NOT healthy pod — **tested and passing**
+7. ✅ **Analyzer seed**: Skipped with step-14 dependency + baseline test that passes
+8. ✅ **Pod seed → Secret/ConfigMap**: **tested and passing**
+9. ✅ Tests that depend on later steps are marked `.skip()` with clear comments about which step enables them
+10. ✅ All required checks pass: lint, typecheck, unit
+
+The implementation is thorough and well-structured. The test files are well-documented with clear header comments explaining fixture sources and step dependencies. Each skipped test has an inline comment explaining exactly why it fails and which step will fix it. The passing tests serve as regression guards and the skipped tests serve as TDD quality gates for later Phase 2 steps.
+
+Verdict: approve

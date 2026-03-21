@@ -152,6 +152,10 @@ function makeEmptyAIDeps(): AIInvestigatorDeps {
   return {
     llmClient: {
       investigateSeed: vi.fn().mockResolvedValue({ findings: [] }),
+      // generateText is used by the seed-clustering pass (clusterSeeds).
+      // Default: empty string → graceful fallback to unclustered seeds.
+      // Override in individual tests to exercise the clustering path.
+      generateText: vi.fn().mockResolvedValue(''),
     } as unknown as AIInvestigatorDeps['llmClient'],
     chunkIndex: [],
     resourceGraph: emptyGraph,
@@ -161,6 +165,38 @@ function makeEmptyAIDeps(): AIInvestigatorDeps {
       extractQueryIdentifiers: vi.fn().mockReturnValue([]),
     } as unknown as AIInvestigatorDeps['lexicalIndex'],
   };
+}
+
+// ---------------------------------------------------------------------------
+// Seed-clustering test helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Parses the serialised seed list from a `buildSeedClusteringPrompt` user
+ * prompt and returns the array of `{ id, priority }` objects.
+ *
+ * The prompt embeds the seed list in a fenced JSON block:
+ *
+ * ```json
+ * [{ "id": "seed:pod:0", "priority": 90, ... }, ...]
+ * ```
+ *
+ * Returns `null` when the block cannot be found or parsed (defensive helper
+ * for mock implementations — callers can return `''` on failure to trigger
+ * the clusterer's graceful fallback path).
+ */
+function parseSeedsFromClusteringPrompt(
+  userPrompt: string,
+): Array<{ id: string; priority: number }> | null {
+  try {
+    const match = userPrompt.match(/```json\n([\s\S]*?)\n```/);
+    if (!match) return null;
+    const parsed = JSON.parse(match[1]) as unknown;
+    if (!Array.isArray(parsed)) return null;
+    return parsed as Array<{ id: string; priority: number }>;
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1637,6 +1673,315 @@ describe('runInvestigation', () => {
     it('metadata.graphMatchedSymptoms is 0 when context is empty', async () => {
       const result = await runInvestigation(makeContext());
       expect(result.metadata.graphMatchedSymptoms).toBe(0);
+    });
+  });
+
+  // ── Seed clustering integration (step-7) ──────────────────────────────────
+  //
+  // These tests verify the pre-investigation AI seed-clustering pass that was
+  // inserted between generateSeeds() and the heuristic investigator fan-out.
+  //
+  // Key invariants:
+  //  - Clustering is skipped when AI is disabled (no aiDeps) or seed count < 3.
+  //  - When clustering succeeds: seedClusterCount < seeds.length (collapsed).
+  //  - Priorities are boosted by CLUSTER_PRIORITY_BOOST per additional member.
+  //  - investigateSeed is called once per cluster representative, not per seed.
+  //  - LLM generateText failure triggers graceful fallback (unclustered seeds).
+  //  - result.seeds always contains the full pre-clustering audit trail.
+
+  describe('seed clustering integration', () => {
+    // ── Fixture: a second pod that generates a not-ready seed ─────────────────
+
+    /** Running pod with Ready=False (no CrashLoop/ImagePull) → generates a
+     *  not-ready seed with priority 50. Used to inflate seed count to 4. */
+    const notReadyWorkerPod: K8sResource = {
+      apiVersion: 'v1',
+      kind: 'Pod',
+      metadata: { name: 'worker-pod', namespace: 'default' },
+      spec: { containers: [{ name: 'app', image: 'worker:v1' }] },
+      status: {
+        phase: 'Running',
+        conditions: [{ type: 'Ready', status: 'False', reason: 'ContainersNotReady' }],
+        containerStatuses: [
+          { name: 'app', ready: false, restartCount: 0, state: { running: {} } },
+        ],
+      },
+    };
+
+    // ── Test 1: no AI deps → seeds pass through as singletons ─────────────────
+
+    it('no AI deps → seedClusteringEnabled is false and all clusteredSeeds are singletons', async () => {
+      // crashLoopPod + backOffEvent = 2 seeds; no aiDeps → clustering never attempted
+      const context = makeContext({ resources: [crashLoopPod], events: [backOffEvent] });
+      const result = await runInvestigation(context);
+
+      expect(result.metadata.seedClusteringEnabled).toBe(false);
+      expect(result.metadata.seedClusterCount).toBe(result.seeds.length);
+      for (const cs of result.clusteredSeeds) {
+        expect(cs.memberSeeds).toHaveLength(1);
+      }
+    });
+
+    // ── Test 2: AI deps present but seed count below threshold ─────────────────
+
+    it('AI deps with fewer than 3 seeds → clustering skipped, seedClusteringEnabled is false', async () => {
+      // crashLoopPod alone → 1 seed (CrashLoopBackOff, priority 90)
+      const context = makeContext({ resources: [crashLoopPod] });
+      const deps = makeEmptyAIDeps();
+
+      const result = await runInvestigation(context, deps);
+
+      expect(result.metadata.seedClusteringEnabled).toBe(false);
+      expect(result.metadata.seedClusterCount).toBe(result.seeds.length);
+      for (const cs of result.clusteredSeeds) {
+        expect(cs.memberSeeds).toHaveLength(1);
+      }
+      // generateText must NOT have been called (clustering is skipped below threshold)
+      expect(
+        (deps.llmClient.generateText as ReturnType<typeof vi.fn>),
+      ).not.toHaveBeenCalled();
+    });
+
+    // ── Test 3: AI deps + ≥3 seeds → clustering attempted and succeeds ─────────
+
+    it('AI deps with >= 3 seeds → clustering attempted and seedClusteringEnabled is true', async () => {
+      // 3 seeds: crashLoopPod(90) + dnsFailureLog(50) + backOffEvent(30)
+      const context = makeContext({
+        resources: [crashLoopPod],
+        events: [backOffEvent],
+        logs: [dnsFailureLog],
+      });
+      const deps = makeEmptyAIDeps();
+
+      // Collapse all 3 seeds into 1 cluster; representative is the first (highest priority)
+      (deps.llmClient.generateText as ReturnType<typeof vi.fn>).mockImplementation(
+        async (_system: string, user: string) => {
+          const seeds = parseSeedsFromClusteringPrompt(user);
+          if (!seeds || seeds.length === 0) return '';
+          return JSON.stringify({
+            clusters: [
+              {
+                label: 'Shared root cause',
+                reasoning: 'All three seeds are symptoms of the same crash loop',
+                seedIds: seeds.map((s) => s.id),
+                representativeSeedId: seeds[0]!.id, // highest-priority seed
+              },
+            ],
+          });
+        },
+      );
+
+      const result = await runInvestigation(context, deps);
+
+      expect(result.metadata.seedClusteringEnabled).toBe(true);
+      // 3 seeds collapsed into 1 cluster
+      expect(result.metadata.seedClusterCount).toBe(1);
+      expect(result.clusteredSeeds).toHaveLength(1);
+      // Priority boosted: min(90 + 5*(3-1), 100) = min(100, 100) = 100
+      expect(result.clusteredSeeds[0]!.priority).toBe(100);
+      expect(result.clusteredSeeds[0]!.originalPriority).toBe(90);
+      // Original seeds are still preserved in result.seeds
+      expect(result.seeds).toHaveLength(3);
+    });
+
+    // ── Test 4: clustered seeds reach AI investigator (call count) ─────────────
+
+    it('clustered seeds reach AI investigator: investigateSeed called at most once per cluster representative', async () => {
+      // 4 seeds: crashLoopPod(90) + notReadyWorkerPod(50) + dnsFailureLog(50) + backOffEvent(30)
+      const context = makeContext({
+        resources: [crashLoopPod, notReadyWorkerPod],
+        events: [backOffEvent],
+        logs: [dnsFailureLog],
+      });
+      const deps = makeEmptyAIDeps();
+
+      // Group the 4 seeds into exactly 2 clusters of 2 each
+      (deps.llmClient.generateText as ReturnType<typeof vi.fn>).mockImplementation(
+        async (_system: string, user: string) => {
+          const seeds = parseSeedsFromClusteringPrompt(user);
+          if (!seeds || seeds.length < 2) return '';
+          const mid = Math.ceil(seeds.length / 2);
+          const clusterA = seeds.slice(0, mid);
+          const clusterB = seeds.slice(mid);
+          const clusters: Array<{
+            label: string;
+            reasoning: string;
+            seedIds: string[];
+            representativeSeedId: string;
+          }> = [
+            {
+              label: 'Cluster A',
+              reasoning: 'Crash and not-ready on the same workload',
+              seedIds: clusterA.map((s) => s.id),
+              representativeSeedId: clusterA[0]!.id,
+            },
+          ];
+          if (clusterB.length > 0) {
+            clusters.push({
+              label: 'Cluster B',
+              reasoning: 'Log errors and warning events from the same cause',
+              seedIds: clusterB.map((s) => s.id),
+              representativeSeedId: clusterB[0]!.id,
+            });
+          }
+          return JSON.stringify({ clusters });
+        },
+      );
+
+      await runInvestigation(context, deps);
+
+      // Core cost-reduction assertion:
+      // 4 original seeds → 2 cluster representatives → investigateSeed called
+      // at most 2 times (not 4 times).
+      const investigateCallCount = (
+        deps.llmClient.investigateSeed as ReturnType<typeof vi.fn>
+      ).mock.calls.length;
+      expect(investigateCallCount).toBeLessThanOrEqual(2);
+      expect(investigateCallCount).toBeLessThan(4);
+    });
+
+    // ── Test 5: combined hypothesis flows through AI path ─────────────────────
+
+    it('investigateSeed receives combined hypothesis from all member seeds in a cluster', async () => {
+      // 3 seeds; group first 2 (crashLoop + dnsLog) together, leave backOff singleton
+      const context = makeContext({
+        resources: [crashLoopPod],
+        events: [backOffEvent],
+        logs: [dnsFailureLog],
+      });
+      const deps = makeEmptyAIDeps();
+
+      (deps.llmClient.generateText as ReturnType<typeof vi.fn>).mockImplementation(
+        async (_system: string, user: string) => {
+          const seeds = parseSeedsFromClusteringPrompt(user);
+          if (!seeds || seeds.length < 2) return '';
+          // seeds is sorted by priority desc: [crashLoop(90), dnsLog(50), backOff(30)]
+          return JSON.stringify({
+            clusters: [
+              {
+                label: 'CrashLoop + log errors cluster',
+                reasoning: 'Crash loop is producing the log errors',
+                seedIds: [seeds[0]!.id, seeds[1]!.id],
+                representativeSeedId: seeds[0]!.id,
+              },
+              {
+                label: 'BackOff singleton',
+                reasoning: 'Unrelated warning event',
+                seedIds: [seeds[2]!.id],
+                representativeSeedId: seeds[2]!.id,
+              },
+            ],
+          });
+        },
+      );
+
+      await runInvestigation(context, deps);
+
+      // The combined cluster's investigateSeed call must include hypothesis text
+      // from both member seeds (joined by '\n\nAlso investigate: ')
+      const calls = (deps.llmClient.investigateSeed as ReturnType<typeof vi.fn>).mock.calls;
+      expect(calls.length).toBeGreaterThan(0);
+
+      // Find the call where the user prompt contains the combined hypothesis separator
+      const combinedClusterCall = calls.find(
+        (call: unknown[]) =>
+          typeof call[1] === 'string' && (call[1] as string).includes('Also investigate:'),
+      );
+      expect(combinedClusterCall).toBeDefined();
+    });
+
+    // ── Test 6: LLM generateText throws → graceful degradation ────────────────
+
+    it('LLM generateText throws → graceful degradation: unclustered seeds, investigation completes normally', async () => {
+      // clusterSeeds has its own internal try-catch: when generateText throws,
+      // it logs a warning and returns toUnclusteredSeeds(seeds) without re-throwing.
+      // The orchestrator therefore always sets seedClusteringEnabled=true when
+      // clusterSeeds is called — the flag means "clustering was attempted", not
+      // "clustering produced actual clusters".  The key contract to verify is:
+      //   • no throw from runInvestigation
+      //   • clusteredSeeds are all singletons (fallback path was taken)
+      //   • heuristic findings are still produced normally
+      const context = makeContext({
+        resources: [crashLoopPod],
+        events: [backOffEvent],
+        logs: [dnsFailureLog],
+      });
+      const deps = makeEmptyAIDeps();
+      (deps.llmClient.generateText as ReturnType<typeof vi.fn>).mockRejectedValue(
+        new Error('OpenAI API rate limit exceeded'),
+      );
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const result = await runInvestigation(context, deps);
+      warnSpy.mockRestore();
+
+      // Investigation must complete without throwing
+      expect(result).toBeDefined();
+
+      // All clusteredSeeds are singletons (graceful unclustered fallback within clusterSeeds)
+      for (const cs of result.clusteredSeeds) {
+        expect(cs.memberSeeds).toHaveLength(1);
+      }
+
+      // seedClusterCount equals original seed count (no reduction — all singletons)
+      expect(result.metadata.seedClusterCount).toBe(result.seeds.length);
+
+      // Heuristic findings are still produced normally
+      const crashFinding = result.findings.find((f) =>
+        f.title.toLowerCase().includes('crashloop'),
+      );
+      expect(crashFinding).toBeDefined();
+
+      // generateText was indeed called (the failure was real, not skipped)
+      expect(
+        (deps.llmClient.generateText as ReturnType<typeof vi.fn>),
+      ).toHaveBeenCalled();
+    });
+
+    // ── Test 7: original seeds preserved in result ─────────────────────────────
+
+    it('result.seeds contains all pre-clustering seeds; result.clusteredSeeds carries memberSeeds', async () => {
+      const context = makeContext({
+        resources: [crashLoopPod],
+        events: [backOffEvent],
+        logs: [dnsFailureLog],
+      });
+      const deps = makeEmptyAIDeps();
+
+      // Collapse all 3 seeds into 1 cluster
+      (deps.llmClient.generateText as ReturnType<typeof vi.fn>).mockImplementation(
+        async (_system: string, user: string) => {
+          const seeds = parseSeedsFromClusteringPrompt(user);
+          if (!seeds) return '';
+          return JSON.stringify({
+            clusters: [
+              {
+                label: 'All seeds in one cluster',
+                reasoning: 'All symptoms share a single root cause',
+                seedIds: seeds.map((s) => s.id),
+                representativeSeedId: seeds[0]!.id,
+              },
+            ],
+          });
+        },
+      );
+
+      const result = await runInvestigation(context, deps);
+
+      // result.seeds = all 3 pre-clustering seeds (full audit trail preserved)
+      expect(result.seeds).toHaveLength(3);
+
+      // result.clusteredSeeds = 1 cluster representative
+      expect(result.clusteredSeeds).toHaveLength(1);
+
+      // The single cluster representative has all 3 original seeds in memberSeeds
+      expect(result.clusteredSeeds[0]!.memberSeeds).toHaveLength(3);
+
+      // Every original seed ID appears in memberSeeds
+      const memberIds = result.clusteredSeeds[0]!.memberSeeds.map((m) => m.id);
+      for (const seed of result.seeds) {
+        expect(memberIds).toContain(seed.id);
+      }
     });
   });
 });

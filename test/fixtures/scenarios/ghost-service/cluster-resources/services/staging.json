@@ -1,0 +1,44 @@
+{
+  "apiVersion": "v1",
+  "kind": "ServiceList",
+  "items": [
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "worker-service",
+        "namespace": "staging",
+        "labels": { "app": "worker" },
+        "creationTimestamp": "2024-03-18T14:00:00Z"
+      },
+      "spec": {
+        "selector": { "app": "worker" },
+        "ports": [
+          { "name": "metrics", "protocol": "TCP", "port": 9090, "targetPort": 9090 }
+        ],
+        "type": "ClusterIP",
+        "clusterIP": "10.96.46.100"
+      },
+      "status": { "loadBalancer": {} }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "redis",
+        "namespace": "staging",
+        "labels": { "app": "redis" },
+        "creationTimestamp": "2024-03-18T14:00:00Z"
+      },
+      "spec": {
+        "selector": { "app": "redis" },
+        "ports": [
+          { "name": "redis", "protocol": "TCP", "port": 6379, "targetPort": 6379 }
+        ],
+        "type": "ClusterIP",
+        "clusterIP": "10.96.46.101"
+      },
+      "status": { "loadBalancer": {} }
+    }
+  ]
+}

@@ -73,19 +73,60 @@ SBI has two investigation layers that stack on top of each other:
 | Layer | Always runs | What it does |
 |---|---|---|
 | **Heuristic** | Yes, offline | Pattern-matching investigators + differential diagnosis (3-5 competing hypotheses per symptom, ranked with calibrated confidence) |
-| **AI-augmented** | When `OPENAI_API_KEY` is set | Graph + BM25 + semantic retrieval → LLM structured findings with mandatory bundle citations |
+| **AI-augmented** | When `OPENAI_API_KEY` is set (or `SBI_LLM_BACKEND=local`) | Graph + BM25 + semantic retrieval → LLM structured findings with mandatory bundle citations |
 
 The AI layer uses **three retrieval channels** merged via Reciprocal Rank Fusion:
 1. **Graph traversal** — DiagnosticGraph BFS (owner-refs, secret/ConfigMap/PVC refs, label-selectors, service-selectors, temporal edges)
 2. **BM25 lexical** — exact identifier matching with IDF weighting and length normalisation
 3. **Semantic expansion** — embedding-based cosine similarity (requires an embedding backend)
 
+### LLM Backend: Cloud or Local
+
+The LLM used for AI investigation can run in the cloud (OpenAI, default) or locally via any OpenAI-compatible server. The TUI status bar shows the active mode: `AI:cloud`, `AI:local`, or `AI:off`.
+
+**Cloud mode (default):** Requires `OPENAI_API_KEY`. Uses OpenAI's API (`gpt-4o` by default). Best quality, fastest response time. Bundle data is sent to OpenAI.
+
+**Local mode:** Uses a locally-running LLM server (Ollama, llama.cpp, vLLM, LM Studio). All data stays on your machine. Requires a model with good JSON output and sufficient context window.
+
+```bash
+# Cloud mode (default)
+OPENAI_API_KEY=sk-proj-...
+SBI_AI_MODEL=gpt-4o
+
+# Local mode with Ollama
+SBI_LLM_BACKEND=local
+SBI_LLM_URL=http://localhost:11434/v1
+SBI_AI_MODEL=qwen2.5:32b
+SBI_TOKEN_BUDGET=20000          # reduce for smaller context windows
+
+# Local mode with llama.cpp server
+SBI_LLM_BACKEND=local
+SBI_LLM_URL=http://localhost:8081/v1
+SBI_AI_MODEL=local-model
+SBI_TOKEN_BUDGET=20000
+```
+
+**Local model recommendations (Apple Silicon MacBook):**
+
+| Model | RAM Needed | Context | JSON Quality | Overall Quality |
+|---|---|---|---|---|
+| `qwen2.5:32b` | ~20 GB | 128K | Good | Medium-High |
+| `llama3.1:70b` (q4) | ~40 GB | 128K | Good | High (needs 64 GB+ RAM) |
+| `deepseek-r1:32b` | ~20 GB | 128K | Good | Medium-High |
+| `llama3.1:8b` | ~5 GB | 128K | Okay | Low (will hallucinate) |
+| `mistral-small:22b` | ~14 GB | 32K | Good | Medium (small context) |
+
+> **Note:** Local models are slower (~5-15 tok/s vs ~80-100 tok/s cloud) and less reliable at structured JSON output. The heuristic floor ensures you always get useful results even if the local LLM produces lower-quality findings. Use `SBI_TOKEN_BUDGET` to reduce context size for models with smaller windows.
+
 ### Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
-| `OPENAI_API_KEY` | — | OpenAI API key. Required for AI investigation and (if using OpenAI embeddings) semantic search. |
-| `SBI_AI_MODEL` | `gpt-4o` | Chat model for structured finding generation. Any OpenAI chat model works (`gpt-4o-mini`, `gpt-4-turbo`). |
+| `OPENAI_API_KEY` | — | API key. Required for cloud mode. For local mode, any non-empty value works (or omit entirely). |
+| `SBI_AI_MODEL` | `gpt-4o` | Chat model identifier. For Ollama, use the model tag (e.g. `qwen2.5:32b`). |
+| `SBI_LLM_BACKEND` | `openai` | LLM backend: `openai` (cloud) or `local` (Ollama, llama.cpp, vLLM, LM Studio). |
+| `SBI_LLM_URL` | auto | LLM API base URL. Defaults to `https://api.openai.com/v1` for cloud, `http://localhost:11434/v1` for local. |
+| `SBI_TOKEN_BUDGET` | `100000` | Max tokens of context per AI seed call. Reduce for local models with smaller windows (e.g. `20000`). |
 | `SBI_EMBEDDING_BACKEND` | `local` | Embedding backend: `local` (TEI/Ollama), `openai`, or `none`. |
 | `SBI_EMBEDDING_URL` | `http://localhost:8080` | URL of the local embedding service. Change to `http://localhost:11434` for Ollama. |
 | `SBI_EMBEDDING_MODEL` | `text-embedding-3-small` | Model name passed to Ollama (TEI ignores this — model is baked into the server). |
@@ -93,11 +134,22 @@ The AI layer uses **three retrieval channels** merged via Reciprocal Rank Fusion
 Put these in a `.env` file in the project root (it's gitignored):
 
 ```bash
-# .env
+# .env — Cloud mode (default)
 OPENAI_API_KEY=sk-proj-...
 SBI_AI_MODEL=gpt-4o
 SBI_EMBEDDING_BACKEND=local     # or: openai | none
 SBI_EMBEDDING_URL=http://localhost:8080
+```
+
+```bash
+# .env — Fully local mode (no data leaves your machine)
+SBI_LLM_BACKEND=local
+SBI_LLM_URL=http://localhost:11434/v1
+SBI_AI_MODEL=qwen2.5:32b
+SBI_TOKEN_BUDGET=20000
+SBI_EMBEDDING_BACKEND=local
+SBI_EMBEDDING_URL=http://localhost:11434
+SBI_EMBEDDING_MODEL=nomic-embed-text
 ```
 
 ---
@@ -195,6 +247,16 @@ AI investigation still runs — semantic search is just disabled. Graph traversa
 ### Graceful degradation chain
 
 ```
+LLM: SBI_LLM_BACKEND=local?  ─yes─►  Local LLM (Ollama/llama.cpp/vLLM)
+      │no
+      ▼
+OPENAI_API_KEY set?  ─yes─►  OpenAI cloud LLM (best quality)
+      │no
+      ▼
+Heuristic-only (no AI, still fully functional offline)
+
+
+Embeddings:
 TEI running?  ─yes─►  Late chunking + semantic search (best)
       │no
       ▼
@@ -323,11 +385,12 @@ bundle.tar.gz
   |      temporal-sequence (FailedMount -> BackOff, ErrImagePull -> ImagePullBackOff, ...)
   |      workload-group hierarchy (middle layer aggregation)
   |
-  +--> AI chunk index (when OPENAI_API_KEY set)
+  +--> AI chunk index (when OPENAI_API_KEY set or SBI_LLM_BACKEND=local)
   |      buildChunkIndex (error-aware log chunking + contextual retrieval prefix)
   |      LexicalSearchIndex (BM25: TF saturation, IDF, length normalization)
   |      EmbeddingClient (TEI late chunking | Ollama | OpenAI | none)
   |      VectorStore (cosine similarity)
+  |      LLM backend: cloud (OpenAI) | local (Ollama, llama.cpp, vLLM)
   |
   +--> runInvestigation
          Seeds: analyzer errors, pod health, log patterns, warning events
@@ -369,7 +432,7 @@ support-bundle-investigator/
 |   |   +-- llm-client.ts           # OpenAI chat completion client
 |   |   +-- prompts.ts              # Category-specific investigation playbooks
 |   |   +-- schemas.ts              # AIFinding validation
-|   |   +-- config.ts               # AI config from env vars
+|   |   +-- config.ts               # AI config from env vars (LLM backend, token budget)
 |   +-- cli/
 |   |   +-- rat.ts                  # RAT launcher (auto-build, embedding setup, TUI)
 |   |   +-- run.ts                  # sbi binary entry point
@@ -456,7 +519,7 @@ Options:
 
 ## Design Decisions
 
-**Local-first.** Support bundles contain sensitive cluster data. All analysis runs locally — no data leaves your machine. AI investigation (LLM calls) is additive and optional. Embedding can run entirely locally via TEI or Ollama.
+**Local-first.** Support bundles contain sensitive cluster data. All heuristic analysis runs locally — no data leaves your machine. AI investigation (LLM calls) is additive and optional. Both the LLM and embedding backends can run entirely locally via Ollama, llama.cpp, or TEI — set `SBI_LLM_BACKEND=local` for a fully offline, air-gapped deployment.
 
 **Heuristic precision floor.** Five deterministic investigators (Kubernetes, Log, Config, Service, NetworkPolicy) provide reliable offline analysis. AI findings are merged on top, never replacing the heuristic baseline.
 

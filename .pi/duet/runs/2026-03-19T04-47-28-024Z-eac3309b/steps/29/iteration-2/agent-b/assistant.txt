@@ -1,0 +1,21 @@
+All 3197 tests pass, 80 test files, no failures.
+
+## Review Summary
+
+**What I reviewed:**
+- `src/investigators/service-investigator.ts` — the full implementation
+- `src/investigators/__tests__/service-investigator.test.ts` — 18 tests
+- `src/investigators/orchestrator.ts` — wiring of `investigateServices`
+- `src/investigators/index.ts` — export of `investigateServices`
+- `src/investigators/types.ts` — `SeedCategory` includes `'connectivity'`
+
+**Assessment:**
+The implementation is thorough and well-structured:
+- **Service investigator** properly extracts service references from pod env vars, checks Endpoints readiness, cross-references DNS failure logs, and creates both `supports` and `causes` edges
+- **Tests** cover all scenarios specified in the step requirements: healthy services (no finding), unhealthy services (0 ready endpoints), absent Endpoints resources, notReady-only addresses, DNS failure log correlation with confidence boost, causal edges (ServiceNoEndpoints→PodNotReady), supports edges, multiple services, mixed healthy/unhealthy, ID format and uniqueness, return type contract
+- **Orchestrator integration** is correct — `investigateServices` is imported, called with `connectivity`-category seeds, and its results merged into the heuristic findings and edges pools
+- All checks pass: lint ✓, typecheck ✓, unit (3197 tests) ✓
+
+**No changes needed.** The implementation fully satisfies the step requirements.
+
+Verdict: approve

@@ -1,0 +1,22 @@
+All three required checks pass cleanly:
+- **lint**: ✅ zero warnings
+- **typecheck**: ✅ zero errors
+- **unit**: ✅ 896 tests across 26 files, all passing
+
+## Review Summary
+
+I reviewed the complete implementation left by the previous agent:
+
+**`src/reporters/markdown-reporter.ts`** — correct and complete. Implements all five required document sections (executive summary, ranked findings with severity badge + confidence + evidence table + contradictions + recommended action, missing evidence, spec recommendations, metadata footer). Pipe-escaping in evidence tables is handled. The `writeMarkdownReport` function mirrors the JSON reporter's pattern (resolves path, creates dirs recursively, writes `findings.md`, returns absolute path).
+
+**`src/reporters/__tests__/markdown-reporter.test.ts`** — 59 tests organised in 15 describe blocks. Covers all required assertions: section headers, finding count, severity rendering (all 5 levels), confidence as percentages, evidence path/note rendering, and the file-output behaviour of `writeMarkdownReport`. No gaps.
+
+**`src/reporters/index.ts`** — barrel correctly exports both `generateMarkdownReport` and `writeMarkdownReport`.
+
+**`docs/architecture.mmd`** — R4 (Markdown Reporter ✅) node added with correct connections (`R1 --> R4`).
+
+**`README.md`** — status line, test counts (837→896, 25→26 files), project structure table, domain types table, mermaid diagram, and roadmap table all updated to reflect the markdown reporter being complete.
+
+No issues found; no further changes needed.
+
+Verdict: approve

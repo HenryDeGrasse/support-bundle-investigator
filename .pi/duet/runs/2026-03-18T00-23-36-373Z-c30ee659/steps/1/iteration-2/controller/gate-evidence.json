@@ -1,0 +1,11 @@
+[
+  {
+    "checkId": "build",
+    "cmd": "npm run build",
+    "exitCode": 0,
+    "passed": true,
+    "stdoutPath": "/Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/.pi/duet/runs/2026-03-18T00-23-36-373Z-c30ee659/steps/1/iteration-2/controller/outputs/build.stdout.txt",
+    "stderrPath": "/Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/.pi/duet/runs/2026-03-18T00-23-36-373Z-c30ee659/steps/1/iteration-2/controller/outputs/build.stderr.txt",
+    "truncatedPreview": "> support-bundle-investigator@0.1.0 build\n> tsup\n\nCLI Building entry: {\"index\":\"src/index.ts\",\"cli/run\":\"src/cli/run.ts\",\"tui/index\":\"src/tui/index.tsx\"}\nCLI Using tsconfig: tsconfig.json\nCLI tsup v8.5.1\nCLI Using tsup config: /Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/tsup.config.ts\nCLI Target: es2022\nCLI Cleaning output folder\nCJS Build start\nESM Build start\nESM dist/chunk-BJTO5JO5.mjs     433.00 B\nESM dist/tui/index.mjs          137.00 B\nESM dist/cli/run.mjs            458.00 B\nESM dist/index.mjs              800.00 B\nESM dist/chunk-XT7DNS6Y.mjs     291.74 KB\nESM dist/chunk-BJTO5JO5.mjs.map 71.00 B\nESM dist/tui/index.mjs.map      234.00 B\nESM dist/cli/run.mjs.map        951.00 B\nESM dist/index.mjs.map          1.29 KB\nESM dist/chunk-XT7DNS6Y.mjs.map 675.27 KB\nESM ⚡️ Build success in 34ms\nCJS dist/tui/index.js     1.08 KB\nCJS dist/cli/run.js       293.06 KB\nCJS dist/index.js         294.30 KB\nCJS dist/tui/index.js.map 276.00 B\nCJS dist/index.js.map     676.59 KB\nCJS dist/cli/run.js.map   675.75 KB\nCJS ⚡️ Build success in 34ms\nDTS Build start\nDTS ⚡️ Build success in 1389ms\nDTS dist/tui/index.d.ts  59.00 B\nDTS dist/index.d.ts      10.15 KB\nDTS dist/cli/run.d.ts    239.00 B\nDTS dist/tui/index.d.mts 59.00 B\nDTS dist/index.d.mts     10.15 KB\nDTS dist/cli/run.d.mts   239.00 B"
+  }
+]

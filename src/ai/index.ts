@@ -10,7 +10,13 @@ export { LexicalSearchIndex } from './lexical-search.js';
 export type { ScoredChunk as LexicalScoredChunk } from './lexical-search.js';
 export { validateAIFindings } from './schemas.js';
 export type { AIFinding, AIFindingEvidence } from './schemas.js';
-export { BASE_SYSTEM_PROMPT, buildInvestigationPrompt, resolvePlaybookCategory } from './prompts.js';
+export {
+  BASE_SYSTEM_PROMPT,
+  SEED_CLUSTERING_SYSTEM_PROMPT,
+  buildInvestigationPrompt,
+  buildSeedClusteringPrompt,
+  resolvePlaybookCategory,
+} from './prompts.js';
 export type { PlaybookCategory } from './prompts.js';
 export { LLMClient } from './llm-client.js';
 export type { AIFindingResponse } from './llm-client.js';

@@ -1,23 +1,31 @@
-import type { K8sEvent, K8sResource } from '../types/index.js';
+import type { Evidence, K8sEvent, K8sResource } from '../types/index.js';
 import type { LogFile } from '../parsers/index.js';
 import type { InvestigatorContext } from './types.js';
 import type { EvidenceAssessment, Hypothesis, HypothesisCategory } from './hypothesis-types.js';
+import type { EvidenceRule } from './hypothesis-templates.js';
 import { cleanEvidencePath } from '../reporters/display-helpers.js';
 
 // ---------------------------------------------------------------------------
 // Bundle file-path helpers (mirrors conventions in kubernetes-investigator)
 // ---------------------------------------------------------------------------
 
-function podFilePath(name: string, namespace: string): string {
-  return `cluster-resources/pods/${namespace}/${name}.yaml`;
+// Real Troubleshoot bundles store resources in flat namespace JSON list files
+// (e.g. cluster-resources/pods/default.json containing a PodList), NOT in
+// per-resource files like cluster-resources/pods/default/app-pod.yaml.
+// Evidence paths must use the real format so grounding checks in the AI
+// investigator can match them against the chunk index (which uses actual
+// source file paths from the bundle manifest).
+
+function podFilePath(namespace: string): string {
+  return `cluster-resources/pods/${namespace}.json`;
 }
 
-function secretFilePath(name: string, namespace: string): string {
-  return `cluster-resources/secrets/${namespace}/${name}.yaml`;
+function secretFilePath(namespace: string): string {
+  return `cluster-resources/secrets/${namespace}.json`;
 }
 
-function serviceFilePath(name: string, namespace: string): string {
-  return `cluster-resources/services/${namespace}/${name}.yaml`;
+function serviceFilePath(namespace: string): string {
+  return `cluster-resources/services/${namespace}.json`;
 }
 
 function eventsFilePath(namespace: string): string {
@@ -38,6 +46,154 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 function emptyAssessment(): EvidenceAssessment {
   return { supporting: [], contradicting: [], missingDecisive: [] };
+}
+
+/** Adds an evidence item only when an identical path+note+artifactType is absent. */
+function pushUniqueEvidence(items: Evidence[], evidence: Evidence): void {
+  const exists = items.some(
+    (item) =>
+      item.path === evidence.path &&
+      item.note === evidence.note &&
+      item.artifactType === evidence.artifactType,
+  );
+  if (!exists) items.push(evidence);
+}
+
+/** Merges an evidence assessment into another without duplicating exact evidence items. */
+function mergeAssessmentInto(target: EvidenceAssessment, addition: EvidenceAssessment): void {
+  for (const evidence of addition.supporting) {
+    pushUniqueEvidence(target.supporting, evidence);
+  }
+  for (const evidence of addition.contradicting) {
+    pushUniqueEvidence(target.contradicting, evidence);
+  }
+  for (const gap of addition.missingDecisive) {
+    if (!target.missingDecisive.includes(gap)) {
+      target.missingDecisive.push(gap);
+    }
+  }
+}
+
+/**
+ * Merges supplemental evidence conservatively.
+ *
+ * Template rules should augment dedicated collectors, but they should not
+ * double-count the same underlying artifact that a structured collector has
+ * already covered. For supplements, treat an existing item with the same
+ * `path` + `artifactType` as already represented even when the note differs.
+ */
+function mergeSupplementalAssessmentInto(
+  target: EvidenceAssessment,
+  addition: EvidenceAssessment,
+): void {
+  const pushSupplementalEvidence = (items: Evidence[], evidence: Evidence): void => {
+    const exists = items.some(
+      (item) => item.path === evidence.path && item.artifactType === evidence.artifactType,
+    );
+    if (!exists) items.push(evidence);
+  };
+
+  for (const evidence of addition.supporting) {
+    pushSupplementalEvidence(target.supporting, evidence);
+  }
+  for (const evidence of addition.contradicting) {
+    pushSupplementalEvidence(target.contradicting, evidence);
+  }
+  for (const gap of addition.missingDecisive) {
+    if (!target.missingDecisive.includes(gap)) {
+      target.missingDecisive.push(gap);
+    }
+  }
+}
+
+/** Retains only symptom-/finding-derived evidence items from a template assessment. */
+function selectSymptomTemplateEvidence(
+  assessment: EvidenceAssessment,
+  hypothesis: Hypothesis,
+): EvidenceAssessment {
+  const findingPaths = new Set(hypothesis.sourceFindings);
+  findingPaths.add(hypothesis.id);
+
+  return {
+    supporting: assessment.supporting.filter((e) => findingPaths.has(e.path)),
+    contradicting: assessment.contradicting.filter((e) => findingPaths.has(e.path)),
+    missingDecisive: assessment.missingDecisive,
+  };
+}
+
+/**
+ * Returns the best-effort real bundle path for a Kubernetes resource.
+ *
+ * Prefers `context.resourceSourceFiles` when available so evidence points to
+ * the exact file parsed from the bundle. Falls back to the flat namespace JSON
+ * conventions used by Troubleshoot bundles for common namespaced resources.
+ */
+function resourceEvidencePath(resource: K8sResource, context: InvestigatorContext): string {
+  const mappedPath = context.resourceSourceFiles?.get(resource);
+  if (mappedPath != null && mappedPath.length > 0) return mappedPath;
+
+  const namespace = resource.metadata.namespace ?? 'default';
+  switch (resource.kind) {
+    case 'Pod':
+      return podFilePath(namespace);
+    case 'Secret':
+      return secretFilePath(namespace);
+    case 'Service':
+      return serviceFilePath(namespace);
+    default: {
+      const pluralKind = `${resource.kind.toLowerCase()}s`;
+      if (resource.metadata.namespace != null) {
+        return `cluster-resources/${pluralKind}/${namespace}/${resource.metadata.name}.yaml`;
+      }
+      return `cluster-resources/${pluralKind}/${resource.metadata.name}.yaml`;
+    }
+  }
+}
+
+/** Returns a concise snippet around the first regex match in `text`. */
+function extractMatchSnippet(text: string, pattern: RegExp): string {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  const match = normalized.match(pattern);
+  if (match?.[0] != null) {
+    return match[0].slice(0, 180);
+  }
+  return normalized.slice(0, 180);
+}
+
+/**
+ * Heuristic guard against false-positive contradicting-rule matches.
+ *
+ * Many template contradicting rules look for success/existence words such as
+ * `found`, `exists`, or `healthy`. A naive regex can accidentally match
+ * negated phrases like `not found` or `Unhealthy`, which would invert the
+ * meaning. Skip those obviously negated matches.
+ */
+function shouldSkipTemplateRuleMatch(
+  rule: EvidenceRule,
+  pattern: RegExp,
+  text: string,
+): boolean {
+  if (rule.type !== 'contradicting') return false;
+
+  const match = new RegExp(pattern.source, pattern.flags).exec(text);
+  if (match?.[0] == null || match.index == null) return false;
+
+  const matchedText = match[0].toLowerCase();
+  const prefix = text.slice(Math.max(0, match.index - 12), match.index).toLowerCase();
+
+  if (/\b(?:not|no|missing|failed|failure|error|unable|cannot|can't|without|denied|invalid|unavailable|refused|timeout|timed\s+out)\b/i.test(matchedText)) {
+    return true;
+  }
+
+  if (/\b(?:not|no)\s*$/i.test(prefix)) {
+    return true;
+  }
+
+  if (prefix.endsWith('un')) {
+    return true;
+  }
+
+  return false;
 }
 
 /**
@@ -241,6 +397,11 @@ function collectPodServiceReferences(resources: K8sResource[]): PodServiceRefere
 
     const podName = resource.metadata.name;
     const namespace = resource.metadata.namespace ?? 'default';
+
+    // Skip kube-system pods — system components use env vars with hostnames
+    // that are not K8s Service names (e.g. CONTROL_PLANE_ENDPOINT).
+    if (namespace === 'kube-system') continue;
+
     const containerGroups = [resource.spec['initContainers'], resource.spec['containers']];
 
     for (const containers of containerGroups) {
@@ -312,6 +473,36 @@ interface ServiceReference {
   namespace?: string;
 }
 
+/**
+ * Common short env var values that look like RFC-1123 names but are clearly
+ * NOT Kubernetes service names. Prevents `LOG_LEVEL=info`, `DEBUG=true`,
+ * `NODE_ENV=production` etc. from being treated as service references.
+ */
+const ENV_VALUE_STOP_WORDS: ReadonlySet<string> = new Set([
+  // Log levels
+  'info', 'debug', 'warn', 'warning', 'error', 'fatal', 'trace', 'verbose',
+  // Booleans
+  'true', 'false', 'yes', 'no', 'on', 'off', 'enabled', 'disabled',
+  // Environments
+  'production', 'development', 'staging', 'test', 'testing', 'local',
+  // Common generic values
+  'none', 'default', 'auto', 'always', 'never', 'json', 'text', 'yaml',
+  'http', 'https', 'tcp', 'udp', 'grpc',
+]);
+
+/**
+ * Common Internet TLDs that superficially match the two-part
+ * `<service>.<namespace>` DNS short-form pattern but are clearly external
+ * domain suffixes rather than Kubernetes namespace names.  When the second
+ * segment of a dot-separated two-part hostname matches one of these, the
+ * hostname is treated as an external domain and excluded from in-cluster
+ * Service resolution.
+ */
+const COMMON_TLDS: ReadonlySet<string> = new Set([
+  'com', 'org', 'net', 'io', 'co', 'edu', 'gov', 'dev', 'app', 'run',
+  'cloud', 'ai', 'me', 'uk', 'eu', 'info', 'biz', 'xyz',
+]);
+
 function extractInClusterServiceRef(value: string): ServiceReference | undefined {
   const host = extractHostCandidate(value);
   if (!host || isIpv4Address(host)) {
@@ -324,7 +515,29 @@ function extractInClusterServiceRef(value: string): ServiceReference | undefined
   }
 
   if (/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(host) && !host.includes('.')) {
+    // Filter out common config values that look like RFC-1123 names but
+    // are clearly not Kubernetes Service names.
+    if (ENV_VALUE_STOP_WORDS.has(host.toLowerCase())) {
+      return undefined;
+    }
     return { serviceName: host.toLowerCase() };
+  }
+
+  // Two-part short-form: <service>.<namespace>  (e.g. api-service.staging)
+  // Kubernetes resolves these within the cluster by appending the remaining
+  // DNS search-domain suffix.  Reject any pair whose second segment is a
+  // well-known Internet TLD — those are external domains, not namespaces.
+  const twoPartMatch = host.match(
+    /^([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)\.([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)$/i,
+  );
+  if (twoPartMatch?.[1] && twoPartMatch[2]) {
+    const secondSegment = twoPartMatch[2].toLowerCase();
+    if (!COMMON_TLDS.has(secondSegment)) {
+      return {
+        serviceName: twoPartMatch[1].toLowerCase(),
+        namespace: secondSegment,
+      };
+    }
   }
 
   const fqdnMatch = host.match(
@@ -416,7 +629,7 @@ function collectMissingSecretEvidence(context: InvestigatorContext): EvidenceAss
 
     if (secretsInNamespace.has(ref.secretName)) {
       assessment.contradicting.push({
-        path: secretFilePath(ref.secretName, ref.namespace),
+        path: secretFilePath(ref.namespace),
         note: `Referenced secret '${ref.secretName}' exists in namespace '${ref.namespace}' (referenced by pod '${ref.podName}' via ${ref.location})`,
         artifactType: 'kubernetes-resource',
       });
@@ -424,12 +637,12 @@ function collectMissingSecretEvidence(context: InvestigatorContext): EvidenceAss
     }
 
     assessment.supporting.push({
-      path: podFilePath(ref.podName, ref.namespace),
+      path: podFilePath(ref.namespace),
       note: `Pod '${ref.podName}' references secret '${ref.secretName}' via ${ref.location}, but that secret is absent from captured resources in namespace '${ref.namespace}'`,
       artifactType: 'kubernetes-resource',
     });
     assessment.supporting.push({
-      path: secretFilePath(ref.secretName, ref.namespace),
+      path: secretFilePath(ref.namespace),
       note: `Referenced secret '${ref.secretName}' is not present in namespace '${ref.namespace}'`,
       artifactType: 'kubernetes-resource',
     });
@@ -456,7 +669,7 @@ function collectMissingSecretEvidence(context: InvestigatorContext): EvidenceAss
 
     if (secretsInNamespace.has(secretName)) {
       assessment.contradicting.push({
-        path: secretFilePath(secretName, namespace),
+        path: secretFilePath(namespace),
         note: `Secret '${secretName}' exists in namespace '${namespace}' despite missing-secret symptoms`,
         artifactType: 'kubernetes-resource',
       });
@@ -469,7 +682,7 @@ function collectMissingSecretEvidence(context: InvestigatorContext): EvidenceAss
     for (const secret of secretResources) {
       const ns = secret.metadata.namespace ?? 'default';
       assessment.contradicting.push({
-        path: secretFilePath(secret.metadata.name, ns),
+        path: secretFilePath(ns),
         note: `Secret '${secret.metadata.name}' exists in namespace '${ns}' — secret inventory is present, which weakens a generic missing-secret hypothesis`,
         artifactType: 'kubernetes-resource',
       });
@@ -554,7 +767,7 @@ function collectDnsFailureEvidence(context: InvestigatorContext): EvidenceAssess
   for (const ref of podServiceRefs) {
     referencedServices.add(`${ref.serviceNamespace}/${ref.serviceName}`);
     assessment.supporting.push({
-      path: podFilePath(ref.podName, ref.namespace),
+      path: podFilePath(ref.namespace),
       note: `Pod '${ref.podName}' references in-cluster hostname '${ref.hostValue}' via ${ref.location}, which could fail if DNS cannot resolve Service '${ref.serviceName}' in namespace '${ref.serviceNamespace}'`,
       artifactType: 'kubernetes-resource',
     });
@@ -568,7 +781,7 @@ function collectDnsFailureEvidence(context: InvestigatorContext): EvidenceAssess
 
     if (servicesInNamespace.has(serviceName)) {
       assessment.contradicting.push({
-        path: serviceFilePath(serviceName, namespace),
+        path: serviceFilePath(namespace),
         note: `Referenced Service '${serviceName}' exists in namespace '${namespace}' — pure DNS absence is less likely`,
         artifactType: 'kubernetes-resource',
       });
@@ -576,10 +789,89 @@ function collectDnsFailureEvidence(context: InvestigatorContext): EvidenceAssess
     }
 
     assessment.supporting.push({
-      path: serviceFilePath(serviceName, namespace),
+      path: serviceFilePath(namespace),
       note: `Dependency hostname maps to missing Service '${serviceName}' in namespace '${namespace}'`,
       artifactType: 'kubernetes-resource',
     });
+  }
+
+  // --------------------------------------------------------------------------
+  // Cross-namespace service correlation: when a service is missing from its
+  // target namespace but found in another namespace, surface a "did you mean?"
+  // suggestion with the corrected URL fix.
+  // --------------------------------------------------------------------------
+
+  // Build the set of services that were NOT found in their target namespace.
+  const missingServices = new Set<string>();
+  for (const target of referencedServices) {
+    const slash = target.indexOf('/');
+    if (slash === -1) continue;
+    const targetNs = target.slice(0, slash);
+    const svcName = target.slice(slash + 1);
+    const svcsInNs = servicesByNamespace.get(targetNs);
+    if (svcsInNs == null || !svcsInNs.has(svcName)) {
+      missingServices.add(target);
+    }
+  }
+
+  let crossNamespaceMatchFound = false;
+  for (const target of missingServices) {
+    const slash = target.indexOf('/');
+    const targetNamespace = target.slice(0, slash);
+    const serviceName = target.slice(slash + 1);
+
+    for (const [foundNamespace, svcsInFoundNs] of servicesByNamespace) {
+      if (foundNamespace === targetNamespace || !svcsInFoundNs.has(serviceName)) continue;
+
+      // A cross-namespace match was found!
+      crossNamespaceMatchFound = true;
+
+      // Locate pod env var references that point to this service in the wrong namespace.
+      const matchingRefs = podServiceRefs.filter(
+        (ref) => ref.serviceName === serviceName && ref.serviceNamespace === targetNamespace,
+      );
+
+      let envNote = '';
+      if (matchingRefs.length > 0) {
+        const envNames: string[] = [];
+        for (const ref of matchingRefs) {
+          const m = ref.location.match(/env '([^']+)'/);
+          if (m?.[1] != null && !envNames.includes(m[1])) envNames.push(m[1]);
+        }
+        if (envNames.length > 0) {
+          const exRef = matchingRefs[0]!;
+          const correctedUrl = exRef.hostValue.replace(
+            `${serviceName}.${targetNamespace}`,
+            `${serviceName}.${foundNamespace}`,
+          );
+          const portM = exRef.hostValue.match(/:(\d+)/);
+          const shortUrl =
+            portM?.[1] != null
+              ? `http://${serviceName}:${portM[1]}`
+              : `http://${serviceName}`;
+          const envLabel =
+            envNames.length === 1
+              ? `The env var ${envNames[0]}`
+              : `The env vars ${envNames.join(', ')}`;
+          const verbStr = envNames.length === 1 ? 'likely points' : 'likely point';
+          const updateStr =
+            envNames.length === 1
+              ? `Update ${envNames[0]}`
+              : `Update ${envNames.join(', ')}`;
+          envNote =
+            ` ${envLabel} ${verbStr} to the wrong namespace.` +
+            ` ${updateStr} from ${exRef.hostValue} to ${correctedUrl}` +
+            ` or ${shortUrl} if the pod runs in the ${foundNamespace} namespace.`;
+        }
+      }
+
+      assessment.supporting.push({
+        path: serviceFilePath(foundNamespace),
+        note: `Service '${serviceName}' exists in namespace '${foundNamespace}' (not '${targetNamespace}').${envNote}`,
+        artifactType: 'kubernetes-resource',
+      });
+      break; // Report only the first cross-namespace match per missing service.
+    }
   }
 
   // Conservative fallback when hostnames are known but the bundle contains no Service inventory.
@@ -627,7 +919,10 @@ function collectDnsFailureEvidence(context: InvestigatorContext): EvidenceAssess
   }
 
   const hasCoreDnsLogs = context.logs.some((l) => /coredns|kube-dns/i.test(l.path));
-  if (!hasCoreDnsLogs) {
+  // When a cross-namespace match is confirmed, the root cause is a wrong-namespace
+  // reference rather than a DNS infrastructure issue, so CoreDNS logs are no
+  // longer a decisive missing evidence gap.
+  if (!hasCoreDnsLogs && !crossNamespaceMatchFound) {
     assessment.missingDecisive.push(
       'CoreDNS or kube-dns pod logs would decisively confirm DNS resolution failures cluster-wide',
     );
@@ -686,7 +981,7 @@ function collectImagePullEvidence(context: InvestigatorContext): EvidenceAssessm
           if (/ErrImagePull|ImagePullBackOff/i.test(reason)) {
             const ns = pod.metadata.namespace ?? 'default';
             assessment.supporting.push({
-              path: podFilePath(pod.metadata.name, ns),
+              path: podFilePath(ns),
               note: `Container '${String(cs['name'] ?? 'unknown')}' waiting with reason '${reason}' — image pull failed`,
               artifactType: 'kubernetes-resource',
             });
@@ -698,7 +993,7 @@ function collectImagePullEvidence(context: InvestigatorContext): EvidenceAssessm
           // Container is (or was) running — image was successfully pulled
           const ns = pod.metadata.namespace ?? 'default';
           assessment.contradicting.push({
-            path: podFilePath(pod.metadata.name, ns),
+            path: podFilePath(ns),
             note: `Container '${String(cs['name'] ?? 'unknown')}' is in running state — image was pulled successfully`,
             artifactType: 'kubernetes-resource',
           });
@@ -850,19 +1145,91 @@ function collectConnectivityEvidence(context: InvestigatorContext): EvidenceAsse
   return assessment;
 }
 
+// ---------------------------------------------------------------------------
+// Readiness-failure scoping helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Namespaces that host Kubernetes system components (CoreDNS, etcd, etc.).
+ * Pods in these namespaces are excluded from readiness-probe evidence unless
+ * explicitly referenced by an Unhealthy event in the bundle.
+ */
+const SYSTEM_NAMESPACES: ReadonlySet<string> = new Set([
+  'kube-system',
+  'kube-public',
+  'kube-node-lease',
+]);
+
+/**
+ * Returns `true` when a pod is NOT in a fully healthy state.
+ *
+ * A pod is considered unhealthy when ANY of the following is true:
+ *   (a) Its status phase is not `'Running'` or `'Succeeded'`.
+ *   (b) It has no `Ready=True` condition.
+ *   (c) At least one container status has `ready: false`.
+ *
+ * Pods with no `status` field (i.e. status not yet populated) are also
+ * considered unhealthy — the absence of status cannot confirm healthy state.
+ */
+function isPodUnhealthy(pod: K8sResource): boolean {
+  if (!isRecord(pod.status)) {
+    // No status information at all — cannot confirm healthy.
+    return true;
+  }
+
+  // (a) Phase is present but is neither Running nor Succeeded.
+  const phase = pod.status['phase'];
+  if (typeof phase === 'string' && phase !== 'Running' && phase !== 'Succeeded') {
+    return true;
+  }
+
+  // (b) Conditions exist but none is Ready=True.
+  const conditions = pod.status['conditions'];
+  if (Array.isArray(conditions)) {
+    const hasReadyTrue = conditions.some(
+      (c) => isRecord(c) && c['type'] === 'Ready' && c['status'] === 'True',
+    );
+    if (!hasReadyTrue) return true;
+  } else {
+    // No conditions array — cannot confirm Ready=True.
+    return true;
+  }
+
+  // (c) Any container status explicitly reports ready: false.
+  const containerStatuses = pod.status['containerStatuses'];
+  if (Array.isArray(containerStatuses)) {
+    if (containerStatuses.some((cs) => isRecord(cs) && cs['ready'] === false)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 /**
  * Collects evidence for a `readiness-failure` hypothesis.
  *
  * Supporting:
  *   - Unhealthy events (readiness probe failed)
- *   - Probe configuration in pod spec
+ *   - Probe configuration in pod spec (scoped to relevant pods only)
  *
  * Contradicting:
  *   - Pod Ready condition is True (pod later became ready)
  *   - Container in running state and ready
+ *   (Both contradicting checks are also scoped to relevant pods.)
  *
  * Missing decisive:
  *   - Detailed probe response output
+ *
+ * Scoping rules for pod-level evidence:
+ *   A pod's probe configuration (and associated contradicting evidence) is
+ *   included only when:
+ *     1. The pod's namespace appears in the set of affected namespaces derived
+ *        from Unhealthy events collected earlier in this function, OR
+ *     2. The pod is unhealthy (per {@link isPodUnhealthy}) AND the pod does
+ *        NOT belong to a {@link SYSTEM_NAMESPACES} namespace.
+ *   This prevents healthy kube-system pods (CoreDNS, etcd, …) from appearing
+ *   as evidence for a user-workload readiness misconfiguration.
  */
 function collectReadinessFailureEvidence(context: InvestigatorContext): EvidenceAssessment {
   const assessment = emptyAssessment();
@@ -895,10 +1262,33 @@ function collectReadinessFailureEvidence(context: InvestigatorContext): Evidence
     }
   }
 
-  // Supporting: pod spec has readiness probe configured
+  // Build the set of affected namespaces from all Unhealthy events so that
+  // the pod-level filter below can include pods in those namespaces even when
+  // a given pod currently looks healthy (e.g. it recovered after the event).
+  const allUnhealthyEvents = [
+    ...unhealthyEvents,
+    ...genericUnhealthyEvents.filter((ev) => !unhealthyEvents.includes(ev)),
+  ];
+  const affectedNamespaces = new Set<string>(
+    allUnhealthyEvents.map((ev) => ev.involvedObject.namespace ?? 'default'),
+  );
+
+  // Supporting / Contradicting: pod-level probe config and readiness status.
+  // Only process pods that are relevant to the failure: pods in an affected
+  // namespace, or unhealthy pods outside system namespaces.
   const podResources = findResources(context.resources, 'Pod');
   for (const pod of podResources) {
     const ns = pod.metadata.namespace ?? 'default';
+
+    const isInAffectedNamespace = affectedNamespaces.has(ns);
+    const isSystemPod = SYSTEM_NAMESPACES.has(ns);
+    const podUnhealthy = isPodUnhealthy(pod);
+
+    // Skip pods that are neither in an affected namespace nor unhealthy
+    // outside system namespaces — they are irrelevant to this hypothesis.
+    if (!isInAffectedNamespace && !(podUnhealthy && !isSystemPod)) {
+      continue;
+    }
 
     // Check spec for readiness probe configuration
     if (isRecord(pod.spec)) {
@@ -908,7 +1298,7 @@ function collectReadinessFailureEvidence(context: InvestigatorContext): Evidence
           if (!isRecord(c)) continue;
           if (c['readinessProbe'] != null) {
             assessment.supporting.push({
-              path: podFilePath(pod.metadata.name, ns),
+              path: podFilePath(ns),
               note: `Container '${String(c['name'] ?? 'unknown')}' has a readiness probe configured — misconfiguration may cause persistent failure`,
               artifactType: 'kubernetes-resource',
             });
@@ -928,7 +1318,7 @@ function collectReadinessFailureEvidence(context: InvestigatorContext): Evidence
             cond['status'] === 'True'
           ) {
             assessment.contradicting.push({
-              path: podFilePath(pod.metadata.name, ns),
+              path: podFilePath(ns),
               note: `Pod '${pod.metadata.name}' has Ready condition True — it became ready, probe may be transient`,
               artifactType: 'kubernetes-resource',
             });
@@ -942,7 +1332,7 @@ function collectReadinessFailureEvidence(context: InvestigatorContext): Evidence
         for (const cs of containerStatuses) {
           if (isRecord(cs) && cs['ready'] === true) {
             assessment.contradicting.push({
-              path: podFilePath(pod.metadata.name, ns),
+              path: podFilePath(ns),
               note: `Container '${String(cs['name'] ?? 'unknown')}' reports ready=true — readiness probe ultimately passed`,
               artifactType: 'kubernetes-resource',
             });
@@ -1305,7 +1695,7 @@ function collectMissingSecretFalsifyingEvidence(
     for (const [namespace, names] of secretsByNamespace) {
       if (names.has(secretName)) {
         assessment.contradicting.push({
-          path: secretFilePath(secretName, namespace),
+          path: secretFilePath(namespace),
           note: `Secret '${secretName}' is actually present in namespace '${namespace}' — this directly contradicts the missing-secret hypothesis`,
           artifactType: 'kubernetes-resource',
         });
@@ -1385,11 +1775,140 @@ function collectImagePullFalsifyingEvidence(
 }
 
 // ---------------------------------------------------------------------------
+// Template-driven evidence rules (7.11a)
+// ---------------------------------------------------------------------------
+
+/**
+ * Applies declarative template evidence rules attached to a hypothesis.
+ *
+ * Rules are searched against:
+ * - log lines
+ * - Kubernetes events (`reason` + `message`)
+ * - Kubernetes resources (serialized resource payloads, including container status)
+ * - the hypothesis symptom text, which is derived from the source finding title
+ *
+ * Supporting rules populate `assessment.supporting`; contradicting rules
+ * populate `assessment.contradicting`.
+ */
+function collectTemplateRuleEvidence(
+  hypothesis: Hypothesis,
+  context: InvestigatorContext,
+): EvidenceAssessment {
+  const assessment = emptyAssessment();
+  const rules = hypothesis.evidenceRules ?? [];
+
+  for (const rule of rules) {
+    let pattern: RegExp;
+    try {
+      pattern = new RegExp(rule.pattern, 'i');
+    } catch {
+      continue;
+    }
+
+    const target =
+      rule.type === 'supporting'
+        ? assessment.supporting
+        : assessment.contradicting;
+
+    collectTemplateRuleMatchesFromLogs(target, rule, pattern, context.logs);
+    collectTemplateRuleMatchesFromEvents(target, rule, pattern, context.events);
+    collectTemplateRuleMatchesFromResources(target, rule, pattern, context.resources, context);
+    collectTemplateRuleMatchesFromSymptom(target, rule, pattern, hypothesis);
+  }
+
+  return assessment;
+}
+
+function collectTemplateRuleMatchesFromLogs(
+  target: Evidence[],
+  rule: EvidenceRule,
+  pattern: RegExp,
+  logs: LogFile[],
+): void {
+  for (const { logFile, lineContent } of findInLogs(logs, pattern)) {
+    if (shouldSkipTemplateRuleMatch(rule, pattern, lineContent)) continue;
+
+    pushUniqueEvidence(target, {
+      path: cleanEvidencePath(logFile.path),
+      note: `Template rule '${rule.label}' matched log line: "${lineContent.trim()}"`,
+      artifactType: 'log',
+    });
+  }
+}
+
+function collectTemplateRuleMatchesFromEvents(
+  target: Evidence[],
+  rule: EvidenceRule,
+  pattern: RegExp,
+  events: K8sEvent[],
+): void {
+  for (const event of events) {
+    const eventText = `${event.reason} ${event.message}`;
+    if (!pattern.test(eventText) || shouldSkipTemplateRuleMatch(rule, pattern, eventText)) {
+      continue;
+    }
+
+    const namespace = event.involvedObject.namespace ?? 'default';
+    pushUniqueEvidence(target, {
+      path: eventsFilePath(namespace),
+      note:
+        `Template rule '${rule.label}' matched event '${event.reason}' for ` +
+        `'${event.involvedObject.name}': ${event.message}`,
+      artifactType: 'event',
+      timestamp: event.firstTimestamp,
+    });
+  }
+}
+
+function collectTemplateRuleMatchesFromResources(
+  target: Evidence[],
+  rule: EvidenceRule,
+  pattern: RegExp,
+  resources: K8sResource[],
+  context: InvestigatorContext,
+): void {
+  for (const resource of resources) {
+    const resourceText = JSON.stringify(resource);
+    if (!pattern.test(resourceText) || shouldSkipTemplateRuleMatch(rule, pattern, resourceText)) {
+      continue;
+    }
+
+    pushUniqueEvidence(target, {
+      path: resourceEvidencePath(resource, context),
+      note:
+        `Template rule '${rule.label}' matched ${resource.kind} ` +
+        `'${resource.metadata.name}': ${extractMatchSnippet(resourceText, pattern)}`,
+      artifactType: 'kubernetes-resource',
+    });
+  }
+}
+
+function collectTemplateRuleMatchesFromSymptom(
+  target: Evidence[],
+  rule: EvidenceRule,
+  pattern: RegExp,
+  hypothesis: Hypothesis,
+): void {
+  if (!pattern.test(hypothesis.symptom) || shouldSkipTemplateRuleMatch(rule, pattern, hypothesis.symptom)) {
+    return;
+  }
+
+  pushUniqueEvidence(target, {
+    path: hypothesis.sourceFindings[0] ?? hypothesis.id,
+    note: `Template rule '${rule.label}' matched symptom text: "${hypothesis.symptom}"`,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Dispatch table
 // ---------------------------------------------------------------------------
 
 type CategoryCollector = (context: InvestigatorContext) => EvidenceAssessment;
 
+// Fallback chain:
+//   1. Dedicated category collector (when present)
+//   2. Declarative template evidence rules attached to the hypothesis
+//   3. Generic missing-decisive fallback when neither of the above yields evidence
 const CATEGORY_COLLECTORS: Partial<Record<HypothesisCategory, CategoryCollector>> = {
   'missing-secret': collectMissingSecretEvidence,
   'dns-failure': collectDnsFailureEvidence,
@@ -1450,14 +1969,16 @@ export function collectFalsifyingEvidence(
  * Collects supporting, contradicting, and missing-decisive evidence for a
  * single {@link Hypothesis} from the bundle data in `context`.
  *
- * The function dispatches to a category-specific internal collector based on
- * `hypothesis.category`.  Categories without a dedicated collector return an
- * assessment with only a generic missing-decisive entry.
+ * The function follows a three-stage fallback chain:
+ * 1. Run a dedicated category collector when one exists.
+ * 2. Supplement the result with declarative template evidence rules attached
+ *    to `hypothesis.evidenceRules`.
+ * 3. When no dedicated collector exists and template rules yield no evidence,
+ *    add a generic missing-decisive entry.
  *
- * After the category-specific collector runs, {@link collectFalsifyingEvidence}
- * is called to actively search for evidence that would *disprove* the
- * hypothesis; any found contradicting items are merged into the final
- * assessment.
+ * After that, {@link collectFalsifyingEvidence} is called to actively search
+ * for evidence that would *disprove* the hypothesis; any found contradicting
+ * items are merged into the final assessment.
  *
  * Evidence items are populated with real bundle paths (following the
  * `cluster-resources/…` and `logs/…` conventions used throughout this
@@ -1473,22 +1994,40 @@ export function collectEvidenceForHypothesis(
   context: InvestigatorContext,
 ): EvidenceAssessment {
   const collector = CATEGORY_COLLECTORS[hypothesis.category];
+  const assessment = collector != null ? collector(context) : emptyAssessment();
+  const hasDedicatedEvidence =
+    assessment.supporting.length > 0 || assessment.contradicting.length > 0;
+  const templateAssessment = collectTemplateRuleEvidence(hypothesis, context);
 
-  let assessment: EvidenceAssessment;
-
-  if (collector != null) {
-    assessment = collector(context);
+  // Declarative template rules are always collected. For categories without a
+  // dedicated collector they are the primary evidence source. For categories
+  // with a structured collector:
+  //   - when the dedicated collector found no direct evidence, use the full
+  //     template assessment as the fallback source;
+  //   - otherwise merge only symptom-/finding-derived template evidence as a
+  //     conservative supplement, avoiding score inflation from re-counting the
+  //     same logs/events/resources the structured collector already examined.
+  if (collector == null || !hasDedicatedEvidence) {
+    mergeAssessmentInto(assessment, templateAssessment);
   } else {
-    // Fallback for categories without a dedicated collector
-    assessment = emptyAssessment();
+    mergeSupplementalAssessmentInto(
+      assessment,
+      selectSymptomTemplateEvidence(templateAssessment, hypothesis),
+    );
+  }
+
+  if (
+    collector == null &&
+    assessment.supporting.length === 0 &&
+    assessment.contradicting.length === 0
+  ) {
     assessment.missingDecisive.push(
       `No dedicated evidence collector for category '${hypothesis.category}' — manual investigation required`,
     );
   }
 
-  // Actively collect falsifying evidence and merge contradicting items
-  const falsifying = collectFalsifyingEvidence(hypothesis, context);
-  assessment.contradicting.push(...falsifying.contradicting);
+  // Actively collect falsifying evidence and merge contradicting items.
+  mergeAssessmentInto(assessment, collectFalsifyingEvidence(hypothesis, context));
 
   return assessment;
 }

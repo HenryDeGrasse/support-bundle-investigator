@@ -1,0 +1,38 @@
+
+> support-bundle-investigator@0.1.0 build
+> tsup
+
+CLI Building entry: {"index":"src/index.ts","cli/run":"src/cli/run.ts","tui/index":"src/tui/index.tsx"}
+CLI Using tsconfig: tsconfig.json
+CLI tsup v8.5.1
+CLI Using tsup config: /Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/tsup.config.ts
+CLI Target: es2022
+CLI Cleaning output folder
+CJS Build start
+ESM Build start
+ESM dist/chunk-BJTO5JO5.mjs     433.00 B
+ESM dist/tui/index.mjs          137.00 B
+ESM dist/cli/run.mjs            458.00 B
+ESM dist/index.mjs              800.00 B
+ESM dist/chunk-XT7DNS6Y.mjs     291.74 KB
+ESM dist/chunk-BJTO5JO5.mjs.map 71.00 B
+ESM dist/tui/index.mjs.map      234.00 B
+ESM dist/cli/run.mjs.map        951.00 B
+ESM dist/index.mjs.map          1.29 KB
+ESM dist/chunk-XT7DNS6Y.mjs.map 675.27 KB
+ESM ⚡️ Build success in 34ms
+CJS dist/tui/index.js     1.08 KB
+CJS dist/cli/run.js       293.06 KB
+CJS dist/index.js         294.30 KB
+CJS dist/tui/index.js.map 276.00 B
+CJS dist/index.js.map     676.59 KB
+CJS dist/cli/run.js.map   675.75 KB
+CJS ⚡️ Build success in 34ms
+DTS Build start
+DTS ⚡️ Build success in 1389ms
+DTS dist/tui/index.d.ts  59.00 B
+DTS dist/index.d.ts      10.15 KB
+DTS dist/cli/run.d.ts    239.00 B
+DTS dist/tui/index.d.mts 59.00 B
+DTS dist/index.d.mts     10.15 KB
+DTS dist/cli/run.d.mts   239.00 B

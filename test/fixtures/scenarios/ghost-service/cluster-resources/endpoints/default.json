@@ -1,0 +1,31 @@
+{
+  "apiVersion": "v1",
+  "kind": "EndpointsList",
+  "items": [
+    {
+      "apiVersion": "v1",
+      "kind": "Endpoints",
+      "metadata": {
+        "name": "api-service",
+        "namespace": "default"
+      },
+      "subsets": [
+        {
+          "addresses": [
+            { "ip": "10.244.1.50", "targetRef": { "kind": "Pod", "name": "api-service-pod-7f9d4c", "namespace": "default" } }
+          ],
+          "ports": [{ "name": "http", "port": 8080, "protocol": "TCP" }]
+        }
+      ]
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Endpoints",
+      "metadata": {
+        "name": "web-app-service",
+        "namespace": "default"
+      },
+      "subsets": []
+    }
+  ]
+}

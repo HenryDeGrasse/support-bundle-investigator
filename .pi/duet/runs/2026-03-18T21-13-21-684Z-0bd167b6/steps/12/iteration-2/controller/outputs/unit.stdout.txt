@@ -1,0 +1,115 @@
+
+> support-bundle-investigator@0.1.0 test
+> vitest run
+
+
+ RUN  v2.1.9 /Users/henrydegrasse/Development/GauntletAi/HPP/Replicated
+
+ ✓ src/reporters/__tests__/spec-recommender.test.ts (51 tests) 8ms
+ ✓ src/investigators/__tests__/config-investigator.test.ts (71 tests) 10ms
+ ✓ src/ai/__tests__/lexical-search.test.ts (52 tests) 17ms
+ ✓ src/tui/__tests__/dashboard-state.test.ts (93 tests) 10ms
+ ✓ src/investigators/__tests__/ai-investigator.test.ts (31 tests) 15ms
+ ✓ src/investigators/__tests__/hypothesis-ranking-integration.test.ts (59 tests) 7ms
+ ✓ src/investigators/__tests__/differential-diagnosis.test.ts (70 tests) 6ms
+ ✓ src/reporters/__tests__/markdown-reporter.test.ts (64 tests) 35ms
+ ✓ src/reporters/__tests__/html-reporter.test.ts (96 tests) 53ms
+ ✓ src/investigators/__tests__/kubernetes-investigator.test.ts (92 tests) 10ms
+ ✓ src/ai/__tests__/chunk-indexer.test.ts (63 tests) 14ms
+ ✓ src/investigators/__tests__/verifier.test.ts (57 tests) 6ms
+ ✓ src/investigators/__tests__/log-investigator.test.ts (100 tests) 14ms
+ ✓ src/investigators/__tests__/hypothesis-converter.test.ts (44 tests) 45ms
+ ✓ src/investigators/__tests__/orchestrator.test.ts (29 tests) 89ms
+ ✓ test/fixtures/__tests__/fixtures.test.ts (84 tests) 163ms
+ ✓ src/investigators/__tests__/hypothesis-evidence-collector.test.ts (59 tests) 9ms
+ ✓ src/investigators/__tests__/hypothesis-ranker.test.ts (65 tests) 14ms
+ ✓ src/investigators/__tests__/hypothesis-generator.test.ts (71 tests) 21ms
+ ✓ src/parsers/__tests__/log-parser.test.ts (39 tests) 33ms
+ ✓ src/reporters/__tests__/report-builder.test.ts (44 tests) 7ms
+ ✓ src/reporters/__tests__/json-reporter.test.ts (57 tests) 42ms
+ ✓ src/pipeline/__tests__/analyze-progress.test.ts (15 tests) 14ms
+ ✓ src/ai/__tests__/prompts.test.ts (50 tests) 7ms
+ ✓ test/retrieval/__tests__/graph-retrieval.test.ts (17 tests | 5 skipped) 8ms
+ ✓ src/ai/__tests__/schemas.test.ts (60 tests) 8ms
+ ✓ src/parsers/__tests__/k8s-helpers.test.ts (41 tests) 6ms
+ ✓ src/investigators/__tests__/seed-generator.test.ts (37 tests) 17ms
+ ✓ src/graph/__tests__/resource-graph.test.ts (26 tests) 8ms
+ ✓ src/ingestion/__tests__/profiler.test.ts (30 tests) 10ms
+ ✓ test/retrieval/__tests__/lexical-retrieval.test.ts (16 tests | 1 skipped) 19ms
+ ✓ src/tui/__tests__/state-machine.test.ts (62 tests) 8ms
+ ✓ src/ai/__tests__/summarizer.test.ts (45 tests) 29ms
+ ✓ src/pipeline/__tests__/analyze-ai.test.ts (10 tests) 28ms
+ ✓ src/parsers/__tests__/timeline.test.ts (30 tests) 8ms
+ ✓ src/parsers/__tests__/event-parser.test.ts (20 tests) 16ms
+ ✓ src/reporters/__tests__/report-builder-ai.test.ts (21 tests) 5ms
+ ✓ src/graph/__tests__/finding-tree.test.ts (21 tests) 4ms
+ ✓ src/parsers/__tests__/analyzer-parser.test.ts (24 tests) 19ms
+ ✓ src/ai/__tests__/llm-client.test.ts (21 tests) 7ms
+ ✓ src/parsers/__tests__/k8s-resource-parser.test.ts (17 tests) 15ms
+ ✓ test/golden/__tests__/adversarial-llm.test.ts (14 tests) 5ms
+ ✓ src/ai/__tests__/vector-store.test.ts (26 tests) 13ms
+ ✓ test/golden/__tests__/ai-report-annotation.test.ts (13 tests) 8ms
+ ✓ src/cli/__tests__/runner.test.ts (8 tests) 4ms
+ ✓ test/integration/__tests__/output-quality.test.ts (41 tests) 185ms
+ ✓ src/utils/__tests__/type-guards.test.ts (51 tests) 5ms
+ ✓ src/reporters/__tests__/display-helpers.test.ts (31 tests) 4ms
+ ✓ src/graph/__tests__/investigation-graph.test.ts (17 tests) 4ms
+ ✓ test/golden/__tests__/degradation-paths.test.ts (9 tests) 8ms
+ ✓ src/investigators/__tests__/ai-primary.test.ts (6 tests) 3ms
+ ✓ src/tui/__tests__/helpers.test.ts (40 tests) 6ms
+ ✓ test/golden/__tests__/grounding-validation.test.ts (11 tests) 3ms
+ ✓ src/graph/__tests__/chunker.test.ts (16 tests) 5ms
+Usage: sbi analyze [options] <bundle-path>
+
+Analyze a support bundle .tar.gz archive
+
+Arguments:
+  bundle-path         Path to the support bundle .tar.gz file
+
+Options:
+  --output-dir <dir>  Directory to write output artifacts (findings.json,
+                      report.md, report.html, optional trace.json)
+  --format <format>   Output format: json | text | summary | markdown | html
+                      (default: text) (default: "text")
+  --verbose           Enable verbose pipeline logging (default: false)
+  --trace             Write a JSON trace file to the output directory (default:
+                      false)
+  --no-ai             Disable AI features and run in heuristic-only mode
+  --tui               Launch interactive terminal UI for investigation results
+                      (default: false)
+  -h, --help          display help for command
+ ✓ src/ai/__tests__/embeddings.test.ts (9 tests) 6ms
+ ✓ src/cli/__tests__/cli.test.ts (22 tests) 8ms
+ ✓ src/ai/__tests__/config.test.ts (15 tests) 3ms
+ ✓ src/parsers/__tests__/helm-parser.test.ts (27 tests) 4ms
+ ✓ src/tui/__tests__/tui-import.test.ts (4 tests) 4ms
+ ✓ src/ingestion/__tests__/extractor.test.ts (10 tests) 377ms
+ ✓ src/ingestion/__tests__/classifier.test.ts (20 tests) 4ms
+ ✓ test/golden/__tests__/retrieval-contract.test.ts (19 tests) 209ms
+ ✓ src/cli/__tests__/rat.test.ts (3 tests) 62ms
+ ✓ test/golden/__tests__/golden-eval.test.ts (48 tests) 239ms
+ ✓ test/placeholder.test.ts (1 test) 1ms
+ ✓ test/integration/__tests__/real-bundle-regression.test.ts (4 tests) 136ms
+ ✓ test/e2e/__tests__/scenarios.test.ts (128 tests) 745ms
+ ✓ src/tui/__tests__/fullscreen.test.ts (5 tests) 235ms
+stdout | test/integration/__tests__/pipeline.test.ts > Pipeline Integration > output directory handling > preserves output artifacts when outputDir is provided
+Reports written to /var/folders/26/7kx_4jvx6951yzfvf9k6_5k00000gn/T/sbi-output-3zFGJo: findings.json, report.md, report.html
+
+stdout | test/integration/__tests__/pipeline.test.ts > Pipeline Integration > output directory handling > findings.json written to outputDir contains valid JSON with findings array
+Reports written to /var/folders/26/7kx_4jvx6951yzfvf9k6_5k00000gn/T/sbi-output-json-HFUrQL: findings.json, report.md, report.html
+
+stdout | test/integration/__tests__/pipeline.test.ts > Pipeline Integration > output directory handling > report.md written to outputDir contains expected Markdown sections
+Reports written to /var/folders/26/7kx_4jvx6951yzfvf9k6_5k00000gn/T/sbi-output-md-nKlKe0: findings.json, report.md, report.html
+
+ ✓ src/tui/__tests__/tui-cli-integration.test.ts (3 tests) 527ms
+   ✓ TUI CLI binary integration > CLI binary loads the TUI module without ESM/CJS errors 338ms
+stdout | test/integration/__tests__/pipeline.test.ts > Pipeline Integration > output directory handling > report.html written to outputDir contains valid HTML
+Reports written to /var/folders/26/7kx_4jvx6951yzfvf9k6_5k00000gn/T/sbi-output-html-WFkbCD: findings.json, report.md, report.html
+
+ ✓ test/integration/__tests__/pipeline.test.ts (32 tests) 650ms
+
+ Test Files  70 passed (70)
+      Tests  2581 passed | 6 skipped (2587)
+   Start at  20:26:29
+   Duration  1.91s (transform 4.17s, setup 0ms, collect 8.68s, tests 4.32s, environment 7ms, prepare 4.19s)
+

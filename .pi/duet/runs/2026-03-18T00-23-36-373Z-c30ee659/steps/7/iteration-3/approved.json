@@ -1,0 +1,34 @@
+{
+  "stepId": "step-7",
+  "round": 3,
+  "gates": [
+    {
+      "checkId": "lint",
+      "cmd": "npm run lint",
+      "exitCode": 0,
+      "passed": true,
+      "stdoutPath": "/Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/.pi/duet/runs/2026-03-18T00-23-36-373Z-c30ee659/steps/7/iteration-3/controller/outputs/lint.stdout.txt",
+      "stderrPath": "/Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/.pi/duet/runs/2026-03-18T00-23-36-373Z-c30ee659/steps/7/iteration-3/controller/outputs/lint.stderr.txt",
+      "truncatedPreview": "> support-bundle-investigator@0.1.0 lint\n> eslint \"src/**/*.ts\" \"src/**/*.tsx\" \"test/**/*.ts\" --max-warnings 0"
+    },
+    {
+      "checkId": "typecheck",
+      "cmd": "npm run typecheck",
+      "exitCode": 0,
+      "passed": true,
+      "stdoutPath": "/Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/.pi/duet/runs/2026-03-18T00-23-36-373Z-c30ee659/steps/7/iteration-3/controller/outputs/typecheck.stdout.txt",
+      "stderrPath": "/Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/.pi/duet/runs/2026-03-18T00-23-36-373Z-c30ee659/steps/7/iteration-3/controller/outputs/typecheck.stderr.txt",
+      "truncatedPreview": "> support-bundle-investigator@0.1.0 typecheck\n> tsc --noEmit"
+    },
+    {
+      "checkId": "build",
+      "cmd": "npm run build",
+      "exitCode": 0,
+      "passed": true,
+      "stdoutPath": "/Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/.pi/duet/runs/2026-03-18T00-23-36-373Z-c30ee659/steps/7/iteration-3/controller/outputs/build.stdout.txt",
+      "stderrPath": "/Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/.pi/duet/runs/2026-03-18T00-23-36-373Z-c30ee659/steps/7/iteration-3/controller/outputs/build.stderr.txt",
+      "truncatedPreview": "> support-bundle-investigator@0.1.0 build\n> tsup\n\nCLI Building entry: {\"index\":\"src/index.ts\",\"cli/run\":\"src/cli/run.ts\",\"tui/index\":\"src/tui/index.tsx\"}\nCLI Using tsconfig: tsconfig.json\nCLI tsup v8.5.1\nCLI Using tsup config: /Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/tsup.config.ts\nCLI Target: es2022\nCLI Cleaning output folder\nCJS Build start\nESM Build start\nCJS dist/cli/run.js       294.99 KB\nCJS dist/index.js         296.23 KB\nCJS dist/tui/index.js     316.64 KB\nCJS dist/cli/run.js.map   679.65 KB\nCJS dist/tui/index.js.map 721.71 KB\nCJS dist/index.js.map     680.54 KB\nCJS ⚡️ Build success in 43ms\nESM dist/chunk-GNCMVB7Y.mjs     3.15 KB\nESM dist/cli/run.mjs            458.00 B\nESM dist/chunk-O7OAUURC.mjs     43.00 B\nESM dist/tui/index.mjs          22.22 KB\nESM dist/index.mjs              831.00 B\nESM dist/chunk-EP3BVVPQ.mjs     291.09 KB\nESM dist/cli/run.mjs.map        951.00 B\nESM dist/chunk-O7OAUURC.mjs.map 71.00 B\nESM dist/chunk-GNCMVB7Y.mjs.map 7.56 KB\nESM dist/tui/index.mjs.map      52.03 KB\nESM dist/index.mjs.map          1.34 KB\nESM dist/chunk-EP3BVVPQ.mjs.map 671.68 KB\nESM ⚡️ Build success in 44ms\nDTS Build start\nDTS ⚡️ Build success in 1564ms\nDTS dist/tui/index.d.ts         6.86 KB\nDTS dist/index.d.ts             9.60 KB\nDTS dist/cli/run.d.ts           239.00 B\nDTS dist/finding-BheEXTfZ.d.ts  1.47 KB\nDTS dist/tui/index.d.mts        6.86 KB\nDTS dist/index.d.mts            9.60 KB\nDTS dist/cli/run.d.mts          239.00 B\nDTS dist/finding-BheEXTfZ.d.mts 1.47 KB"
+    }
+  ],
+  "verdict": "approve"
+}

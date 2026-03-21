@@ -1,0 +1,38 @@
+Reviewed:
+- `src/investigators/hypothesis-types.ts`
+- `src/investigators/hypothesis-generator.ts`
+- `src/investigators/hypothesis-evidence-collector.ts`
+- `src/investigators/__tests__/hypothesis-evidence-collector.test.ts`
+- `src/investigators/__tests__/hypothesis-generator.test.ts`
+
+Changed:
+- Added TDD coverage for 7.11a in `src/investigators/__tests__/hypothesis-evidence-collector.test.ts`:
+  - `oom-kill` template-rule evidence from pod status + events
+  - `generic-crash` template-rule evidence from fatal/panic logs
+  - supporting + contradicting template-rule evidence for a no-collector category
+- Added generator coverage in `src/investigators/__tests__/hypothesis-generator.test.ts` to verify generated hypotheses carry `evidenceRules`.
+- Added `evidenceRules?: EvidenceRule[]` to `Hypothesis` in `src/investigators/hypothesis-types.ts`.
+- Updated `src/investigators/hypothesis-generator.ts` so `buildHypothesis()` passes template `evidenceRules` through onto the `Hypothesis`.
+- Implemented template-driven evidence collection in `src/investigators/hypothesis-evidence-collector.ts`:
+  - searches logs
+  - searches events
+  - searches serialized Kubernetes resources (covers container status / `OOMKilled`)
+  - searches hypothesis symptom text
+- Added helper merging/dedup for evidence assessments.
+- Updated collector fallback behavior/documentation:
+  - dedicated collector
+  - template rules
+  - generic fallback
+- Kept template rules as the primary source for categories without dedicated collectors, and used them conservatively for categories with collectors to avoid double-counting broad patterns and changing existing rankings.
+
+Assessment:
+- Step 1 requirements are implemented and verified.
+- Important regression cases around hypothesis ranking still pass, including wrong-db-endpoint DNS prioritization.
+
+Checks run:
+- `npm run lint` ✅
+- `npm run typecheck` ✅
+- `npm run unit` ✅
+- `npm run build` ✅
+
+Verdict: changes_made

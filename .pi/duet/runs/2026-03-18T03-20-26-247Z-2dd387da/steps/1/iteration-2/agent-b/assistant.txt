@@ -1,0 +1,21 @@
+Reviewed:
+- `src/tui/dashboard-state.ts`
+- `src/tui/__tests__/dashboard-state.test.ts`
+- Existing pattern file: `src/tui/__tests__/state-machine.test.ts`
+
+Checks run:
+- `npm run lint` ✅
+- `npm run typecheck` ✅
+- `npm run unit` ✅
+- `npm run build` ✅
+
+Assessment:
+- The new pane-based state module is implemented as a pure reducer with the requested types and behaviors.
+- The legacy `src/tui/state-machine.ts` remains untouched, as required.
+- Test coverage is comprehensive and follows the existing Vitest style well.
+- I did not find any correctness, typing, lint, or build issues to fix.
+
+Changes made:
+- None.
+
+Verdict: approve

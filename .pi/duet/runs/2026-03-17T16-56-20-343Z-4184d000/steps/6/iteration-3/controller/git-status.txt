@@ -1,0 +1,32 @@
+ M README.md
+ M docs/architecture.mmd
+ M docs/architecture.svg
+ M package-lock.json
+ M package.json
+ M src/cli/__tests__/cli.test.ts
+ M src/cli/cli.ts
+ M src/cli/output.ts
+ M src/cli/runner.ts
+ M src/graph/index.ts
+ M src/pipeline/analyze.ts
+ M test/integration/__tests__/pipeline.test.ts
+?? .pi/duet/runs/2026-03-16T19-55-28-917Z-c283c28f/
+?? .pi/duet/runs/2026-03-16T20-02-17-496Z-d45258d1/
+?? .pi/duet/runs/2026-03-17T04-14-31-149Z-a4395a84/
+?? .pi/duet/runs/2026-03-17T16-56-20-343Z-4184d000/
+?? src/ai/__tests__/
+?? src/ai/chunk-indexer.ts
+?? src/ai/config.ts
+?? src/ai/embeddings.ts
+?? src/ai/lexical-search.ts
+?? src/ai/llm-client.ts
+?? src/ai/prompts.ts
+?? src/ai/schemas.ts
+?? src/ai/summarizer.ts
+?? src/ai/vector-store.ts
+?? src/cli/__tests__/runner.test.ts
+?? src/graph/__tests__/resource-graph.test.ts
+?? src/graph/resource-graph.ts
+?? src/investigators/
+?? src/pipeline/__tests__/
+?? src/reporters/

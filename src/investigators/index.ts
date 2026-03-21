@@ -1,4 +1,11 @@
-export type { InvestigationSeed, InvestigatorContext, InvestigatorResult, SeedCategory } from './types.js';
+export type {
+  InvestigationSeed,
+  InvestigatorContext,
+  InvestigatorResult,
+  SeedCategory,
+  ClusteredSeed,
+  SeedClusterLLMClient,
+} from './types.js';
 export { generateSeeds } from './seed-generator.js';
 export { investigateKubernetes } from './kubernetes-investigator.js';
 export { investigateLog } from './log-investigator.js';
@@ -9,6 +16,7 @@ export { verifyFindings } from './verifier.js';
 export { runInvestigation } from './orchestrator.js';
 export type { InvestigationResult } from './orchestrator.js';
 export { investigateWithAI, DEFAULT_MAX_SEEDS } from './ai-investigator.js';
+export { clusterSeeds, toUnclusteredSeeds, CLUSTER_MIN_SEEDS, CLUSTER_PRIORITY_BOOST } from './seed-clusterer.js';
 export type { AIInvestigatorDeps } from './ai-investigator.js';
 export type {
   HypothesisCategory,

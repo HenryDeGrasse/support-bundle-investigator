@@ -1,0 +1,189 @@
+{
+  "version": 1,
+  "phase": "completed",
+  "updatedAt": "2026-03-17T12:40:48.392Z",
+  "runId": "2026-03-17T04-14-31-149Z-a4395a84",
+  "handoffMode": "custom",
+  "postPlanMode": "review",
+  "activeConfig": {
+    "sideA": {
+      "label": "Claude Opus 4.6",
+      "model": "anthropic/claude-opus-4-6",
+      "thinking": "xhigh"
+    },
+    "sideB": {
+      "label": "GPT-5.4",
+      "model": "openai-codex/gpt-5.4",
+      "thinking": "xhigh"
+    },
+    "planner": {
+      "label": "Claude Opus 4.6",
+      "model": "anthropic/claude-opus-4-6",
+      "thinking": "xhigh"
+    },
+    "critic": {
+      "label": "GPT-5.4",
+      "model": "openai-codex/gpt-5.4",
+      "thinking": "xhigh"
+    },
+    "implementer": {
+      "label": "Claude Sonnet 4.6",
+      "model": "anthropic/claude-sonnet-4-6",
+      "thinking": "high"
+    },
+    "reviewer": {
+      "label": "GPT-5.4",
+      "model": "openai-codex/gpt-5.4",
+      "thinking": "high"
+    },
+    "executionMode": "relay",
+    "startImplementer": "A",
+    "maxPlanRounds": 4,
+    "maxExecutionRounds": 5,
+    "alternateByStep": true,
+    "checks": {
+      "lint": {
+        "cmd": "npm run lint",
+        "timeoutSec": 300
+      },
+      "typecheck": {
+        "cmd": "npm run typecheck",
+        "timeoutSec": 300
+      },
+      "unit": {
+        "cmd": "npm test",
+        "timeoutSec": 600
+      },
+      "build": {
+        "cmd": "npm run build",
+        "timeoutSec": 600
+      }
+    },
+    "repo": {
+      "requireGit": true,
+      "requireCleanStart": false,
+      "enforceCleanAfterStep": false,
+      "captureDiffCheck": true
+    }
+  },
+  "goal": "Take this plan into account, to implement ai into this project now. Overall: strong direction, but I would change the framing and tighten a few claims.This matches the assignment well because the brief is intentionally broad: build something that takes a Troubleshoot bundle, uses AI, and outputs something useful, with emphasis on breadth and quality of analysis rather than a specific stack or benchmark. What is strong in the proposal:* The hybrid idea is right. “Structured context is the floor, retrieval is the upside” is the best part of this.* Keeping the parsers, seed generation, verifier, and fallback mode is good judgment.* The demo story is very good: heuristic mode finds the symptom; AI mode explains the cause.* In-memory indexing is fine for a prototype.Where I would push back:* The write-up oversells vector semantics. In Kubernetes troubleshooting, exact identifiers often matter more than semantic similarity: pod names, namespaces, secret names, configmap keys, image tags, event reasons, timestamps, container names. A query like “Pod X is crashlooping” will not reliably pull the right auth log or config typo by embeddings alone.* This is not just a retrieval problem. It is also a graph problem. Support bundles already contain explicit relationships: pod -> owner, pod -> secret/configmap/PVC, event -> involvedObject, deployment -> image, serviceAccount -> secret, etc. Senior engineers follow those edges first. Your system should too.* “Unknown artifact types are handled automatically” is too optimistic. Some unknown files will be binary, repetitive, or irrelevant. You need MIME-aware filtering and text normalization before they become useful retrieval units.* “One investigator, not three” is probably too aggressive. I would unify the retrieval layer, but keep targeted playbooks or prompts for major classes like crashloops, image pulls, DNS/connectivity, and storage. A fully generic investigator tends to lose precision.* LLM report synthesis is fine only if it summarizes verified findings. Do not let the report stage introduce new claims that were not already grounded in evidence.The main architectural change I would make:Do **hybrid retrieval**, not “vector search plus structured context.”The order should be:1. Seed from deterministic signals.2. Pull the seed’s graph neighborhood deterministically.3. Run lexical retrieval over logs and text files using exact identifiers and error strings.4. Use semantic retrieval as expansion/reranking, not as the primary source of truth.5. Send only the selected evidence to the LLM for structured findings.That gives you:* graph for precision,* lexical search for exact matches,* semantic search for non-obvious related evidence.For this domain, that is stronger than pure RAG.A few concrete improvements:* Embed **derived summaries** of K8s objects, not raw YAML/JSON alone. Example: “Pod api-server in default has 8 restarts, container api is CrashLoopBackOff, envFrom references ConfigMap db-config, owner is Deployment api-server.”* Make retrieval metadata-aware. Same namespace, same owner chain, same time window, same node/container should rank much higher than global matches.* Add time-aware correlation. Many root causes appear in logs shortly before the first restart or backoff event.* Require evidence schemas like:  * claim  * confidence  * evidence[]  * counterevidence[]  * root_cause_class  * next_step* Evaluate retrieval separately from reasoning. Measure evidence recall@k on seeded failures; otherwise you will not know whether misses come from retrieval or prompting.For the assignment specifically, I would optimize for polish over scope. The required deliverables are a short demo video, a runnable repo, and a 500-word approach note.  That means a crisp end-to-end story matters more than a big architecture surface area.So if time is limited, I would cut:* multi-provider abstraction,* fancy report synthesis,* anything that does not improve one obvious case and one non-obvious cross-file case.What I would keep and show in the video:* A simple obvious failure that heuristics catch.* One non-obvious case where the hybrid system correlates pod state, logs, and config.* File-and-line citations for every claim.* A fallback `--no-ai` mode.The best framing for the repo is not “RAG vs Option A.” That invites the wrong debate. The better framing is:**AI over curated, typed evidence with hybrid retrieval for cross-file correlation.**That sounds domain-specific, practical, and aligned with what Replicated is asking for: something useful, AI-enabled, and interesting within the support-bundle problem domain. A tighter thesis statement for your write-up would be:“Use deterministic parsing to turn a support bundle into typed evidence and relationships. Generate hypotheses from high-signal symptoms. For each hypothesis, retrieve nearby evidence through graph traversal, exact search, and semantic search. Ask the LLM to produce structured, cited findings. Use heuristics as a precision floor and offline fallback.”That is the version I would present.",
+  "plan": {
+    "goal": "Add AI-powered hybrid retrieval investigation to the Support Bundle Investigator as an additive layer on top of existing heuristic investigators. Architecture: deterministic parsing (existing) → chunk index with derived summaries → graph traversal + lexical search → LLM structured findings → existing verifier → report annotation. Semantic retrieval is added last as expansion only. Heuristic investigators remain untouched as the precision floor and offline fallback (--no-ai). Every AI finding must be grounded in provided context with file-and-line citations; the LLM must never invent claims. If AI calls fail, the pipeline degrades gracefully to heuristic-only mode without aborting. Steps 1–6 deliver a working vertical slice (graph + lexical + LLM end-to-end). Steps 7–8 add semantic expansion and polish. Demo story: heuristic mode finds the symptom, AI mode explains the cause through grounded cross-source correlation.",
+    "steps": [
+      {
+        "id": "step-1",
+        "title": "AI configuration foundation and CLI --no-ai flag",
+        "description": "Additive-only changes: no existing files are restructured. Create `src/ai/config.ts` with `AIConfig` interface (`provider: 'openai' | 'none'`, `apiKey: string`, `model: string`, `embeddingModel: string`, `enabled: boolean`). Implement `loadAIConfig(overrides?: { noAi?: boolean; aiProvider?: string })` reading from `OPENAI_API_KEY`, `SBI_AI_MODEL` (default 'gpt-4o'), `SBI_EMBEDDING_MODEL` (default 'text-embedding-3-small'). AI is enabled only when a valid API key is present AND `noAi` is not set. Add `isAIEnabled(config): boolean`. Create `src/ai/index.ts` barrel export. Update `src/cli/cli.ts`: add `--no-ai` boolean flag (default false) to the `analyze` command. Update `ParsedArgs` to include `noAi: boolean`. Update `PipelineOptions` in `src/pipeline/analyze.ts` to include `noAi?: boolean`. Install `openai` as a production dependency. Add `src/ai/__tests__/config.test.ts` testing: env var loading, defaults, `isAIEnabled` returns false when key missing or --no-ai set, returns true only when key present and noAi not set. Add `src/cli/__tests__/cli.test.ts` cases for --no-ai flag parsing. All 1109 existing tests must pass unchanged.",
+        "requiredChecks": [
+          "lint",
+          "typecheck",
+          "unit",
+          "build"
+        ]
+      },
+      {
+        "id": "step-2",
+        "title": "K8s resource relationship graph and chunk index with derived summaries",
+        "description": "Two closely related modules that form the evidence layer for retrieval. (A) Create `src/graph/resource-graph.ts`: `buildResourceGraph(resources: K8sResource[], events: K8sEvent[])` returns a `ResourceRelationshipGraph` encoding deterministic K8s edges: Pod→OwnerReference (Deployment, StatefulSet, ReplicaSet, DaemonSet via metadata.ownerReferences), Pod→Secret (spec.volumes[].secret.secretName, envFrom[].secretRef, env[].valueFrom.secretKeyRef), Pod→ConfigMap (spec.volumes[].configMap, envFrom[].configMapRef, env[].valueFrom.configMapKeyRef), Pod→PVC (spec.volumes[].persistentVolumeClaim), Event→InvolvedObject. Each edge: `{ sourceKind, sourceName, sourceNamespace, targetKind, targetName, targetNamespace, relationshipType }`. Implement `getNeighborhood(graph, kind, name, namespace, depth=2)` returning all reachable resources within N hops. Implement `getRelatedChunks(graph, seed, chunkIndex)` that parses the seed source string (e.g. 'pod:default/app-pod'), walks the graph neighborhood, and returns matching `IndexedChunk[]` from the chunk index. Export from `src/graph/index.ts`. (B) Create `src/ai/summarizer.ts`: `summarizeResource(resource: K8sResource): string` produces a human-readable summary with all key identifiers (name, namespace, containers, images, referenced secrets/configmaps, owner refs, status, restart count). `summarizeEvent(event: K8sEvent): string` and `summarizeAnalyzer(result: AnalyzerResult): string`. (C) Create `src/ai/chunk-indexer.ts`: `buildChunkIndex(context: InvestigatorContext): IndexedChunk[]` using existing `chunkLogFile`, `chunkResource`, `chunkAnalyzer` from `src/graph/chunker.ts`, augmented with derived summaries. `IndexedChunk` extends `Chunk` with: `summary: string`, `identifiers: string[]` (pod names, namespaces, secret names, image tags, error reasons — extracted deterministically), `namespace?: string`, `artifactCategory: ArtifactCategory`, `timestamp?: string`. Every chunk preserves stable citation metadata: chunk ID, file path, artifact type, line range. Add `src/graph/__tests__/resource-graph.test.ts`, `src/ai/__tests__/summarizer.test.ts`, `src/ai/__tests__/chunk-indexer.test.ts` with inline K8sResource/K8sEvent fixtures.",
+        "requiredChecks": [
+          "lint",
+          "typecheck",
+          "unit",
+          "build"
+        ]
+      },
+      {
+        "id": "step-3",
+        "title": "Lexical search engine for exact identifier matching",
+        "description": "Create `src/ai/lexical-search.ts` with `LexicalSearchIndex` class. `build(chunks: IndexedChunk[])` builds an inverted index mapping identifiers and content tokens to chunk references. Each chunk's `identifiers[]` array (pod names, namespaces, secret names, configmap names, image tags, error reasons like 'CrashLoopBackOff') is indexed for O(1) exact lookup. Content is indexed by tokens for substring matching. `search(query: string, topK: number): ScoredChunk[]` tokenizes the query, scores chunks by: identifier exact match (weight 3.0), namespace match (weight 1.5), content term frequency (weight 1.0). Returns scored chunks sorted by relevance. `extractQueryIdentifiers(hypothesis: string): string[]` parses K8s identifiers from a seed hypothesis string — extracts pod names, namespace references, secret/configmap names, container names, error reasons, image tags using K8s naming pattern regex. `ScoredChunk` includes the `IndexedChunk` and a `score: number`. Add `src/ai/__tests__/lexical-search.test.ts` testing: index build from fixture chunks, exact identifier retrieval (searching 'app-pod' returns pod resource chunk), namespace-scoped filtering, content token matching, scoring priority (identifier hits rank above content hits), empty index returns empty, no-match returns empty.",
+        "requiredChecks": [
+          "lint",
+          "typecheck",
+          "unit",
+          "build"
+        ]
+      },
+      {
+        "id": "step-4",
+        "title": "LLM client with structured output and K8s domain prompts",
+        "description": "Create `src/ai/llm-client.ts` with `LLMClient` class wrapping OpenAI chat completions. Constructor takes `AIConfig`. Implement `investigateSeed(systemPrompt: string, userPrompt: string): Promise<AIFindingResponse>` using OpenAI's JSON mode (`response_format: { type: 'json_object' }`) to get structured output. Handle API errors by returning an empty findings array (graceful degradation — never throw, log the error instead). Create `src/ai/schemas.ts` defining `AIFinding` type matching the existing `Finding` interface structure: `title`, `severity` (FindingSeverity), `confidence` ([0,1]), `affectedComponents: string[]`, `reasoningSummary`, `evidence: Array<{ path: string; note: string; lineRange?: [number, number] }>`, `contradictionsChecked: string[]`, `recommendedAction`, `missingEvidence: string[]`, `rootCauseClass?: string`, `counterevidence?: string[]`. Implement `validateAIFindings(raw: unknown): AIFinding[]` that validates LLM output: required fields present, confidence clamped to [0,1], severity is a valid value, evidence paths are non-empty strings. Invalid findings are dropped with a warning, not thrown. Create `src/ai/prompts.ts` with: `BASE_SYSTEM_PROMPT` establishing role as a senior K8s support engineer with explicit grounding constraint: 'You MUST only cite evidence from the provided context. Every claim requires a file path and specific detail from that file. If evidence is insufficient, list what is missing in missingEvidence rather than speculating.' Implement `buildInvestigationPrompt(seed: InvestigationSeed, chunks: IndexedChunk[]): { system: string; user: string }` that constructs the prompt with: seed hypothesis, all provided chunks formatted with file path + line range + content, and the JSON output schema. Include category-specific playbook sections selected by `seed.category`: crashloop (check container logs for exit reasons, referenced secrets/configmaps, volume mounts, events), image-pull (check image tag accuracy, registry accessibility, pull secrets), connectivity (check DNS resolution, service endpoints, network policies, CoreDNS logs), configuration (check configmap/secret values, env var references, mount paths), log (check error patterns, timestamps, correlation with pod lifecycle events). Add `src/ai/__tests__/llm-client.test.ts` with mocked OpenAI (vi.mock('openai')), `src/ai/__tests__/schemas.test.ts` testing validation/sanitization, `src/ai/__tests__/prompts.test.ts` testing prompt construction and playbook selection per seed category.",
+        "requiredChecks": [
+          "lint",
+          "typecheck",
+          "unit",
+          "build"
+        ]
+      },
+      {
+        "id": "step-5",
+        "title": "AI investigator with category-specific playbooks and graph/lexical retrieval",
+        "description": "Create `src/investigators/ai-investigator.ts` implementing the AI investigation flow using graph traversal + lexical search (no semantic retrieval yet — that is step 7). Define `AIInvestigatorDeps` interface: `{ llmClient: LLMClient; chunkIndex: IndexedChunk[]; resourceGraph: ResourceRelationshipGraph; lexicalIndex: LexicalSearchIndex }`. Implement `investigateWithAI(context: InvestigatorContext, seeds: InvestigationSeed[], deps: AIInvestigatorDeps): Promise<InvestigatorResult>`. For each seed (up to configurable max, default 10): (1) Deterministic graph retrieval: call `getRelatedChunks(resourceGraph, seed, chunkIndex)` to get the graph neighborhood chunks — these are always included (highest priority, 100% precision). (2) Lexical retrieval: call `lexicalIndex.search(seed.hypothesis, topK=10)` to find chunks with matching identifiers — included as supplementary evidence. (3) Merge and deduplicate by chunk ID, graph hits first, then lexical hits. Cap at ~20 chunks to stay within LLM context limits. (4) Select the category-specific playbook prompt based on `seed.category`. (5) Build prompt with `buildInvestigationPrompt(seed, mergedChunks)`. (6) Call `llmClient.investigateSeed(system, user)`. (7) Validate response with `validateAIFindings()`. (8) Convert `AIFinding[]` to `Finding[]` via `convertAIFindings(aiFindings, seed)`: generate IDs with 'finding:ai:{category}:{counter}' prefix, map evidence arrays to the existing `Evidence` type (preserving `path`, `note`, `artifactType` from chunk metadata), populate `GraphEdge[]` linking evidence to findings with 'supports' type. If any LLM call fails, log the error and continue with remaining seeds — never abort the investigation. The prompt explicitly instructs: 'Only cite evidence from the chunks provided below. If you cannot find supporting evidence for a claim, state it in missingEvidence. Do not speculate or infer information not present in the evidence.' Add `src/investigators/__tests__/ai-investigator.test.ts` testing with mocked deps: finding generation from mocked LLM response, evidence citation mapping to existing Evidence type, graph edge creation, seed category → playbook routing, graceful handling of LLM errors (empty findings, not thrown), max-seed limiting, chunk deduplication between graph and lexical results.",
+        "requiredChecks": [
+          "lint",
+          "typecheck",
+          "unit",
+          "build"
+        ]
+      },
+      {
+        "id": "step-6",
+        "title": "Pipeline integration with graceful AI fallback — vertical slice complete",
+        "description": "This step completes the working vertical slice: deterministic parsing → chunk index → graph/lexical retrieval → LLM findings → verification → report. All changes are additive — no existing pipeline logic is modified, only extended. Update `src/investigators/orchestrator.ts`: add an optional `aiDeps?: AIInvestigatorDeps` parameter to `runInvestigation()`. When present, call `investigateWithAI(context, seeds, aiDeps)` and merge its findings into the raw findings array alongside the three heuristic investigators' results. The existing `verifyFindings()` call already handles deduplication and contradiction checks across all sources — no verifier changes needed. Update `InvestigationResult.metadata` to include `aiEnabled: boolean` and `aiFindings: number`. Update `src/pipeline/analyze.ts` (`analyzeBundlePipeline`): after step 6 (parse-logs), add a conditional step 'ai-index' that runs only when `isAIEnabled(loadAIConfig({ noAi: options.noAi }))` returns true. This step: (1) calls `buildChunkIndex(context)` to create IndexedChunks from all parsed data, (2) calls `buildResourceGraph(resources, events)` to build the relationship graph, (3) calls `new LexicalSearchIndex().build(chunks)` to build the lexical index, (4) creates `LLMClient` from AI config. Wraps all AI setup in try/catch — if any step fails, logs a warning and continues with heuristic-only investigation (graceful degradation). Pass the `AIInvestigatorDeps` to `runInvestigation()` in step 8. Add trace steps 'ai-index' and adjust 'investigate' step metadata. When `--no-ai` is set or no API key exists, the pipeline runs exactly as before — all 1109+ existing tests pass unchanged because the default path has no AI components. Add `src/pipeline/__tests__/analyze-ai.test.ts` testing: AI path skipped when no API key, AI path skipped when --no-ai, AI deps passed to orchestrator when enabled (mocked), graceful fallback when AI setup throws, trace includes ai-index step when AI active. Update `src/investigators/__tests__/orchestrator.test.ts` to add cases for orchestrator with mocked AI deps: AI findings merged with heuristic findings, metadata reflects AI state, empty AI results don't break merge.",
+        "requiredChecks": [
+          "lint",
+          "typecheck",
+          "unit",
+          "build"
+        ]
+      },
+      {
+        "id": "step-7",
+        "title": "Semantic retrieval as expansion layer via embeddings and vector store",
+        "description": "With the vertical slice working end-to-end (steps 1-6), this step adds semantic retrieval as an expansion-only layer on top of graph + lexical. Semantic hits are scored lower than graph and lexical hits — they surface non-obvious cross-file correlations but never outrank deterministic evidence. Create `src/ai/embeddings.ts` with `EmbeddingClient` class wrapping OpenAI's embeddings API. `embed(texts: string[]): Promise<number[][]>` calls `text-embedding-3-small` in batches of 100. `embedSingle(text: string): Promise<number[]>`. Handles errors gracefully — returns empty arrays on failure, never throws. Create `src/ai/vector-store.ts` with `VectorStore` class: `addAll(chunks: IndexedChunk[], embeddings: number[][])` stores chunk-embedding pairs. `query(embedding: number[], topK: number, filter?: { namespace?: string }): ScoredChunk[]` returns top-K by cosine similarity with optional namespace filter. Pure `cosineSimilarity(a, b)` function exported for testing. In-memory float arrays, linear scan — sufficient for bundles up to ~10k chunks (~30MB at 1536 dims). Update `src/investigators/ai-investigator.ts`: add optional `embeddingClient?: EmbeddingClient` and `vectorStore?: VectorStore` fields to `AIInvestigatorDeps`. When present, after graph + lexical retrieval, embed the seed hypothesis via `embeddingClient.embedSingle()`, query the vector store for top-5 semantic hits, and append them to the merged chunks with lower priority weight. Semantic hits that duplicate graph/lexical hits are dropped. If embedding fails, skip semantic expansion silently and proceed with graph + lexical results only. Update pipeline's 'ai-index' step: when embedding client is available, embed all chunk summaries and build the vector store. Wrap in try/catch — if embedding fails, log warning and proceed without vector store (graph + lexical still work). Add `src/ai/__tests__/embeddings.test.ts` (mocked OpenAI), `src/ai/__tests__/vector-store.test.ts` (cosine similarity math, add/query, namespace filtering). Update `src/investigators/__tests__/ai-investigator.test.ts` with cases for semantic expansion: semantic results appended at lower priority, embedding failures handled gracefully, deduplication with graph/lexical results.",
+        "requiredChecks": [
+          "lint",
+          "typecheck",
+          "unit",
+          "build"
+        ]
+      },
+      {
+        "id": "step-8",
+        "title": "Report annotation, verbose retrieval logging, and README polish",
+        "description": "Reports must summarize verified findings only — no second AI synthesis layer. All changes are additive annotations on existing report structures. Update `src/reporters/report-builder.ts`: in `generateExecutiveSummary()`, when findings include AI-generated entries (IDs starting with 'finding:ai:'), append a sentence noting AI-augmented analysis was used with the count of AI findings. In `deriveRootCause()`, prefer AI findings whose evidence spans 2+ distinct `artifactType` values (cross-source correlation) over single-source findings, but only from the already-verified findings list. No new LLM calls — all text is template-driven from verified data. Update `src/reporters/markdown-reporter.ts`: annotate AI findings with a '[AI-assisted]' tag after the finding title. Update `src/reporters/html-reporter.ts`: add an 'ai-assisted' CSS class and '🤖' badge on AI finding cards. Update `src/cli/output.ts`: when verbose mode is active and AI was used, log retrieval stats per seed: 'Seed: {hypothesis} → {N} graph chunks, {M} lexical chunks, {K} semantic chunks across {T} artifact types'. Add `src/reporters/__tests__/report-builder-ai.test.ts` testing: executive summary mentions AI when AI findings present, executive summary is unchanged when no AI findings, root cause prefers cross-source AI findings, AI finding tag detection by ID prefix. Add test cases to existing `src/reporters/__tests__/markdown-reporter.test.ts` and `src/reporters/__tests__/html-reporter.test.ts` for AI badge rendering. Update README.md: add 'AI Mode' section with usage instructions (`export OPENAI_API_KEY=... && npx sbi analyze bundle.tar.gz`), document `--no-ai` flag, describe the hybrid retrieval architecture (graph → lexical → semantic expansion → LLM), note that heuristic mode is the default and works offline, update test count. Final verification: all checks pass (lint zero-warnings, typecheck clean, all tests pass, build clean), both `npx sbi analyze bundle.tar.gz --no-ai` and `npx sbi analyze bundle.tar.gz` (with key) produce valid reports.",
+        "requiredChecks": [
+          "lint",
+          "typecheck",
+          "unit",
+          "build"
+        ]
+      }
+    ]
+  },
+  "stepIndex": 8,
+  "activeSummary": {
+    "stepTitle": "All steps complete",
+    "gateResults": [
+      {
+        "id": "lint",
+        "passed": true
+      },
+      {
+        "id": "typecheck",
+        "passed": true
+      },
+      {
+        "id": "unit",
+        "passed": true
+      },
+      {
+        "id": "build",
+        "passed": true
+      },
+      {
+        "id": "git-diff-check",
+        "passed": true
+      }
+    ]
+  }
+}

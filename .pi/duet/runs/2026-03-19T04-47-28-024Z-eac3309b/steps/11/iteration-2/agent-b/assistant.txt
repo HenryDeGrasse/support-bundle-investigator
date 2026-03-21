@@ -1,0 +1,41 @@
+## Review Summary
+
+### What I Reviewed
+
+1. **`src/graph/diagnostic-graph.ts`** — Full implementation of the unified diagnostic graph:
+   - `DiagnosticNodeType` (6 types), `DiagnosticEdgeType` (14 types), `DiagnosticGraphNode<T>`, `DiagnosticEdge` interfaces
+   - `DiagnosticGraph` class with add/query methods and `toResourceRelationshipGraph()` adapter
+   - `buildDiagnosticGraph()` — mirrors `buildResourceGraph()` logic exactly for structural edges
+   - `asResourceRelationshipGraph()` — standalone adapter projecting only resource/event nodes and 5 structural edge types
+
+2. **`src/graph/__tests__/diagnostic-graph.test.ts`** — 28 tests covering all step requirements:
+   - All 6 node types, all 14 edge types
+   - Edge weight/direction optionality
+   - `getEdgesFrom`/`getEdgesTo`/`getNeighbors` queries
+   - Structural parity with `buildResourceGraph` for owner-ref, secret, configmap, pvc, event edges
+   - Complex multi-resource scenario parity
+   - `asResourceRelationshipGraph` adapter filtering (only resource/event nodes, only structural edges)
+   - Backward-compatibility: `getRelatedChunks` returns identical results via adapter vs. direct `buildResourceGraph`
+   - `toResourceRelationshipGraph()` instance method
+
+3. **`src/graph/index.ts`** — Correctly exports all new types and functions
+
+### Checks Run
+- **Lint**: ✅ Clean
+- **Typecheck**: ✅ Clean  
+- **Unit tests**: ✅ 2829 passed, 2 skipped, 0 failed (75 test files)
+
+### Assessment
+
+The implementation is well-structured, thoroughly tested, and fully satisfies step 11 requirements:
+- ✅ All 6 node types and 14 edge types defined
+- ✅ Nodes carry typed metadata
+- ✅ Edges carry type, weight, direction
+- ✅ `buildDiagnosticGraph` produces structurally equivalent edges to `buildResourceGraph`
+- ✅ Backward-compatible via adapter (`asResourceRelationshipGraph` and `toResourceRelationshipGraph()`)
+- ✅ `getRelatedChunks` works identically through the adapter
+- ✅ Exports updated in `src/graph/index.ts`
+
+The code quality is good — well-documented with JSDoc, clean type definitions, and proper separation of the adapter pattern. The module-level `_edgeCounter` for edge IDs is a minor style choice but is functionally correct and no tests depend on specific edge ID values.
+
+Verdict: approve

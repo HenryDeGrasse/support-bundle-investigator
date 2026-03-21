@@ -1,0 +1,185 @@
+{
+  "version": 1,
+  "phase": "completed",
+  "updatedAt": "2026-03-19T22:39:38.252Z",
+  "runId": "2026-03-19T21-18-06-372Z-d0b387f7",
+  "handoffMode": "summary",
+  "postPlanMode": "review",
+  "activeConfig": {
+    "sideA": {
+      "label": "Claude Opus 4.6",
+      "model": "anthropic/claude-opus-4-6",
+      "thinking": "high"
+    },
+    "sideB": {
+      "label": "GPT-5.4",
+      "model": "openai-codex/gpt-5.4",
+      "thinking": "high"
+    },
+    "planner": {
+      "label": "Claude Opus 4.6",
+      "model": "anthropic/claude-opus-4-6",
+      "thinking": "high"
+    },
+    "critic": {
+      "label": "GPT-5.4",
+      "model": "openai-codex/gpt-5.4",
+      "thinking": "high"
+    },
+    "implementer": {
+      "label": "Claude Sonnet 4.6",
+      "model": "anthropic/claude-sonnet-4-6",
+      "thinking": "high"
+    },
+    "reviewer": {
+      "label": "Claude Opus 4.6",
+      "model": "anthropic/claude-opus-4-6",
+      "thinking": "high"
+    },
+    "executionMode": "relay",
+    "startImplementer": "A",
+    "maxPlanRounds": 4,
+    "maxExecutionRounds": 5,
+    "alternateByStep": true,
+    "checks": {
+      "lint": {
+        "cmd": "npm run lint",
+        "timeoutSec": 300
+      },
+      "typecheck": {
+        "cmd": "npm run typecheck",
+        "timeoutSec": 300
+      },
+      "unit": {
+        "cmd": "npm test",
+        "timeoutSec": 600
+      },
+      "build": {
+        "cmd": "npm run build",
+        "timeoutSec": 600
+      }
+    },
+    "repo": {
+      "requireGit": true,
+      "requireCleanStart": false,
+      "enforceCleanAfterStep": false,
+      "captureDiffCheck": true
+    }
+  },
+  "goal": "You should target the seed clustering and priority re-scoring step — the single highest-ROI AI addition because it reduces investigation cost while improving quality at the same time. Specifically, you want to design and implement a pre-investigation AI clustering pass that takes the raw generated seeds (after deterministic generation), groups them by likely shared root cause using a single LLM call, collapses redundant seeds within each cluster into one representative seed that carries the combined evidence pointers and identifiers of all its members, and re-scores cluster priority based on how many seeds converged (more pods failing the same way = higher priority, not lower). The implementation touches seed-generator.ts (or a new seed-clusterer.ts alongside it), the orchestrator's pre-investigation setup in analyze.ts where aiDeps is available, and needs a new prompt in prompts.ts that gives the LLM the seed list in a structured format and asks for grouping with a reasoning trace — all while keeping the deterministic seed generation layer completely untouched so the system degrades gracefully when AI is disabled.",
+  "plan": {
+    "goal": "Implement a pre-investigation AI seed-clustering pass that groups raw deterministic seeds by likely shared root cause using a single LLM call, collapses redundant seeds within each cluster into one representative seed carrying combined evidence pointers, and re-scores cluster priority upward when multiple seeds converge — while keeping deterministic seed generation untouched and degrading gracefully when AI is disabled.",
+    "steps": [
+      {
+        "id": "step-1",
+        "title": "Define ClusteredSeed type and SeedClusterLLMClient interface in src/investigators/types.ts",
+        "description": "Extend the types file with:\n\n1. **ClusteredSeed** — extends `InvestigationSeed` with:\n   - `memberSeeds: InvestigationSeed[]` — all original seeds collapsed into this cluster (includes the representative itself). Downstream consumers (especially the AI investigator) need the full seed objects — not just IDs — because `seed.source` is parsed for graph traversal and `seed.hypothesis` is used for lexical search and HyDE. For unclustered seeds this is `[self]`.\n   - `clusterLabel: string` — LLM-generated shared root-cause label for the cluster (e.g. 'CrashLoopBackOff in namespace default'). For unclustered seeds this equals the hypothesis.\n   - `originalPriority: number` — the priority before cluster re-scoring, for audit.\n\n   The representative's `hypothesis` field is set to a combined multi-hypothesis string (joining all member hypotheses with '\\n\\nAlso investigate: ' separator, matching the existing `createMergedSeed` pattern in `ai-investigator.ts`). This ensures the AI investigator's lexical search, HyDE embedding, and LLM prompt all cover every member symptom. The representative's `source` remains the highest-priority member's source (graph retrieval parses it for the primary resource); additional member sources are accessible via `memberSeeds`.\n\n2. **SeedClusterLLMClient** — minimal interface for the clustering LLM call:\n   ```ts\n   interface SeedClusterLLMClient {\n     generateText(systemPrompt: string, userPrompt: string): Promise<string>;\n   }\n   ```\n   This matches the existing `HydeLLMClient` / `KnowledgeLLMClient` pattern so the real `LLMClient` satisfies it without adapters.\n\nExport both from `src/investigators/index.ts`.",
+        "requiredChecks": [
+          "lint",
+          "typecheck",
+          "build"
+        ]
+      },
+      {
+        "id": "step-2",
+        "title": "Add seed-clustering prompt to src/ai/prompts.ts",
+        "description": "Add a new exported constant `SEED_CLUSTERING_SYSTEM_PROMPT` and a builder function `buildSeedClusteringPrompt(seeds: InvestigationSeed[]): { system: string; user: string }`.\n\n**System prompt** follows the established grounding-constraint pattern:\n- Role: senior Kubernetes SRE performing triage.\n- Task: group the provided investigation seeds by likely shared root cause.\n- Grounding rule: every grouping decision must cite seed IDs from the provided list; do not invent symptoms.\n- Output must be valid JSON matching the schema below.\n\n**User prompt** serializes each seed as `{ id, hypothesis, source, category, priority }` in a JSON array, then specifies the output schema:\n```json\n{\n  \"clusters\": [\n    {\n      \"label\": \"Human-readable shared root-cause label\",\n      \"reasoning\": \"Why these seeds share a root cause\",\n      \"seedIds\": [\"seed:pod:0\", \"seed:event:3\"],\n      \"representativeSeedId\": \"seed:pod:0\"\n    }\n  ]\n}\n```\nRules embedded in the prompt:\n- Every seed ID must appear in exactly one cluster.\n- Seeds with no natural grouping partner should form a singleton cluster.\n- `representativeSeedId` must be the highest-priority member.\n- Clusters should be based on likely shared root cause, not just similar category.\n\nExport the new prompt function and constant from `src/ai/index.ts`.",
+        "requiredChecks": [
+          "lint",
+          "typecheck",
+          "build"
+        ]
+      },
+      {
+        "id": "step-3",
+        "title": "Implement seed-clusterer logic in src/investigators/seed-clusterer.ts",
+        "description": "Create `src/investigators/seed-clusterer.ts` with a single public async function:\n\n```ts\nexport async function clusterSeeds(\n  seeds: InvestigationSeed[],\n  llmClient: SeedClusterLLMClient,\n): Promise<ClusteredSeed[]>\n```\n\n**Algorithm:**\n1. If `seeds.length < 3`, skip the LLM call entirely — return via `toUnclusteredSeeds(seeds)` which maps each seed to a `ClusteredSeed` with `memberSeeds: [self]`, `clusterLabel: seed.hypothesis`, `originalPriority: seed.priority` (no clustering overhead for trivial seed lists).\n2. Call `buildSeedClusteringPrompt(seeds)` to get system+user prompts.\n3. Call `llmClient.generateText(system, user)` to get the raw JSON response.\n4. Parse the JSON response. On parse failure, log a `console.warn` and fall back to unclustered identity mapping (graceful degradation).\n5. Validate the parsed response: check that every seed ID in the input appears exactly once across all clusters, and that `representativeSeedId` is a member of its cluster. On validation failure, fall back to unclustered.\n6. For each cluster:\n   - Find the representative seed (by `representativeSeedId`).\n   - Collect all member `InvestigationSeed` objects from the input array.\n   - Build a `ClusteredSeed` from the representative with:\n     - `memberSeeds` = full seed objects for all cluster members\n     - `hypothesis` = combined multi-hypothesis string joining all member hypotheses (representative first, then remaining members separated by '\\n\\nAlso investigate: '), matching the `createMergedSeed` pattern already used in `ai-investigator.ts`. This ensures the AI investigator's graph resolution (`resolveSeedStartNodes`), lexical search (`seed.hypothesis`), HyDE generation, and LLM prompt all cover every member symptom.\n     - `source` = the representative's source (highest-priority member, used by `parseSeedSource` / `getRelatedChunks` for primary graph traversal)\n     - `clusterLabel` = the LLM's label\n     - `originalPriority` = the representative's original priority\n     - `priority` = re-scored: `Math.min(originalPriority + 5 * (clusterSize - 1), 100)` — each additional converging seed adds +5, capped at 100\n7. Return the array sorted by priority descending (matching `generateSeeds` sort contract).\n\nAlso export a synchronous helper `toUnclusteredSeeds(seeds: InvestigationSeed[]): ClusteredSeed[]` that performs the identity mapping (used when AI is disabled or seed count is below threshold). Each seed maps to a `ClusteredSeed` with `memberSeeds: [self]`, `clusterLabel: seed.hypothesis`, `originalPriority: seed.priority`, and `hypothesis` unchanged. This keeps the no-AI path trivially testable.\n\nExport from `src/investigators/index.ts`.",
+        "requiredChecks": [
+          "lint",
+          "typecheck",
+          "build"
+        ]
+      },
+      {
+        "id": "step-4",
+        "title": "Add unit tests for seed-clustering prompt builder",
+        "description": "Create `src/ai/__tests__/seed-clustering-prompt.test.ts` following the pattern of `prompts.test.ts`.\n\nTest cases:\n- `SEED_CLUSTERING_SYSTEM_PROMPT` is a non-empty string containing grounding constraints.\n- `buildSeedClusteringPrompt` returns `{ system, user }` strings.\n- User prompt contains each seed's ID, hypothesis, and priority.\n- User prompt contains the JSON output schema with `clusters` array.\n- User prompt includes the rule that every seed must appear in exactly one cluster.\n- System prompt establishes the SRE triage role.\n- Works with an empty seed array (edge case).\n- Works with a single seed.",
+        "requiredChecks": [
+          "lint",
+          "typecheck",
+          "unit",
+          "build"
+        ]
+      },
+      {
+        "id": "step-5",
+        "title": "Add unit tests for seed-clusterer logic",
+        "description": "Create `src/investigators/__tests__/seed-clusterer.test.ts` following the pattern of `seed-generator.test.ts` and `orchestrator.test.ts`.\n\nTest cases for `clusterSeeds`:\n- **Below-threshold passthrough**: fewer than 3 seeds → returns ClusteredSeeds with `memberSeeds: [self]`, no LLM call made.\n- **Successful clustering**: mock LLM returns valid JSON grouping 5 seeds into 2 clusters → returns 2 ClusteredSeeds + singletons with correct `memberSeeds`, `clusterLabel`, boosted priorities, and combined hypothesis text.\n- **Combined hypothesis**: cluster of 3 seeds → representative's hypothesis field contains all three member hypotheses joined with '\\n\\nAlso investigate: ' separator (matching `createMergedSeed` pattern from `ai-investigator.ts`).\n- **Priority re-scoring**: cluster of 3 seeds with original priority 60 → new priority is `min(60 + 5*2, 100) = 70`. Cluster of 1 seed → priority unchanged.\n- **Sort order**: returned array is sorted by priority descending.\n- **memberSeeds carries full objects**: each member in `memberSeeds` has its original `source`, `hypothesis`, `category`, and `priority` intact (not mutated).\n- **LLM parse failure**: mock LLM returns invalid JSON → falls back to unclustered, no throw.\n- **LLM returns empty**: mock LLM returns empty string → falls back to unclustered.\n- **Validation failure — missing seed**: LLM omits a seed ID → falls back to unclustered.\n- **Validation failure — duplicate seed**: LLM puts same seed in two clusters → falls back to unclustered.\n- **Validation failure — invalid representativeSeedId**: representative not in cluster members → falls back to unclustered.\n\nTest cases for `toUnclusteredSeeds`:\n- Maps each seed to a ClusteredSeed with `memberSeeds: [self]`.\n- Preserves original priority, hypothesis, source, and category.\n- Returns empty array for empty input.\n- Preserves sort order.",
+        "requiredChecks": [
+          "lint",
+          "typecheck",
+          "unit",
+          "build"
+        ]
+      },
+      {
+        "id": "step-6",
+        "title": "Integrate seed clustering into orchestrator.ts runInvestigation",
+        "description": "In `src/investigators/orchestrator.ts`, insert the clustering step between seed generation (line ~1028) and the investigator fan-out.\n\n**Key insight driving the design:** Heuristic investigators (`investigateKubernetes`, `investigateLog`, `investigateConfig`, `investigateServices`) examine ALL resources regardless of seed content — seeds are unused context hints. The real per-seed cost and quality leverage lives in `investigateWithAI()`, which iterates seeds one-by-one doing graph retrieval → lexical search → HyDE → LLM call per seed. Therefore, **clustered seeds must be fed to the AI investigator** to achieve the stated goal of reducing investigation cost while improving quality.\n\n**Changes to `runInvestigation`:**\n1. After `const seeds = generateSeeds(context);`, add:\n   ```ts\n   // ── 1a. AI seed clustering (optional, additive) ──────────────────────\n   let clusteredSeeds: ClusteredSeed[];\n   if (aiDeps?.llmClient && seeds.length >= 3) {\n     try {\n       clusteredSeeds = await clusterSeeds(seeds, aiDeps.llmClient);\n     } catch (error) {\n       console.warn(\n         `[Orchestrator] Seed clustering failed, continuing with unclustered seeds: ` +\n           `${error instanceof Error ? error.message : String(error)}`,\n       );\n       clusteredSeeds = toUnclusteredSeeds(seeds);\n     }\n   } else {\n     clusteredSeeds = toUnclusteredSeeds(seeds);\n   }\n   ```\n2. **Heuristic investigator partitioning** (`k8sSeeds`, `logSeeds`, etc.) continues to use the original `seeds` array. These investigators examine all resources regardless; the seed list is only for API consistency and potential future prioritization.\n3. **AI investigator call** — this is the critical change. Replace `investigateWithAI(context, seeds, ...)` with `investigateWithAI(context, clusteredSeeds, ...)`. Since `ClusteredSeed` extends `InvestigationSeed`, it is type-compatible. The representative's combined `hypothesis` (joining all member hypotheses) means:\n   - `resolveSeedStartNodes()` extracts Pod/ns/name patterns from ALL member hypotheses (broader graph traversal)\n   - `lexicalIndex.search(seed.hypothesis)` finds chunks matching ALL member identifiers\n   - `generateHypotheticalDocument(seed.hypothesis)` produces a richer HyDE embedding covering all symptoms\n   - `buildInvestigationPrompt(seed, chunks)` sends a more comprehensive prompt to the LLM\n   - The AI investigator's existing `deduplicateSeeds()` (Jaccard chunk-overlap merge at >80%) handles any remaining overlap among cluster representatives\n   - Net effect: fewer LLM calls (cluster count < seed count), each with richer context\n4. Update `InvestigationResult.seeds` to report `seeds` (the original pre-clustering list) for full audit trail.\n5. Add `clusteredSeeds: ClusteredSeed[]` field to `InvestigationResult` for trace/debug access. This lets callers see which seeds were grouped and why.\n6. Update `metadata` with two new fields:\n   - `seedClusterCount: number` — number of cluster representatives (equals `clusteredSeeds.length`)\n   - `seedClusteringEnabled: boolean` — whether AI clustering was attempted and succeeded\n7. Update the `InvestigationResult` interface accordingly.\n\n**Decision on open question — audit trail:** `InvestigationResult.seeds` reports the original pre-clustering seeds (full audit). The new `clusteredSeeds` field provides the post-clustering view with `memberSeeds` for traceability.\n\n**Decision on open question — representative selection:** The highest-priority member becomes the representative (deterministic, no LLM synthesis of new hypothesis text). The LLM only provides the grouping and label. The representative's hypothesis is extended with all member hypotheses (matching the existing `createMergedSeed` pattern).\n\n**Decision on open question — priority formula:** Deterministic formula `Math.min(originalPriority + 5 * (clusterSize - 1), 100)` — simple, predictable, auditable. The LLM is not asked to assign priority.\n\n**Decision on open question — threshold:** Clustering is skipped below 3 seeds (the overhead of an LLM call is not justified for 1-2 seeds).\n\n**Decision on open question — other improvements:** Deferred — this PR focuses solely on seed clustering.",
+        "requiredChecks": [
+          "lint",
+          "typecheck",
+          "build"
+        ]
+      },
+      {
+        "id": "step-7",
+        "title": "Add orchestrator integration tests for seed clustering",
+        "description": "Add tests to `src/investigators/__tests__/orchestrator.test.ts` in a new `describe('seed clustering integration')` block.\n\nTest cases:\n- **No AI deps → seeds unchanged**: `runInvestigation(context)` without `aiDeps` → `metadata.seedClusteringEnabled` is `false`, `metadata.seedClusterCount` equals `seeds.length`, `clusteredSeeds` each have `memberSeeds.length === 1`.\n- **AI deps with < 3 seeds → clustering skipped**: context producing 1-2 seeds with aiDeps → `seedClusteringEnabled` is false, seeds pass through unclustered.\n- **AI deps with >= 3 seeds → clustering attempted**: mock `llmClient.generateText` to return a valid clustering JSON. Verify `seedClusteringEnabled` is true, `seedClusterCount` < original seed count (clusters collapsed), and priority re-scoring applied.\n- **Clustered seeds reach AI investigator**: mock `llmClient.investigateSeed` and `llmClient.generateText`. After clustering collapses 4 seeds to 2 clusters, verify that `investigateSeed` is called at most 2 times (one per cluster representative), not 4 times. This is the core cost-reduction assertion.\n- **Combined hypothesis flows through AI path**: verify that the system/user prompt passed to `investigateSeed` contains hypothesis text from ALL member seeds in a cluster, not just the representative's original hypothesis.\n- **LLM clustering failure → graceful degradation**: mock `generateText` to throw → investigation still completes with unclustered seeds, findings are produced normally, `investigateSeed` is called for each original seed.\n- **Original seeds preserved in result**: `result.seeds` contains all pre-clustering seeds. `result.clusteredSeeds` contains the post-clustering representatives with `memberSeeds` populated.\n- **All existing orchestrator tests still pass**: this is the most critical check — no regression in any of the existing tests.\n\nMock pattern: extend `makeEmptyAIDeps()` to include a `generateText` mock on the llmClient alongside the existing `investigateSeed` mock, matching the established mock pattern (`vi.fn().mockResolvedValue(...)`).",
+        "requiredChecks": [
+          "lint",
+          "typecheck",
+          "unit",
+          "build"
+        ]
+      },
+      {
+        "id": "step-8",
+        "title": "Export new types and functions from package index files",
+        "description": "Ensure all new public API surfaces are exported:\n\n1. `src/investigators/index.ts` — add exports for `clusterSeeds`, `toUnclusteredSeeds`, `ClusteredSeed`, `SeedClusterLLMClient`.\n2. `src/ai/index.ts` — add exports for `SEED_CLUSTERING_SYSTEM_PROMPT`, `buildSeedClusteringPrompt`.\n3. `src/investigators/orchestrator.ts` — the `InvestigationResult` interface already exports via `src/investigators/index.ts`; verify the new `clusteredSeeds` field (typed as `ClusteredSeed[]` with `memberSeeds: InvestigationSeed[]`) and metadata fields (`seedClusterCount`, `seedClusteringEnabled`) are visible to downstream consumers.\n\nRun full test suite to confirm no regressions.",
+        "requiredChecks": [
+          "lint",
+          "typecheck",
+          "unit",
+          "build"
+        ]
+      }
+    ]
+  },
+  "stepIndex": 8,
+  "activeSummary": {
+    "stepTitle": "All steps complete",
+    "gateResults": [
+      {
+        "id": "lint",
+        "passed": true
+      },
+      {
+        "id": "typecheck",
+        "passed": true
+      },
+      {
+        "id": "unit",
+        "passed": true
+      },
+      {
+        "id": "build",
+        "passed": true
+      },
+      {
+        "id": "git-diff-check",
+        "passed": true
+      }
+    ]
+  }
+}

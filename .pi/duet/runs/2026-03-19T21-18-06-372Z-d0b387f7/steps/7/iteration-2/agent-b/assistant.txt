@@ -1,0 +1,44 @@
+All checks pass cleanly:
+
+- **51 orchestrator tests** pass (44 existing + 7 new seed clustering integration tests)
+- **3567 total tests** pass (2 skipped, 0 failures)
+- **TypeScript** compiles with no errors
+- **ESLint** passes with no warnings
+- **Build** succeeds
+
+## Review Summary
+
+### What I reviewed
+
+1. **The 7 new seed clustering integration tests** in the `describe('seed clustering integration')` block, covering:
+   - No AI deps → singleton clustered seeds
+   - Below-threshold seed count → clustering skipped, `generateText` never called
+   - ≥3 seeds → clustering attempted, priority boosted, `seedClusterCount` reduced
+   - Call count reduction (4 seeds → 2 clusters → ≤2 `investigateSeed` calls)
+   - Combined hypothesis text with `'Also investigate:'` separator
+   - Graceful degradation on `generateText` failure
+   - Audit trail preservation (`result.seeds` vs `result.clusteredSeeds`)
+
+2. **The `makeEmptyAIDeps()` extension** — `generateText` mock added with empty-string default, which correctly triggers the clusterer's graceful fallback without affecting existing tests.
+
+3. **The `parseSeedsFromClusteringPrompt` helper** — correctly parses the JSON code-fence format from `buildSeedClusteringPrompt`.
+
+4. **The orchestrator integration** at lines 1065–1082 — confirmed `seedClusteringEnabled` semantics match the tests (flag set to `true` when `clusterSeeds` is called, regardless of internal LLM success).
+
+5. **Cross-checked `clusterSeeds` in `seed-clusterer.ts`** — confirmed the internal try-catch means it never re-throws, so the orchestrator's outer catch at line 1074 is belt-and-suspenders.
+
+### Assessment
+
+The implementation is thorough and correct. All 7 test cases match the step requirements:
+- ✅ No AI deps → seeds unchanged
+- ✅ < 3 seeds → clustering skipped
+- ✅ ≥ 3 seeds → clustering attempted
+- ✅ Clustered seeds reach AI investigator (call count reduction verified)
+- ✅ Combined hypothesis flows through AI path
+- ✅ LLM failure → graceful degradation
+- ✅ Original seeds preserved in result
+- ✅ All 44 existing orchestrator tests still pass (no regressions)
+
+No changes needed.
+
+Verdict: approve

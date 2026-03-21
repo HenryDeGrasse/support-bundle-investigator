@@ -333,6 +333,49 @@ function hasComponentOverlap(a: Finding, b: Finding): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Cross-namespace action helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Scans supporting evidence for cross-namespace service match notes and
+ * returns a specific recommended action if found.
+ *
+ * A cross-namespace note has the form:
+ *   "Service 'api-service' exists in namespace 'default' (not 'staging'). ..."
+ *
+ * When such a note is found, the root cause is a wrong-namespace service
+ * reference — the generic DNS-failure action should be replaced with the
+ * specific env-var fix extracted from the note.
+ */
+function extractCrossNamespaceAction(hypothesis: Hypothesis): string | undefined {
+  for (const item of hypothesis.evidenceAssessment.supporting) {
+    if (!/exists in namespace .* \(not /i.test(item.note)) continue;
+
+    // Extract the actionable "Update ... from ... to ..." part from the note.
+    const updateMatch = item.note.match(/Update\s+\S+\s+from\s+.+$/s);
+    if (updateMatch?.[0] != null) {
+      return `Update the environment variable to point to the correct namespace. ${updateMatch[0]}`;
+    }
+
+    // Fallback: construct a generic namespace-fix recommendation from the note.
+    const nsMatch = item.note.match(
+      /Service '([^']+)' exists in namespace '([^']+)' \(not '([^']+)'\)/i,
+    );
+    if (nsMatch?.[1] != null && nsMatch[2] != null && nsMatch[3] != null) {
+      const service = nsMatch[1];
+      const foundNs = nsMatch[2];
+      const targetNs = nsMatch[3];
+      return (
+        `The Service '${service}' exists in namespace '${foundNs}', not in '${targetNs}'. ` +
+        `Update all environment variable references to use http://${service}.${foundNs} ` +
+        `or http://${service} if the consuming pod is in the ${foundNs} namespace.`
+      );
+    }
+  }
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -349,7 +392,9 @@ function hasComponentOverlap(a: Finding, b: Finding): boolean {
  * - `missingEvidence`       — `missingDecisive` entries plus `specGapRecommendations`
  * - `reasoningSummary`      — includes confidence rationale, symptom context,
  *                             and differential-diagnosis detail
- * - `recommendedAction`     — category-specific action string
+ * - `recommendedAction`     — category-specific action string, or a specific
+ *                             cross-namespace fix when cross-namespace service
+ *                             evidence is present in supporting evidence
  * - `affectedComponents`    — derived from the hypothesis id / symptom key
  *
  * @param hypothesis - A fully scored hypothesis with `confidence` and
@@ -375,6 +420,12 @@ export function convertHypothesisToFinding(hypothesis: Hypothesis, rank: number)
           `No contradicting evidence found for [${hypothesis.category}] hypothesis in the available bundle data — hypothesis could not be ruled out`,
         ];
 
+  // When cross-namespace service evidence is present, use the specific namespace
+  // fix as the recommended action instead of the generic category action.
+  const crossNamespaceAction = extractCrossNamespaceAction(hypothesis);
+  const recommendedAction =
+    crossNamespaceAction ?? RECOMMENDED_ACTION_BY_CATEGORY[hypothesis.category];
+
   const finding: Finding = {
     id: `finding:hypothesis:${hypothesis.category}:${rank}`,
     title: hypothesis.rootCause,
@@ -388,7 +439,7 @@ export function convertHypothesisToFinding(hypothesis: Hypothesis, rank: number)
       ...hypothesis.evidenceAssessment.missingDecisive,
       ...hypothesis.specGapRecommendations,
     ]),
-    recommendedAction: RECOMMENDED_ACTION_BY_CATEGORY[hypothesis.category],
+    recommendedAction,
   };
   finding.confidenceQuality = computeConfidenceQuality(finding);
   return finding;

@@ -1,0 +1,156 @@
+{
+  "version": 1,
+  "phase": "completed",
+  "updatedAt": "2026-03-18T13:11:16.009Z",
+  "runId": "2026-03-18T04-58-10-431Z-6337c4f9",
+  "handoffMode": "none",
+  "postPlanMode": "autorun",
+  "activeConfig": {
+    "sideA": {
+      "label": "Claude Opus 4.6",
+      "model": "anthropic/claude-opus-4-6",
+      "thinking": "xhigh"
+    },
+    "sideB": {
+      "label": "GPT-5.4",
+      "model": "openai-codex/gpt-5.4",
+      "thinking": "xhigh"
+    },
+    "planner": {
+      "label": "Claude Opus 4.6",
+      "model": "anthropic/claude-opus-4-6",
+      "thinking": "xhigh"
+    },
+    "critic": {
+      "label": "GPT-5.4",
+      "model": "openai-codex/gpt-5.4",
+      "thinking": "xhigh"
+    },
+    "implementer": {
+      "label": "Claude Sonnet 4.6",
+      "model": "anthropic/claude-sonnet-4-6",
+      "thinking": "high"
+    },
+    "reviewer": {
+      "label": "GPT-5.4",
+      "model": "openai-codex/gpt-5.4",
+      "thinking": "high"
+    },
+    "executionMode": "relay",
+    "startImplementer": "A",
+    "maxPlanRounds": 4,
+    "maxExecutionRounds": 5,
+    "alternateByStep": true,
+    "checks": {
+      "lint": {
+        "cmd": "npm run lint",
+        "timeoutSec": 300
+      },
+      "typecheck": {
+        "cmd": "npm run typecheck",
+        "timeoutSec": 300
+      },
+      "unit": {
+        "cmd": "npm test",
+        "timeoutSec": 600
+      },
+      "build": {
+        "cmd": "npm run build",
+        "timeoutSec": 600
+      }
+    },
+    "repo": {
+      "requireGit": true,
+      "requireCleanStart": false,
+      "enforceCleanAfterStep": false,
+      "captureDiffCheck": true
+    }
+  },
+  "goal": "Investigate the actual output quality of this support bundle analyzer across all scenarios. Run each scenario through the full pipeline (both heuristic-only and AI mode), examine the raw findings, identify redundancy and quality issues, define what the ideal output should be, and implement changes to get there. Step 1: Run every scenario and capture the actual output. Build the project first (npm run build), then for each scenario in test/fixtures/scenarios/ (bad-image-tag, missing-secret-crashloop, wrong-db-endpoint, pvc-pending), create a tarball and run: ```bash   tar czf /tmp/sbi-bench/<scenario>.tar.gz -C test/fixtures/scenarios <scenario> ``` Then analyze each one twice: ```bash   npx sbi analyze /tmp/sbi-bench/<scenario>.tar.gz --no-ai --format json > /tmp/sbi-bench/<scenario>-heuristic.json   npx sbi analyze /tmp/sbi-bench/<scenario>.tar.gz --format json > /tmp/sbi-bench/<scenario>-ai.json ``` For each output, examine every finding: id, title, severity, confidence, affected components, evidence count, and the first 100 chars of reasoning. Write down what you see. Step 2: For each scenario, define the ideal output. Given the bundle contents, what should a senior support engineer see? Think about: - What is the actual root cause? There should be exactly one primary finding that names it. - What alternative diagnoses are worth showing? Only genuinely different competing hypotheses, not restatements of the same conclusion. - What corroborating observations are useful vs noise? A \"Pod not ready\" finding is noise when an AI finding already explains WHY it's not ready. - Are evidence paths clean (bundle-relative, not absolute temp paths)? - Are titles human-readable (no [Hypothesis] prefix, no (symptom:...) suffix, no machine-generated verbosity)? - Are there duplicate or near-duplicate findings saying the same thing with different wording? Write the ideal finding list for each scenario. Example format: ```   bad-image-tag ideal (3 findings):     1. CRITICAL 100% — Image tag myapp:v999.99.99 does not exist in registry     2. CRITICAL  74% — [Alternative] Could be registry auth failure     3. HIGH      65% — Deployment app-deployment has 0 ready replicas ``` Step 3: Identify the gaps between actual and ideal. For each scenario, compare the actual output to the ideal and categorize every issue: - Redundant findings: Two findings say the same thing with different wording - Unsuppressed symptoms: A symptom-level finding (e.g. \"Not Ready Pod\") that adds nothing when a root-cause finding already explains why - Dirty paths: Absolute temp paths in titles, evidence, or affected components - Machine-readable titles: [Hypothesis] prefix, (symptom:...) suffix still visible - Missing AI absorption: Heuristic finding should have been folded into the AI finding but wasn't (component mismatch, title mismatch, etc.) - Duplicate hypothesis sets: Same hypothesis category generated for multiple symptom groups pointing to the same pod Step 4: Implement fixes with TDD. For each issue category, write failing tests first, then fix the code. Key files to look at: - src/investigators/orchestrator.ts — AI-primary promotion logic (step 5a), hypothesis dedup, final title-based dedup - src/investigators/hypothesis-converter.ts — title generation, evidence sanitization - src/investigators/hypothesis-generator.ts — symptom grouping (may produce duplicate groups from log paths) - src/reporters/display-helpers.ts — humanizeTitle, cleanEvidencePath, humanizeReasoning, collapseEvidence - src/investigators/log-investigator.ts — sets affected components to absolute log file paths instead of pod identifiers - src/investigators/kubernetes-investigator.ts — affected component format - src/tui/components/FindingsPane.tsx and DetailPane.tsx — whether display helpers are applied Likely fixes: - Log investigator should use Pod/<namespace>/<pod-name> as the affected component, not the raw file path - AI-primary promotion should match components more flexibly (partial match, same pod name) - When an AI finding exists at high confidence for a pod, suppress hypothesis findings with the same category (e.g. AI says \"bad tag\" → suppress HYP \"bad tag\", keep HYP \"auth failure\" and HYP \"registry unavailable\") - Final dedup should use category-aware comparison, not just title string similarity Step 5: Verify the output is now ideal. Re-run all scenarios and confirm: - Each scenario produces the ideal number of findings - No redundant entries remain - Titles are clean and human-readable - Evidence paths are bundle-relative - AI findings appear at the top when AI mode is active - Differential diagnosis alternatives are present but not duplicated - All 2305+ existing tests still pass - Lint, typecheck, and build pass - The benchmark (npm run benchmark:hypotheses) shows correct top-1 for all scenarios. (what do you think of llm as a judge, or overkill?)",
+  "plan": {
+    "goal": "Improve output quality of the support bundle analyzer across all four scenarios (bad-image-tag, missing-secret-crashloop, wrong-db-endpoint, pvc-pending). Fix five categories of quality issues: (1) log investigator uses absolute temp paths as affected components instead of Pod identifiers, breaking AI absorption and dedup; (2) hypothesis finding titles carry machine-readable [Hypothesis] prefix and (symptom:...) suffix into JSON/HTML output; (3) JSON and HTML reporters don't apply cleanEvidencePath or humanizeTitle, leaking raw absolute paths; (4) orchestrator dedup uses title-string similarity instead of category-aware matching, and doesn't suppress symptom findings already explained by a root-cause finding; (5) pvc-pending scenario is effectively undiagnosed because the k8s investigator has no Pending Pod detector. Ideal end state per scenario: bad-image-tag → 3 findings (image-pull root cause + 2 alternatives), missing-secret-crashloop → 3 findings (missing-secret root cause + CrashLoopBackOff symptom + 1 alternative), wrong-db-endpoint → 4 findings (DNS failure root cause + connectivity alternative + readiness alternative + connection timeout corroboration), pvc-pending → 3 findings (volume-mount-failure root cause naming the missing StorageClass 'fast-ssd' + unhealthy workload + missing resource logs). All finding titles clean, evidence paths bundle-relative, no redundant entries. The existing benchmark expectation of 'missing-secret' for pvc-pending is WRONG — the actual root cause is a storage class mismatch (ProvisioningFailed: storageclass 'fast-ssd' not found), not a missing secret. The benchmark must be updated to expect a new 'volume-mount-failure' category. Note on LLM-as-judge for benchmark: overkill for this project size — deterministic category assertions on 4 scenarios are more reliable and faster.",
+    "steps": [
+      {
+        "id": "step-1",
+        "title": "Fix log investigator to use Pod-based affected components and clean evidence paths",
+        "description": "The log investigator (src/investigators/log-investigator.ts) currently sets affectedComponents to the raw log file path (e.g., '/var/folders/.../sbi-bundle-XYZ/bad-image-tag/logs/app/app-pod.log') and uses the same absolute path in evidence items and titles. This breaks AI-primary absorption (component mismatch with Pod/default/app-pod), prevents hypothesis dedup (duplicate symptom groups from different component strings), and leaks temp paths into JSON output.\n\nTDD approach:\n1. In src/investigators/__tests__/log-investigator.test.ts, write tests:\n   a. 'log finding affectedComponents uses Pod/<namespace>/<pod-name> when log path maps to a known pod' — create a context with a pod resource named 'app-pod' in namespace 'default' and a log file at 'logs/app/app-pod.log'. Assert that the DNS finding's affectedComponents contains 'Pod/default/app-pod' instead of the raw log path.\n   b. 'log finding affectedComponents falls back to cleaned path when no pod match' — use a log file whose basename doesn't match any pod resource. Assert affectedComponents uses a bundle-relative path.\n   c. 'log finding title uses bundle-relative path, not absolute path' — assert title like 'DNS Resolution Failures in logs/app/app-pod.log'.\n   d. 'log finding evidence paths are bundle-relative' — assert evidence[0].path does not start with '/'.\n\n2. Implementation changes in src/investigators/log-investigator.ts:\n   a. Add a helper function resolveLogPodComponent(logFilePath: string, resources: K8sResource[]): string[] that: extracts the basename without extension (e.g., 'app-pod' from 'logs/app/app-pod.log'), searches context.resources for a Pod with that name, and returns ['Pod/<namespace>/<pod-name>'] if found, or [cleanEvidencePath(logFilePath)] if not.\n   b. Import cleanEvidencePath from '../reporters/display-helpers.js'.\n   c. In each of the four investigation functions (investigateDnsFailures, investigateConnectionTimeouts, investigateMissingResources, investigateImagePullInLogs), replace the raw logFile.path in affectedComponents with resolveLogPodComponent(logFile.path, context.resources). Keep additional domain-specific components (DNS/hostname, Secret/name, Image/name).\n   d. Apply cleanEvidencePath to logFile.path in evidence items and titles.\n   e. Update the reasoningSummary to use cleanEvidencePath(logFile.path) instead of raw path.\n\n3. Update existing tests in log-investigator.test.ts that assert on the old absolute-path format.",
+        "requiredChecks": [
+          "lint",
+          "typecheck",
+          "unit",
+          "build"
+        ]
+      },
+      {
+        "id": "step-2",
+        "title": "Clean hypothesis finding titles and apply display helpers in JSON/HTML reporters",
+        "description": "Two related issues: (A) convertHypothesisToFinding produces titles like '[Hypothesis] <rootCause> (symptom: <symptom>)' — the TUI strips these via humanizeTitle but JSON and HTML reporters output the raw title. (B) The JSON reporter (src/reporters/json-reporter.ts) and HTML reporter (src/reporters/html-reporter.ts) don't apply cleanEvidencePath to evidence paths or humanizeTitle to titles (the Markdown reporter already does both).\n\nTDD approach:\n1. In src/investigators/__tests__/hypothesis-converter.test.ts, update existing tests:\n   a. Change assertion 'title includes the root cause and symptom' to assert that the title does NOT contain '[Hypothesis]' and does NOT contain '(symptom:'. The title should be just the rootCause string.\n   b. Add test: 'title is the hypothesis rootCause without machine prefixes/suffixes'.\n   c. Find and update ALL tests across the codebase that assert the old title format (grep for '\\[Hypothesis\\]' in test files).\n\n2. In src/investigators/hypothesis-converter.ts:\n   a. Change the title from `[Hypothesis] ${hypothesis.rootCause} (symptom: ${hypothesis.symptom})` to just `${hypothesis.rootCause}`.\n   b. The symptom information is already in the reasoningSummary via buildReasoningSummary — no information is lost.\n\n3. In src/reporters/json-reporter.ts:\n   a. Import cleanEvidencePath and humanizeTitle from '../reporters/display-helpers.js'.\n   b. In generateJsonReport, apply humanizeTitle to finding.title and cleanEvidencePath to each evidence path. Also apply cleanEvidencePath to affectedComponents entries and evidenceReferences paths.\n\n4. In src/reporters/html-reporter.ts:\n   a. Apply the same cleanEvidencePath and humanizeTitle transformations.\n\n5. In src/reporters/__tests__/json-reporter.test.ts, add tests:\n   a. 'evidence paths in JSON output are bundle-relative' — pass a finding with absolute evidence paths, assert output has cleaned paths.\n   b. 'affected components in JSON output are cleaned'.\n\n6. Update src/reporters/report-builder.ts: apply cleanEvidencePath to evidence paths and humanizeTitle to the top finding title in generateExecutiveSummary, so the executive summary doesn't contain raw hypothesis titles or absolute paths.\n\n7. Update humanizeTitle in display-helpers.ts: since the [Hypothesis] prefix is removed at the source, the stripping logic becomes a no-op safety net. Keep it for backwards compatibility but add handling for log-investigator titles that now use bundle-relative paths (the 'in /absolute/path' regex should still work for any remaining absolute paths).",
+        "requiredChecks": [
+          "lint",
+          "typecheck",
+          "unit",
+          "build"
+        ]
+      },
+      {
+        "id": "step-3",
+        "title": "Improve orchestrator dedup, symptom suppression, and AI absorption",
+        "description": "Three related quality issues in the orchestrator (src/investigators/orchestrator.ts):\n\nA. **Category-aware hypothesis dedup**: The current dedup in step 3a uses category::titleKey, which produces different keys for 'The image tag does not exist...' vs 'Registry authentication failure...'. These are intentionally different alternatives and should NOT be deduped against each other. The real problem is duplicate hypothesis SETS from the same pod appearing via different component paths (e.g., log path vs Pod/ns/name). After step-1 fixes log components, this should be largely resolved. Add a test to confirm: when both k8s and log investigators produce findings for the same pod, hypothesis generation creates only one set per pod, not two.\n\nB. **Symptom suppression**: When a root-cause finding (hypothesis or AI) exists at high confidence (≥0.5) for a component, suppress pure-symptom findings for that same component. 'Symptom findings' are: 'Not Ready Pod' (finding:k8s:notready:*), 'Unhealthy Workload' (finding:k8s:workload:*). The CrashLoopBackOff and ImagePullBackOff findings should NOT be suppressed — they are informative symptoms that name the specific failure mode. After mergeHypothesisFindings and AI-primary promotion, run a final suppression pass.\n\nTDD approach:\n1. In src/investigators/__tests__/orchestrator.test.ts, add tests:\n   a. 'suppresses Not Ready Pod finding when a root-cause hypothesis covers the same pod' — create a context with a not-ready pod and corroborating events so that a hypothesis finding with confidence > 0.5 is generated. Assert the final output does NOT contain a 'Not Ready Pod' finding.\n   b. 'suppresses Unhealthy Workload finding when a root-cause finding covers a pod owned by that workload' — harder; for now, suppress workload findings when any pod finding in the same namespace exists at high confidence.\n   c. 'preserves CrashLoopBackOff symptom finding even when root-cause hypothesis exists' — assert CrashLoopBackOff finding is kept.\n   d. 'preserves Not Ready Pod finding when no root-cause hypothesis covers it' — assert it's kept when hypothesis confidence is 0.\n   e. 'AI-primary absorption matches log findings after component normalization' — with step-1 changes, log findings now have Pod/default/app-pod as component, matching AI findings. Test that log findings are absorbed into AI findings.\n\n2. Implementation in src/investigators/orchestrator.ts:\n   a. After the final title-based dedup (step 7a), add a symptom suppression pass:\n      - Identify all 'root-cause' findings: hypothesis findings with confidence ≥ 0.5, or AI findings.\n      - For each root-cause finding, extract its pod components (Pod/ns/name).\n      - Remove any 'Not Ready Pod' or 'Unhealthy Workload' finding whose components overlap with a root-cause finding's components.\n      - For Unhealthy Workload findings (which reference Deployment/ns/name), check if any root-cause finding references a Pod in the same namespace — this is a reasonable proxy for 'the workload's pods are diagnosed'.\n   b. The AI-primary absorption component matching should already work better after step-1 (log components match AI components). No code change needed here if step-1 is done correctly, but add a test to confirm.\n\nC. **Final dedup refinement**: The existing title-based dedup at step 7a truncates normalized titles to 80 chars for comparison. This is too aggressive — two different findings could share the first 80 chars. Increase to 120 or use the full normalized title. Add a test case.",
+        "requiredChecks": [
+          "lint",
+          "typecheck",
+          "unit",
+          "build"
+        ]
+      },
+      {
+        "id": "step-4",
+        "title": "Add Pending Pod detection, volume-mount-failure hypothesis category, and fix benchmark",
+        "description": "The pvc-pending scenario is effectively undiagnosed: the pod is in Pending/ContainerCreating state, but the k8s investigator only handles CrashLoopBackOff, ImagePullBackOff, Running-but-not-Ready, and Unhealthy Workloads. The actual root cause is a storage class mismatch: PVC 'data-pvc' references StorageClass 'fast-ssd' which doesn't exist, causing ProvisioningFailed events. The existing benchmark expectation of 'missing-secret' for this scenario is WRONG and must be corrected to a new 'volume-mount-failure' category.\n\nThree areas of work:\n\nA. **Add Pending Pod detector to the K8s investigator:**\n\nTDD approach:\n1. In src/investigators/__tests__/kubernetes-investigator.test.ts, add tests:\n   a. 'detects Pending pod stuck in ContainerCreating with FailedMount events' — create a pod with phase=Pending, containerStatus waiting reason=ContainerCreating, and FailedMount events. Assert a finding is produced with severity 'critical', title mentioning the pod name and volume issue.\n   b. 'detects Pending pod with FailedScheduling events' — create a pod with phase=Pending and FailedScheduling events. Assert finding mentions scheduling failure.\n   c. 'Pending pod finding includes ProvisioningFailed evidence when PVC events exist' — create ProvisioningFailed events targeting a PersistentVolumeClaim, assert they appear in evidence.\n   d. 'does not produce Pending pod finding for Pending pods already handled by ImagePull detector' — pod with ImagePullBackOff in Pending phase should be detected by the ImagePull detector, not duplicated.\n   e. 'Pending pod affectedComponents includes the pod identifier'.\n\n2. Implementation in src/investigators/kubernetes-investigator.ts:\n   a. Add function investigatePendingPods(context, counter): { findings, edges } that:\n      - Iterates over Pod resources with phase='Pending' or containerStatus reason='ContainerCreating'.\n      - Skips pods already handled by CrashLoop or ImagePull detectors (check containerErrors for CrashLoopBackOff/ImagePullBackOff/ErrImagePull).\n      - Looks up FailedMount, FailedScheduling events for the pod.\n      - Looks up ProvisioningFailed events on any PersistentVolumeClaim referenced by the pod's spec.volumes[].persistentVolumeClaim.claimName.\n      - Produces a 'critical' finding. Title should be descriptive: if ProvisioningFailed event exists, \"Pending Pod: '<name>' in namespace '<ns>' — PVC '<pvc>' cannot provision (StorageClass not found)\"; if FailedMount only, \"Pending Pod: '<name>' in namespace '<ns>' — volume mount failure\"; if FailedScheduling, \"Pending Pod: '<name>' in namespace '<ns>' — scheduling failure\".\n      - Evidence includes pod resource file, relevant events, and PVC resource file if applicable.\n   b. Call investigatePendingPods in the main investigateKubernetes function.\n\nB. **Add 'volume-mount-failure' hypothesis category:**\n\n1. In src/investigators/hypothesis-types.ts:\n   a. Add 'volume-mount-failure' to the HypothesisCategory union type.\n\n2. In src/investigators/hypothesis-converter.ts:\n   a. Add BASE_SEVERITY_BY_CATEGORY entry: 'volume-mount-failure': 'critical'.\n   b. Add RECOMMENDED_ACTION_BY_CATEGORY entry for 'volume-mount-failure' advising to check PVC status, StorageClass existence, and provisioner availability.\n\n3. In src/investigators/hypothesis-generator.ts:\n   a. Add a new SymptomType 'pending' detected when finding text contains 'pending pod', 'containercreating', 'volume mount failure', or 'failed to mount'.\n   b. Add generatePendingPodHypotheses() returning 3 hypotheses:\n      - 'volume-mount-failure' — PVC cannot provision because StorageClass is missing or provisioner is unavailable.\n      - 'missing-secret' — A volume or secret referenced in the pod spec is absent.\n      - 'config-error' — Pod spec has a misconfigured volume reference.\n   c. Wire the new 'pending' symptom type into generateHypothesesForSymptomInternal.\n\n4. In src/investigators/hypothesis-evidence-collector.ts:\n   a. Add a collectVolumeFailureEvidence function (or extend the existing collector switch) that:\n      - Finds FailedMount events for the pod (already exists for missing-secret but currently extracts secret names — broaden to also detect volume/PVC issues).\n      - Finds ProvisioningFailed events on PVCs referenced by the pod.\n      - Checks whether the StorageClass referenced by the PVC exists in the context resources.\n      - Produces supporting evidence when StorageClass is missing or PVC is Pending.\n\nC. **Fix the benchmark expectation:**\n\n1. In scripts/benchmark-hypotheses.mjs:\n   a. Change pvc-pending expectedTopCategory from 'missing-secret' to 'volume-mount-failure'.\n   b. Add 'volume-mount-failure' recognition to inferTopCategory (it should already work via the id split, but verify).\n\n2. In src/reporters/display-helpers.ts, ensure the normalizeIssueFamily function in hypothesis-converter.ts recognizes 'volume-mount-failure' as an issue family (it will, since hypothesis findings use their category directly via id splitting).",
+        "requiredChecks": [
+          "lint",
+          "typecheck",
+          "unit",
+          "build"
+        ]
+      },
+      {
+        "id": "step-5",
+        "title": "End-to-end scenario quality verification and benchmark validation",
+        "description": "Write integration-level tests that assert the ideal output quality for each scenario, and verify the benchmark produces correct top-1 categories for all four scenarios.\n\nTDD approach:\n1. In test/integration/__tests__/pipeline.test.ts (or a new test/integration/__tests__/output-quality.test.ts), add a describe block 'output quality per scenario' with tests:\n\n   a. bad-image-tag scenario:\n      - Assert finding count is between 3 and 5 (root cause + alternatives + optional workload).\n      - Assert the top finding (highest severity, highest confidence) is about image pull failure.\n      - Assert no finding title contains '[Hypothesis]' or '(symptom:'.\n      - Assert no finding title or evidence path contains '/sbi-bundle-' or starts with '/'.\n      - Assert no finding affectedComponents entry starts with '/'.\n\n   b. missing-secret-crashloop scenario:\n      - Assert the top hypothesis finding is missing-secret category.\n      - Assert a CrashLoopBackOff symptom finding is present (not suppressed).\n      - Assert no duplicate config-error hypothesis findings with the same title.\n      - Assert titles and paths are clean.\n\n   c. wrong-db-endpoint scenario:\n      - Assert the top finding is dns-failure category.\n      - Assert alternative hypotheses (connectivity-failure, readiness-failure) are present.\n      - Assert no 'Not Ready Pod' symptom finding is present (suppressed by root-cause).\n      - Assert titles and paths are clean.\n\n   d. pvc-pending scenario:\n      - Assert a finding mentions the pending pod or volume/storage issue.\n      - Assert finding count is at least 2.\n      - Assert the top hypothesis finding is 'volume-mount-failure' category (NOT 'missing-secret' — the root cause is StorageClass 'fast-ssd' not found, not a missing secret).\n      - Assert titles and paths are clean.\n\n   e. Cross-scenario quality assertions:\n      - For all scenarios: no finding title contains '[Hypothesis]' or '(symptom:'.\n      - For all scenarios: no evidence path starts with '/' or contains '/sbi-bundle-'.\n      - For all scenarios: no affectedComponents entry contains '/sbi-bundle-'.\n      - For all scenarios: findings are sorted by severity desc then confidence desc.\n\n2. Run the benchmark script (npm run benchmark:hypotheses) and verify:\n   - bad-image-tag → top category is 'image-pull-failure'.\n   - missing-secret-crashloop → top category is 'missing-secret'.\n   - wrong-db-endpoint → top category is 'dns-failure'.\n   - pvc-pending → top category is 'volume-mount-failure' (corrected from stale 'missing-secret' — the fixture clearly models a StorageClass mismatch via ProvisioningFailed events, not a missing secret).\n\n3. Verify all 2305+ existing tests still pass. Run full lint, typecheck, unit, and build.\n\n4. If any scenario doesn't meet ideal output, trace the issue back to steps 1-4 and fix. This step is the final validation gate — all previous steps should have been implemented correctly.",
+        "requiredChecks": [
+          "lint",
+          "typecheck",
+          "unit",
+          "build"
+        ]
+      }
+    ]
+  },
+  "stepIndex": 5,
+  "activeSummary": {
+    "stepTitle": "All steps complete",
+    "gateResults": [
+      {
+        "id": "lint",
+        "passed": true
+      },
+      {
+        "id": "typecheck",
+        "passed": true
+      },
+      {
+        "id": "unit",
+        "passed": true
+      },
+      {
+        "id": "build",
+        "passed": true
+      },
+      {
+        "id": "git-diff-check",
+        "passed": true
+      }
+    ]
+  }
+}

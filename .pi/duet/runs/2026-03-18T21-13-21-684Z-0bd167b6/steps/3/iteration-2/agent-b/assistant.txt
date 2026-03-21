@@ -1,0 +1,26 @@
+All 2427 tests pass, no lint or type errors.
+
+## Review Summary
+
+### What I Reviewed
+1. **`src/investigators/log-investigator.ts`** — the `resolveLogPodComponent` function now has a clean 3-step resolution strategy:
+   - Step 1: Filename-based match (backwards-compatible for `logs/app/app-pod.log` paths)
+   - Step 2: Parent-directory match (for init/sidecar container logs like `cluster-resources/pods/logs/<ns>/<pod>/<container>.log`)
+   - Step 3: Fallback to cleaned path when no pod matches
+
+2. **`src/investigators/__tests__/log-investigator.test.ts`** — Scenario 11 adds 4 well-structured tests:
+   - Init container path resolution via parent directory
+   - Backwards compatibility for old log path format
+   - Namespace sourced from Pod resource metadata (not path segments)
+   - Double-miss fallback to cleaned path
+
+### Assessment
+The implementation is correct and well-documented:
+- The JSDoc on `resolveLogPodComponent` clearly describes the 3-step resolution strategy
+- The parent-directory fallback is the right approach for Troubleshoot bundle layout (`pods/logs/<ns>/<pod>/<container>.log`)
+- Namespace is properly sourced from the Pod resource's `metadata.namespace`, not parsed from the path
+- All 85 log-investigator tests pass (81 existing + 4 new)
+- Full test suite (2427 tests), typecheck, and lint all pass clean
+- No changes needed
+
+Verdict: approve

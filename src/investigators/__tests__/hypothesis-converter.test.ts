@@ -309,6 +309,69 @@ describe('convertHypothesisToFinding — sanitizes supporting evidence', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Tests — cross-namespace evidence produces specific recommendedAction
+// ---------------------------------------------------------------------------
+
+describe('convertHypothesisToFinding — cross-namespace: specific recommendedAction from evidence', () => {
+  // Hypothesis with a dns-failure category and a supporting evidence item that
+  // contains a cross-namespace match note. The recommendedAction should be a
+  // specific namespace fix, NOT the generic dns-failure action.
+  const crossNsHypothesis = makeHypothesis({
+    id: 'pod-not-ready:default/app-pod:dns-failure',
+    category: 'dns-failure',
+    evidenceAssessment: {
+      supporting: [
+        {
+          path: 'cluster-resources/services/default/api-service.yaml',
+          note: "Service 'api-service' exists in namespace 'default' (not 'staging'). The env var API_URL likely points to the wrong namespace. Update API_URL from http://api-service.staging:8080 to http://api-service.default:8080 or http://api-service:8080 if the pod runs in the default namespace.",
+          artifactType: 'kubernetes-resource',
+        },
+      ],
+      contradicting: [],
+      missingDecisive: [],
+    },
+  });
+  const crossNsFinding = convertHypothesisToFinding(crossNsHypothesis, 1);
+
+  it('recommendedAction is NOT the generic dns-failure CoreDNS action', () => {
+    expect(crossNsFinding.recommendedAction).not.toMatch(/CoreDNS pod logs/i);
+  });
+
+  it('recommendedAction mentions updating the environment variable', () => {
+    expect(crossNsFinding.recommendedAction).toMatch(/Update/);
+  });
+
+  it('recommendedAction mentions the correct namespace', () => {
+    expect(crossNsFinding.recommendedAction).toMatch(/namespace/i);
+  });
+
+  it('recommendedAction contains the env var name (API_URL)', () => {
+    expect(crossNsFinding.recommendedAction).toMatch(/API_URL/);
+  });
+
+  it('generic dns-failure hypothesis (no cross-namespace evidence) keeps the standard action', () => {
+    const genericHypothesis = makeHypothesis({
+      id: 'pod-not-ready:default/app-pod:dns-failure',
+      category: 'dns-failure',
+      evidenceAssessment: {
+        supporting: [
+          {
+            path: 'logs/default/app-pod/app.log',
+            note: 'Log line shows DNS resolution failure: "lookup backend: no such host"',
+            artifactType: 'log',
+          },
+        ],
+        contradicting: [],
+        missingDecisive: [],
+      },
+    });
+    const genericFinding = convertHypothesisToFinding(genericHypothesis, 1);
+    // No cross-namespace note → should keep the generic dns-failure action
+    expect(genericFinding.recommendedAction).toMatch(/CoreDNS/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Tests — low-confidence hypothesis produces severity downgrade
 // ---------------------------------------------------------------------------
 

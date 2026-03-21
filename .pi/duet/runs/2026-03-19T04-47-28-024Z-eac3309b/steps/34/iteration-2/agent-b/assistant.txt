@@ -1,0 +1,22 @@
+All 81 test files pass, all 3315 tests pass, typecheck clean, lint clean.
+
+## Review Summary
+
+I reviewed all the changed files for step 34 (Confidence Quality Indicator — 7.12):
+
+### What was implemented
+1. **`src/types/finding.ts`** — `ConfidenceQuality` type alias and optional `confidenceQuality` field on `Finding` — clean and well-documented.
+2. **`src/investigators/verifier.ts`** — `computeConfidenceQuality()` function with correct three-tier logic (strong/moderate/weak), exported for direct use; applied in `verifyFindings()` after contradictions and missing evidence detection so it reflects final state.
+3. **`src/tui/helpers.ts`** — `formatConfidenceWithQuality()` function with proper fallback when quality is undefined.
+4. **`src/reporters/markdown-reporter.ts`** and **`src/reporters/html-reporter.ts`** — Both updated with a private `formatConfidence()` that accepts optional quality parameter.
+5. **`src/reporters/display-helpers.ts`** — `formatSummaryCard()` updated to include quality label.
+6. **Tests** — 15 new test cases in verifier tests covering strong/weak/moderate rules + integration with `verifyFindings`; 8 new test cases in helpers tests covering `formatConfidenceWithQuality`.
+
+### Assessment
+- Implementation matches all step requirements precisely
+- The three-tier quality rules match the spec: strong (≥3 evidence from ≥2 sources, 0 missing), weak (≤1 evidence OR ≥2 missing), moderate (everything else)
+- Quality is computed post-verification so contradictions/missing evidence affect the result
+- Reporters display quality alongside percentage
+- All checks pass: lint ✅, typecheck ✅, unit tests ✅ (3315 passing)
+
+Verdict: approve

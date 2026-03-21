@@ -1,0 +1,34 @@
+[
+  {
+    "name": "api-connectivity",
+    "insight": {
+      "severity": "error",
+      "primary": "API Service Unreachable",
+      "detail": "The web-app pod cannot reach its configured API dependency. DNS resolution for 'api-service.staging' is failing: no such host. This is causing the container to exit on startup and enter CrashLoopBackOff."
+    }
+  },
+  {
+    "name": "pod-status",
+    "insight": {
+      "severity": "error",
+      "primary": "web-app-pod in CrashLoopBackOff",
+      "detail": "Pod 'web-app-pod' in namespace 'default' is in CrashLoopBackOff with 7 restarts. The container exits with code 1 during startup dependency checks. Last termination message: 'API dependency check failed: unable to reach http://api-service.staging:8080/health'."
+    }
+  },
+  {
+    "name": "deployment-availability",
+    "insight": {
+      "severity": "warn",
+      "primary": "Deployment web-app Has No Available Replicas",
+      "detail": "Deployment 'web-app' in namespace 'default' reports 0 ready replicas out of 2 desired. The deployment is in a degraded state and no traffic can be served."
+    }
+  },
+  {
+    "name": "service-endpoint-check",
+    "insight": {
+      "severity": "pass",
+      "primary": "Service api-service Has Healthy Endpoints",
+      "detail": "Service 'api-service' in namespace 'default' has 1 ready endpoint (10.244.1.50:8080). The service itself is reachable within the default namespace."
+    }
+  }
+]

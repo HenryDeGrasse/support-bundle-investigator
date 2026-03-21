@@ -1,0 +1,45 @@
+Reviewed the Step 8 work and reran the full verification suite.
+
+What I reviewed
+- `src/reporters/report-builder.ts`
+  - `isAIFinding()` ID-prefix detection
+  - executive summary AI annotation logic
+  - root-cause preference for cross-source AI findings from verified findings only
+- `src/reporters/markdown-reporter.ts`
+  - `[AI-assisted]` heading tag
+- `src/reporters/html-reporter.ts`
+  - `ai-assisted` card class
+  - 🤖 badge rendering
+  - associated CSS
+- `src/investigators/ai-investigator.ts`
+  - verbose per-seed retrieval stats logging
+- `src/reporters/__tests__/report-builder-ai.test.ts`
+- existing Markdown/HTML reporter tests
+- `README.md`
+  - AI Mode docs
+  - `--no-ai` docs
+  - hybrid retrieval architecture description
+  - updated test counts/table
+
+Checks run
+- `npm run lint` ✅
+- `npm run typecheck` ✅
+- `npm run unit` ✅
+- `npm run build` ✅
+
+Current verification result
+- 42 test files passed
+- 1499 tests passed
+- build succeeded for ESM, CJS, and DTS
+
+Assessment
+- The step requirements are satisfied.
+- The reporting changes are additive and template-driven only.
+- AI findings are clearly annotated in Markdown and HTML.
+- Executive summary/root-cause behavior is grounded in already-verified findings.
+- Verbose retrieval logging is present and tested.
+- README reflects the implemented AI mode and current test inventory.
+
+I did not make further changes; I did not find any issues worth modifying.
+
+Verdict: approve

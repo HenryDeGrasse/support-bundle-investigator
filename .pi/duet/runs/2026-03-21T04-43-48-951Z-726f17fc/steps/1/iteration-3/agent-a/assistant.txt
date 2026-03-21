@@ -1,0 +1,31 @@
+Reviewed:
+- `src/investigators/hypothesis-types.ts`
+- `src/investigators/hypothesis-generator.ts`
+- `src/investigators/hypothesis-evidence-collector.ts`
+- `src/investigators/__tests__/hypothesis-evidence-collector.test.ts`
+- `src/investigators/__tests__/hypothesis-generator.test.ts`
+
+What I verified:
+- `Hypothesis` now carries `evidenceRules`.
+- Generator passes template `evidenceRules` through onto hypotheses.
+- Evidence collector consumes template rules for:
+  - logs
+  - events
+  - serialized resources
+  - symptom/finding-derived text
+- No-collector categories like `oom-kill` / `generic-crash` now use template rules as primary evidence.
+- Dedicated collectors still work and receive conservative template supplementation.
+- Negated contradicting-pattern false positives are guarded.
+- Regression around `wrong-db-endpoint` ranking is fixed.
+
+Checks run:
+- `npm run lint` ✅
+- `npm run typecheck` ✅
+- `npm run unit` ✅
+- `npm run build` ✅
+
+Assessment:
+- Step 1 is complete and currently in good shape.
+- I did not find any additional issues requiring code changes.
+
+Verdict: approve

@@ -1,7 +1,8 @@
 import type { Finding, FindingSeverity, GraphEdge, Evidence, FindingTreeNode } from '../types/index.js';
-import type { InvestigatorContext, InvestigationSeed } from './types.js';
+import type { InvestigatorContext, InvestigationSeed, ClusteredSeed } from './types.js';
 import { buildFindingTree } from '../graph/finding-tree.js';
 import { generateSeeds } from './seed-generator.js';
+import { clusterSeeds, toUnclusteredSeeds } from './seed-clusterer.js';
 import { investigateKubernetes } from './kubernetes-investigator.js';
 import { investigateLog } from './log-investigator.js';
 import { investigateConfig } from './config-investigator.js';
@@ -28,7 +29,8 @@ import type { K8sEvent } from '../types/index.js';
  * - `findings`        — verified, deduplicated, severity-sorted findings
  * - `edges`           — all graph edges produced by every targeted investigator
  * - `findingTree`     — causal tree built from findings + 'causes' edges
- * - `seeds`           — seeds generated from the context (for audit / trace)
+ * - `seeds`           — original pre-clustering seeds (full audit trail)
+ * - `clusteredSeeds`  — post-clustering seeds fed to the AI investigator
  * - `metadata`        — counters for seeds, raw vs. final findings
  */
 export interface InvestigationResult {
@@ -36,7 +38,18 @@ export interface InvestigationResult {
   edges: GraphEdge[];
   /** Causal tree built from `findings` and `edges` using {@link buildFindingTree}. */
   findingTree: FindingTreeNode[];
+  /**
+   * Original pre-clustering seeds produced by `generateSeeds()`.
+   * Retained for full audit trail — shows every raw signal detected.
+   */
   seeds: InvestigationSeed[];
+  /**
+   * Post-clustering seeds fed to the AI investigator.
+   * Each `ClusteredSeed` carries a `memberSeeds` list for traceability.
+   * When clustering is disabled or below the threshold, each entry is a
+   * singleton wrapper around a single original seed.
+   */
+  clusteredSeeds: ClusteredSeed[];
   metadata: {
     /** Total number of seeds generated before investigation. */
     seedCount: number;
@@ -58,6 +71,18 @@ export interface InvestigationResult {
      * via graph traversal (the graph-driven investigation path).
      */
     graphMatchedSymptoms: number;
+    /**
+     * Number of cluster representatives after seed clustering.
+     * Equals `clusteredSeeds.length`.  When clustering is disabled or
+     * below the threshold this equals `seedCount`.
+     */
+    seedClusterCount: number;
+    /**
+     * Whether AI seed clustering was attempted and succeeded.
+     * `false` when AI is disabled, seed count is below the threshold,
+     * or the LLM call / response validation failed (graceful degradation).
+     */
+    seedClusteringEnabled: boolean;
   };
 }
 
@@ -1027,6 +1052,36 @@ export async function runInvestigation(
   // ── 1. Generate seeds ─────────────────────────────────────────────────────
   const seeds = generateSeeds(context);
 
+  // ── 1a. AI seed clustering (optional, additive) ───────────────────────────
+  //
+  // When AI is enabled and the seed count meets the minimum threshold,
+  // group seeds by likely shared root cause via a single LLM call and
+  // collapse each cluster into one representative ClusteredSeed.
+  //
+  // Heuristic investigators (k8sSeeds, logSeeds, etc.) continue to use the
+  // ORIGINAL seeds array — they examine all resources regardless, and seeds
+  // are only context hints for those paths.
+  //
+  // The AI investigator receives the CLUSTERED seeds — this is the key
+  // quality/cost lever: fewer LLM calls, each with richer combined context.
+  let clusteredSeeds: ClusteredSeed[];
+  let seedClusteringEnabled = false;
+
+  if (aiDeps?.llmClient && seeds.length >= 3) {
+    try {
+      clusteredSeeds = await clusterSeeds(seeds, aiDeps.llmClient);
+      seedClusteringEnabled = true;
+    } catch (error) {
+      console.warn(
+        `[Orchestrator] Seed clustering failed, continuing with unclustered seeds: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+      clusteredSeeds = toUnclusteredSeeds(seeds);
+    }
+  } else {
+    clusteredSeeds = toUnclusteredSeeds(seeds);
+  }
+
   // Partition seeds by category so each investigator receives the most
   // relevant hints (investigators still examine all resources, but seeds
   // can be used for future prioritisation).
@@ -1193,7 +1248,7 @@ export async function runInvestigation(
 
   if (aiDeps !== undefined) {
     try {
-      const aiResult = await investigateWithAI(context, seeds, {
+      const aiResult = await investigateWithAI(context, clusteredSeeds, {
         ...aiDeps,
         onSeedProgress,
       });
@@ -1357,6 +1412,7 @@ export async function runInvestigation(
     edges: finalEdges,
     findingTree,
     seeds,
+    clusteredSeeds,
     metadata: {
       seedCount: seeds.length,
       rawFindingCount: rawFindings.length + nonZeroHypothesisFindings.length,
@@ -1366,6 +1422,8 @@ export async function runInvestigation(
       hypothesesGenerated,
       hypothesesVerified,
       graphMatchedSymptoms,
+      seedClusterCount: clusteredSeeds.length,
+      seedClusteringEnabled,
     },
   };
 }

@@ -7,7 +7,7 @@ import type {
   HypothesisSet,
 } from './hypothesis-types.js';
 import { matchTemplate } from './hypothesis-templates.js';
-import type { HypothesisTemplate } from './hypothesis-templates.js';
+import type { EvidenceRule, HypothesisTemplate } from './hypothesis-templates.js';
 
 // ---------------------------------------------------------------------------
 // Helpers — symptom detection (now template-driven)
@@ -136,6 +136,7 @@ function buildHypothesis(
   rootCause: string,
   category: HypothesisCategory,
   sourceFindings: string[],
+  evidenceRules?: EvidenceRule[],
 ): Hypothesis {
   return {
     id,
@@ -143,6 +144,7 @@ function buildHypothesis(
     rootCause,
     category,
     evidenceAssessment: emptyEvidenceAssessment(),
+    evidenceRules,
     confidence: 0.0,
     confidenceRationale: 'Not yet scored',
     specGapRecommendations: [],
@@ -177,6 +179,7 @@ function generateHypothesesFromTemplateData(
       def.rootCause,
       def.category,
       ids,
+      def.evidenceRules,
     ),
   );
 }
@@ -200,7 +203,17 @@ export function groupFindingsBySymptom(findings: Finding[]): Map<string, Finding
   const groups = new Map<string, Finding[]>();
 
   for (const finding of findings) {
+    // Skip findings whose primary component is a Service, Endpoints, or other
+    // non-workload resource.  Hypothesis templates (crashloop, not-ready,
+    // pending, imagepull) are all Pod-centric.  Allowing e.g. a
+    // "Service has 0 ready endpoints" finding to enter the hypothesis pipeline
+    // produces a false "pod-not-ready:default/web-app-service" symptom key
+    // because "0 ready endpoints" matches the "not ready" template.
     const key = primaryComponentKey(finding);
+    if (/^(Service|Endpoints|EndpointSlice|ConfigMap|Secret)\//.test(key)) {
+      continue;
+    }
+
     const group = groups.get(key) ?? [];
     group.push(finding);
     groups.set(key, group);

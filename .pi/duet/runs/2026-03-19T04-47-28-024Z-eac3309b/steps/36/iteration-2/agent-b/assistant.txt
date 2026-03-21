@@ -1,0 +1,30 @@
+Everything looks clean and well-structured. Let me review the implementation against the step requirements:
+
+## Review Summary
+
+### Step Requirements vs Implementation
+
+| Requirement | Status |
+|---|---|
+| `computeRetrievalMetrics(retrieved, expected)` computing P@5, R@5, MRR | ✅ Implemented in `src/ai/retrieval-metrics.ts` |
+| Metrics correct for known input/output pairs | ✅ 33 unit tests covering all cases |
+| `scripts/benchmark-retrieval.mjs` runs scenarios, logs per-seed retrieval stats | ✅ Complete with lexical + graph retrieval per scenario |
+| `scripts/benchmark-hypotheses.mjs` tracks correctness per confidence band | ✅ Extended with 4 bands, accuracy reporting |
+| Monotonicity check (higher confidence → higher accuracy) | ✅ Implemented with PASS/WARN output |
+| No scoring constant changes — measurement infrastructure only | ✅ Confirmed |
+
+### Code Quality Assessment
+- **`retrieval-metrics.ts`**: Clean, well-documented, handles all edge cases (empty inputs, k=0, dedup). MRR correctly scans full list beyond k.
+- **Tests**: Comprehensive coverage — precision, recall, MRR, edge cases, known-value correctness, and aggregation.
+- **`benchmark-retrieval.mjs`**: Properly imports from dist, loads fixture data, uses relevance oracles, produces formatted tables.
+- **`benchmark-hypotheses.mjs`**: Clean refactoring of `inferFindingCategory` to work per-finding. Calibration bands and monotonicity check are well-structured.
+- **Exports**: Properly wired through `src/ai/index.ts` → `src/index.ts`.
+
+### Checks
+- **lint**: 0 errors (2 warnings about scripts being gitignored — expected)
+- **typecheck**: clean
+- **unit**: 83 files, 3396 passed, 2 pre-existing skips
+
+No issues found. The implementation is thorough and correct.
+
+Verdict: approve

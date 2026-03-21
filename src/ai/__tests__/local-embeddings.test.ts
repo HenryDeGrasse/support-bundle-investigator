@@ -25,6 +25,9 @@ function makeConfig(overrides: Partial<AIConfig> = {}): AIConfig {
     embeddingModel: 'gte-Qwen2-1.5B',
     embeddingBackend: 'local',
     embeddingUrl: 'http://localhost:8080',
+    llmBackend: 'openai',
+    llmUrl: 'https://api.openai.com/v1',
+    tokenBudget: 100000,
     enabled: true,
     ...overrides,
   };

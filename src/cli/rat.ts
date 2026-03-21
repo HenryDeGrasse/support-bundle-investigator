@@ -39,12 +39,13 @@ const TEI_DOCKER_IMAGE = 'ghcr.io/huggingface/text-embeddings-inference:cpu-1.5'
 
 /**
  * Default embedding model for TEI.
- * gte-Qwen2-1.5B: 1.5B params, MIT license, 131K context, ~30ms on M-series.
+ * bge-large-en-v1.5: BERT-based, ONNX available, ~1.3 GB, high quality.
+ * Supported by TEI CPU image (requires ONNX — Qwen2/decoder models are not).
  */
-const TEI_DEFAULT_MODEL = 'Alibaba-NLP/gte-Qwen2-1.5B-instruct';
+const TEI_DEFAULT_MODEL = 'BAAI/bge-large-en-v1.5';
 
 /**
- * Lighter-weight TEI model option (~560MB download vs ~3GB for Qwen2).
+ * Lighter-weight TEI model option (~560MB download).
  * Good starting point for machines with less RAM.
  */
 const TEI_LIGHT_MODEL = 'BAAI/bge-small-en-v1.5';
@@ -212,57 +213,109 @@ type EmbeddingSetupResult =
   | { backend: 'none' }
   | { backend: 'skip' }; // user chose not to change anything
 
+/** Detects which local embedding services are currently running. */
+async function detectRunningServices(): Promise<{ teiRunning: boolean; ollamaRunning: boolean }> {
+  const [teiRunning, ollamaRunning] = await Promise.all([
+    isReachable(`${TEI_URL}/health`),
+    isReachable(`${OLLAMA_URL}/api/version`),
+  ]);
+  return { teiRunning, ollamaRunning };
+}
+
 /**
- * Prompts the user to pick a local embedding backend option.
+ * Prompts the user to pick an embedding backend.
+ *
+ * Running services are detected and shown first with a ✓ marker.
+ * The currently configured backend is used as the default selection.
  */
 async function promptEmbeddingSetup(
   projectRoot: string,
   rl: readline.Interface,
+  runningServices: { teiRunning: boolean; ollamaRunning: boolean },
 ): Promise<EmbeddingSetupResult> {
   const dockerAvail = isDockerAvailable();
   const ollamaInstalled = isOllamaInstalled();
   const hasApiKey = (process.env['OPENAI_API_KEY'] ?? '').trim().length > 0;
+
+  // Determine what the user currently has configured
+  const currentBackend = process.env['SBI_EMBEDDING_BACKEND'] ?? 'local';
+  const currentUrl = process.env['SBI_EMBEDDING_URL'] ?? TEI_URL;
+  const currentModel = process.env['SBI_EMBEDDING_MODEL'] ?? '';
+  const currentIsOllama = currentUrl.includes(String(OLLAMA_PORT));
+  const currentIsTei = currentBackend === 'local' && !currentIsOllama;
 
   console.log('  Embedding backend options:');
   console.log('');
 
   const options: Array<{ label: string; value: string }> = [];
 
-  if (dockerAvail) {
+  // ── Running services first ──────────────────────────────────────────────
+  if (runningServices.teiRunning) {
+    const armNote = process.arch === 'arm64' ? ' [x86 emulation]' : '';
+    const currentNote = currentIsTei ? ' (current)' : '';
     options.push({
-      label: `TEI (Docker)  -- gte-Qwen2-1.5B (recommended, ~3 GB first run) or bge-small (~560 MB)`,
+      label: `✓ TEI (running) -- ${TEI_URL}, 131K context, late chunking${armNote}${currentNote}`,
       value: 'tei',
     });
-  } else {
+  }
+
+  if (runningServices.ollamaRunning) {
+    const modelNote = currentIsOllama && currentModel ? currentModel : OLLAMA_EMBED_MODEL;
+    const currentNote = currentBackend === 'local' && currentIsOllama ? ' (current)' : '';
+    options.push({
+      label: `✓ Ollama (running) -- ${modelNote}, native ARM${currentNote}`,
+      value: 'ollama',
+    });
+  }
+
+  // ── Available but not running ───────────────────────────────────────────
+  if (!runningServices.teiRunning && dockerAvail) {
+    const armNote = process.arch === 'arm64' ? ' [x86 emulation on ARM]' : '';
+    options.push({
+      label: `TEI (Docker)  -- gte-Qwen2-1.5B (131K context, ~3 GB) or bge-small (~560 MB)${armNote}`,
+      value: 'tei',
+    });
+  } else if (!runningServices.teiRunning && !dockerAvail) {
     console.log('  [!] Docker not detected -- TEI option unavailable');
     console.log('      Install Docker Desktop to use TEI: https://docs.docker.com/get-docker/');
     console.log('');
   }
 
-  if (ollamaInstalled) {
-    options.push({ label: `Ollama        -- nomic-embed-text (~274 MB, simpler setup)`, value: 'ollama' });
-  } else {
+  if (!runningServices.ollamaRunning && ollamaInstalled) {
+    options.push({ label: `Ollama        -- nomic-embed-text (~274 MB, native ARM)`, value: 'ollama' });
+  } else if (!runningServices.ollamaRunning && !ollamaInstalled) {
     console.log('  [!] Ollama not detected -- Ollama option unavailable');
     console.log('      Install Ollama: https://ollama.com/download');
     console.log('');
   }
 
   if (hasApiKey) {
-    options.push({ label: `OpenAI API    -- text-embedding-3-small (no local service needed)`, value: 'openai' });
+    const currentNote = currentBackend === 'openai' ? ' (current)' : '';
+    options.push({ label: `OpenAI API    -- text-embedding-3-small (no local service needed)${currentNote}`, value: 'openai' });
   }
 
-  options.push({ label: `None          -- skip embeddings, use graph + BM25 only`, value: 'none' });
-  options.push({ label: `Cancel        -- keep current settings`, value: 'cancel' });
+  options.push({ label: `None          -- skip embeddings, use graph + BM25 only${currentBackend === 'none' ? ' (current)' : ''}`, value: 'none' });
+  options.push({ label: `Keep current  -- don't change settings`, value: 'cancel' });
+
+  // ── Find which option to default to ─────────────────────────────────────
+  let defaultIdx = 0; // fallback: first option
+  for (let i = 0; i < options.length; i++) {
+    if (options[i]!.label.includes('(current)')) {
+      defaultIdx = i;
+      break;
+    }
+  }
 
   for (let i = 0; i < options.length; i++) {
-    console.log(`    ${i + 1}) ${options[i]!.label}`);
+    const marker = i === defaultIdx ? ' ←' : '';
+    console.log(`    ${i + 1}) ${options[i]!.label}${marker}`);
   }
   console.log('');
 
   return new Promise<EmbeddingSetupResult>((resolve) => {
-    rl.question('  Select [1]: ', (answer) => {
+    rl.question(`  Select [${defaultIdx + 1}]: `, (answer) => {
       const trimmed = answer.trim();
-      const num = trimmed === '' ? 1 : parseInt(trimmed, 10);
+      const num = trimmed === '' ? defaultIdx + 1 : parseInt(trimmed, 10);
 
       if (isNaN(num) || num < 1 || num > options.length) {
         console.log('  Invalid selection, keeping current settings.');
@@ -290,15 +343,85 @@ async function promptEmbeddingSetup(
 }
 
 /**
+ * Returns the available HF CLI command name (`huggingface-cli` or `hf`),
+ * or null if neither is installed.
+ * Used to pre-download models outside Docker for ARM compatibility.
+ */
+function getHfCliCommand(): string | null {
+  for (const cmd of ['huggingface-cli', 'hf']) {
+    try {
+      const result = spawnSync(cmd, ['version'], { encoding: 'utf-8', timeout: 3000 });
+      if (result.status === 0) return cmd;
+    } catch {
+      // try next
+    }
+  }
+  return null;
+}
+
+/**
+ * Pre-downloads a HuggingFace model to a local cache directory.
+ *
+ * On Apple Silicon, TEI's internal model download can fail under Rosetta
+ * emulation ("relative URL without a base" error). Pre-downloading the model
+ * on the host and mounting the cache directory as a volume works around this.
+ *
+ * Tries `huggingface-cli` / `hf` first. If neither is installed, falls back
+ * to a Python one-liner using huggingface_hub.
+ *
+ * @returns The host-side cache directory path, or null on failure.
+ */
+function preDownloadModel(model: string, cacheDir: string): boolean {
+  // Ensure cache directory exists
+  fs.mkdirSync(cacheDir, { recursive: true });
+
+  // Forward HF_TOKEN from the current process environment so authenticated
+  // requests are used (higher rate limits, access to gated models).
+  const hfEnv = { ...process.env };
+
+  const hfCmd = getHfCliCommand();
+  if (hfCmd !== null) {
+    console.log(`  Downloading model with ${hfCmd}...`);
+    const result = spawnSync(
+      hfCmd,
+      ['download', model, '--cache-dir', cacheDir],
+      { encoding: 'utf-8', stdio: 'inherit', timeout: 1_800_000, env: hfEnv },
+    );
+    return result.status === 0;
+  }
+
+  // Fallback: try Python huggingface_hub
+  console.log(`  huggingface-cli not found, trying Python huggingface_hub...`);
+  const pyScript = `from huggingface_hub import snapshot_download; snapshot_download("${model}", cache_dir="${cacheDir}")`;
+
+  for (const pyCmd of ['python3', 'python']) {
+    const result = spawnSync(pyCmd, ['-c', pyScript], {
+      encoding: 'utf-8',
+      stdio: 'inherit',
+      timeout: 1_800_000,
+      env: hfEnv,
+    });
+    if (result.status === 0) return true;
+  }
+
+  return false;
+}
+
+/**
  * Starts TEI in a Docker container (detached).
+ *
+ * On ARM (Apple Silicon), pre-downloads the model on the host and mounts it
+ * as a volume to avoid TEI's "relative URL without a base" download error
+ * under Rosetta emulation.
+ *
  * Returns true if the container started successfully and is reachable.
  */
 async function startTEI(projectRoot: string, rl: readline.Interface): Promise<boolean> {
   console.log('');
   console.log('  TEI model options:');
   console.log('');
-  console.log('    1) gte-Qwen2-1.5B-instruct  (recommended -- ~3 GB, best quality, 131K context)');
-  console.log('    2) bge-small-en-v1.5         (lightweight -- ~560 MB, fast, good quality)');
+  console.log('    1) bge-large-en-v1.5         (recommended -- ~1.3 GB, high quality, TEI CPU compatible)');
+  console.log('    2) bge-small-en-v1.5         (lightweight -- ~560 MB, fast, TEI CPU compatible)');
   console.log('');
 
   const model = await new Promise<string>((resolve) => {
@@ -318,7 +441,6 @@ async function startTEI(projectRoot: string, rl: readline.Interface): Promise<bo
   console.log('');
   console.log(`  Starting TEI with ${modelShort}...`);
   console.log(`  Docker image: ${TEI_DOCKER_IMAGE}`);
-  console.log(`  (First run downloads the model -- this may take a few minutes)`);
   console.log('');
 
   // Stop any existing TEI container on that port first
@@ -328,19 +450,69 @@ async function startTEI(projectRoot: string, rl: readline.Interface): Promise<bo
     // Ignore -- no existing container
   }
 
-  const result = spawnSync(
-    'docker',
-    [
-      'run', '-d',
-      '--name', 'sbi-tei',
-      '-p', `${TEI_PORT}:80`,
-      '--pull', 'always',
-      TEI_DOCKER_IMAGE,
-      '--model-id', model,
-      '--max-client-batch-size', '64',
-    ],
-    { encoding: 'utf-8', timeout: 30_000 },
+  // TEI only publishes linux/amd64 images. On ARM (Apple Silicon) we need
+  // Rosetta / QEMU emulation via --platform linux/amd64.
+  const isArm = process.arch === 'arm64';
+
+  // ── ARM: pre-download model on host to avoid TEI download bug ───────────
+  //
+  // TEI's Rust HuggingFace hub client fails under Rosetta emulation with
+  // "relative URL without a base" when trying to download model artifacts.
+  // Fix: download on the host and mount the cache into the container.
+  const hfCacheDir = path.join(
+    process.env['HOME'] ?? '/tmp',
+    '.cache',
+    'huggingface',
+    'hub',
   );
+  let useVolumeMount = false;
+
+  if (isArm) {
+    console.log('  [!] ARM architecture detected (Apple Silicon).');
+    console.log('      TEI image is x86-only — running under Rosetta emulation.');
+    console.log('      Pre-downloading model on host to avoid TEI download bug...');
+    console.log('');
+
+    const downloaded = preDownloadModel(model, hfCacheDir);
+    if (downloaded) {
+      useVolumeMount = true;
+      console.log('');
+      console.log('  Model pre-downloaded. Mounting cache into container.');
+    } else {
+      console.log('');
+      console.log('  [!] Could not pre-download model.');
+      console.log('      Install huggingface-cli:  pip install huggingface_hub');
+      console.log('      Or: brew install huggingface-cli');
+      console.log('');
+      console.log('      Attempting direct Docker download anyway (may fail on ARM)...');
+    }
+    console.log('');
+  } else {
+    console.log('  (First run downloads the model -- this may take a few minutes)');
+    console.log('');
+  }
+
+  const dockerArgs = [
+    'run', '-d',
+    '--name', 'sbi-tei',
+    '-p', `${TEI_PORT}:80`,
+    ...(isArm ? ['--platform', 'linux/amd64'] : []),
+    // Pass HF_TOKEN into the container so TEI can authenticate with the Hub
+    // (needed for gated models and higher download rate limits).
+    ...(process.env['HF_TOKEN'] ? ['-e', `HF_TOKEN=${process.env['HF_TOKEN']}`] : []),
+    // Mount the host HF cache into the container's model cache directory.
+    // On ARM this provides the pre-downloaded model; on x86 it enables
+    // caching across container restarts.
+    ...(useVolumeMount
+      ? ['-v', `${hfCacheDir}:/data`]
+      : []),
+    '--pull', 'always',
+    TEI_DOCKER_IMAGE,
+    '--model-id', model,
+    '--max-client-batch-size', '64',
+  ];
+
+  const result = spawnSync('docker', dockerArgs, { encoding: 'utf-8', timeout: 30_000 });
 
   if (result.status !== 0) {
     console.log('  [!] Failed to start TEI container:');
@@ -348,17 +520,26 @@ async function startTEI(projectRoot: string, rl: readline.Interface): Promise<bo
     console.log('');
     console.log('  Troubleshooting:');
     console.log('    - Make sure Docker Desktop is running');
-    console.log('    - Try manually: docker run -d --name sbi-tei -p 8080:80 \\');
-    console.log(`      ${TEI_DOCKER_IMAGE} --model-id ${model}`);
+    if (isArm) {
+      console.log('    - On Apple Silicon, ensure Rosetta is enabled in Docker Desktop settings');
+      console.log('    - Install huggingface-cli: pip install huggingface_hub');
+      console.log('    - Consider using Ollama instead (native ARM support)');
+    }
+    console.log('    - Try manually:');
+    console.log(`      huggingface-cli download ${model}`);
+    console.log(`      docker run -d --name sbi-tei -p 8080:80 \\`);
+    console.log(`        ${isArm ? '--platform linux/amd64 ' : ''}-v ~/.cache/huggingface/hub:/data \\`);
+    console.log(`        ${TEI_DOCKER_IMAGE} --model-id ${model}`);
     return false;
   }
 
   const containerId = result.stdout?.trim();
   console.log(`  Container started: ${containerId?.slice(0, 12) ?? 'unknown'}`);
-  console.log('  Waiting for TEI to become ready...');
+  console.log('  Waiting for TEI to become ready (model loading under emulation can be slow)...');
 
-  // Poll /health until ready (model download + load can take up to 3 minutes)
-  const maxWaitMs = 180_000;
+  // Poll /health until ready. Model loading under Rosetta can take 5+ minutes
+  // for large models, so we allow up to 5 minutes on ARM.
+  const maxWaitMs = isArm ? 300_000 : 180_000;
   const pollIntervalMs = 3_000;
   const started = Date.now();
   let ready = false;
@@ -372,12 +553,29 @@ async function startTEI(projectRoot: string, rl: readline.Interface): Promise<bo
       ready = true;
       break;
     }
+
+    // Check if the container has exited with an error
+    try {
+      const inspect = spawnSync('docker', ['inspect', '--format', '{{.State.Status}}', 'sbi-tei'], {
+        encoding: 'utf-8',
+        timeout: 3000,
+      });
+      if (inspect.stdout?.trim() === 'exited') {
+        console.log('');
+        console.log('  [!] TEI container exited unexpectedly.');
+        console.log('      Check logs: docker logs sbi-tei');
+        return false;
+      }
+    } catch {
+      // Ignore inspect errors
+    }
   }
 
   console.log('');
 
   if (!ready) {
-    console.log('  [!] TEI did not become ready within 3 minutes.');
+    const maxMin = Math.round(maxWaitMs / 60_000);
+    console.log(`  [!] TEI did not become ready within ${maxMin} minutes.`);
     console.log(`      Check logs: docker logs sbi-tei`);
     return false;
   }
@@ -422,90 +620,70 @@ async function startOllama(): Promise<boolean> {
 }
 
 /**
- * Checks the current embedding state and optionally guides setup.
+ * Detects running services and always presents the embedding backend menu.
  *
- * Decision tree:
- * 1. If SBI_EMBEDDING_BACKEND is explicitly set to 'openai' or 'none', skip prompting.
- * 2. If SBI_EMBEDDING_BACKEND is 'local' (default), probe the embedding URL.
- *    a. If something is reachable, report it and continue.
- *    b. If nothing is reachable, ask the user if they want to set one up.
- * 3. If the user confirms setup, run the appropriate backend flow.
- * 4. Write the chosen backend + URL to .env.
+ * Flow:
+ * 1. Probes TEI and Ollama to see what is currently running.
+ * 2. Shows a menu with running services listed first (✓ marker).
+ * 3. Defaults to the currently-configured backend.
+ * 4. If the user picks a service that isn't running yet, starts it.
+ * 5. Writes the chosen backend to .env.
+ *
+ * When --no-embedding-setup is passed, auto-selects: use whatever is
+ * configured and reachable, or fall back to graph + BM25.
  */
 async function handleEmbeddingSetup(projectRoot: string, skipPrompt: boolean): Promise<void> {
   const envPath = path.join(projectRoot, '.env');
-  const backend = process.env['SBI_EMBEDDING_BACKEND'] ?? 'local';
-  const embeddingUrl = process.env['SBI_EMBEDDING_URL'] ?? TEI_URL;
 
-  // User explicitly opted out — nothing to do
-  if (backend === 'none') {
-    console.log('  Embeddings: disabled (graph + BM25 only)');
-    console.log('');
-    return;
-  }
+  // ── Detect what's running ───────────────────────────────────────────────
+  process.stdout.write('  Detecting embedding services... ');
+  const running = await detectRunningServices();
 
-  if (backend === 'openai') {
-    const hasKey = (process.env['OPENAI_API_KEY'] ?? '').trim().length > 0;
-    console.log(`  Embeddings: OpenAI API${hasKey ? '' : ' [!] OPENAI_API_KEY not set'}`);
-    console.log('');
-    return;
-  }
-
-  // backend === 'local' (default) — probe the URL
-  const probeUrl = backend === 'local' ? embeddingUrl : TEI_URL;
-  const healthUrl = probeUrl.includes('11434') ? `${probeUrl}/api/version` : `${probeUrl}/health`;
-
-  process.stdout.write('  Checking local embedding service... ');
-  const reachable = await isReachable(healthUrl);
-
-  if (reachable) {
-    const serviceLabel = probeUrl.includes('11434') ? 'Ollama' : 'TEI';
-    console.log(`${serviceLabel} running at ${probeUrl}`);
-    console.log('');
-    return;
-  }
-
-  console.log('not found');
+  const parts: string[] = [];
+  if (running.teiRunning) parts.push('TEI ✓');
+  if (running.ollamaRunning) parts.push('Ollama ✓');
+  if (parts.length === 0) parts.push('none found');
+  console.log(parts.join(', '));
   console.log('');
 
+  // ── Skip prompt mode: auto-select ───────────────────────────────────────
   if (skipPrompt) {
-    console.log('  No local embedding service -- using graph + BM25 only.');
-    console.log('  Run `rat` without --no-embedding-setup to configure one.');
+    const backend = process.env['SBI_EMBEDDING_BACKEND'] ?? 'local';
+    const embeddingUrl = process.env['SBI_EMBEDDING_URL'] ?? TEI_URL;
+    const currentIsOllama = embeddingUrl.includes(String(OLLAMA_PORT));
+
+    if (backend === 'none') {
+      console.log('  Embeddings: disabled (graph + BM25 only)');
+    } else if (backend === 'openai') {
+      console.log('  Embeddings: OpenAI API');
+    } else if (currentIsOllama && running.ollamaRunning) {
+      console.log(`  Embeddings: Ollama at ${embeddingUrl}`);
+    } else if (!currentIsOllama && running.teiRunning) {
+      console.log(`  Embeddings: TEI at ${embeddingUrl}`);
+    } else {
+      console.log('  No configured embedding service running -- using graph + BM25 only.');
+    }
     console.log('');
     return;
   }
 
-  // Ask whether to set one up
+  // ── Always show the menu ────────────────────────────────────────────────
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
-  const wantsSetup = await new Promise<boolean>((resolve) => {
-    rl.question(
-      '  No local embedding service found. Set one up now? [Y/n]: ',
-      (answer) => {
-        const a = answer.trim().toLowerCase();
-        resolve(a === '' || a === 'y' || a === 'yes');
-      },
-    );
-  });
-
-  if (!wantsSetup) {
-    console.log('');
-    console.log('  Continuing with graph + BM25 retrieval only.');
-    console.log('  AI analysis will still run -- just without semantic search.');
-    console.log('');
-    rl.close();
-    return;
-  }
-
-  console.log('');
-
-  const setupResult = await promptEmbeddingSetup(projectRoot, rl);
+  const setupResult = await promptEmbeddingSetup(projectRoot, rl, running);
   rl.close();
 
   console.log('');
 
   if (setupResult.backend === 'skip') {
-    console.log('  Keeping current settings.');
+    const backend = process.env['SBI_EMBEDDING_BACKEND'] ?? 'local';
+    const url = process.env['SBI_EMBEDDING_URL'] ?? TEI_URL;
+    if (backend === 'local') {
+      const label = url.includes(String(OLLAMA_PORT)) ? 'Ollama' : 'TEI';
+      console.log(`  Keeping current: ${label} at ${url}`);
+    } else {
+      console.log(`  Keeping current: ${backend}`);
+    }
     console.log('');
     return;
   }
@@ -526,20 +704,24 @@ async function handleEmbeddingSetup(projectRoot: string, skipPrompt: boolean): P
     return;
   }
 
-  // local: TEI or Ollama
+  // ── Local: TEI or Ollama ────────────────────────────────────────────────
   const isOllama = setupResult.url.includes(String(OLLAMA_PORT));
+  const alreadyRunning = isOllama ? running.ollamaRunning : running.teiRunning;
 
-  let started = false;
-  if (isOllama) {
-    started = await startOllama();
-  } else {
-    // Need a new readline for TEI model selection
-    const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout });
-    started = await startTEI(projectRoot, rl2);
-    rl2.close();
+  let ready = alreadyRunning;
+
+  if (!ready) {
+    // Service isn't running yet — start it
+    if (isOllama) {
+      ready = await startOllama();
+    } else {
+      const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout });
+      ready = await startTEI(projectRoot, rl2);
+      rl2.close();
+    }
   }
 
-  if (started) {
+  if (ready) {
     writeEnvKey(envPath, 'SBI_EMBEDDING_BACKEND', 'local');
     writeEnvKey(envPath, 'SBI_EMBEDDING_URL', setupResult.url);
     writeEnvKey(envPath, 'SBI_EMBEDDING_MODEL', setupResult.model);

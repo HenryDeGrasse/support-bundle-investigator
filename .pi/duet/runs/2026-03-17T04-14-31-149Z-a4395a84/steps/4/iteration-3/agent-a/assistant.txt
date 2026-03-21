@@ -1,0 +1,34 @@
+All four checks pass clean. Here's my assessment of the full implementation:
+
+## Review Summary
+
+I reviewed all three new source files and their tests for Step 4.
+
+### What was delivered (first agent + second agent improvements)
+
+**`src/ai/schemas.ts`** — `AIFinding` type and `validateAIFindings`:
+- Complete type definition matching the `Finding` interface with AI-specific additions (`rootCauseClass`, `counterevidence`)
+- Comprehensive validation: required field checks, confidence clamped to [0,1], valid severity enum
+- **Key improvement by second agent**: findings with no citeable evidence after sanitisation are dropped (`evidence.length === 0` → drop), which enforces the grounding requirement
+- `lineRange` tightened to require integers with `start >= 1` and `end >= start`
+- Evidence notes trimmed to remove whitespace
+
+**`src/ai/prompts.ts`** — System prompt and prompt builder:
+- `BASE_SYSTEM_PROMPT` with explicit grounding rules
+- **Key improvement by second agent**: added rule 2 explicitly requiring at least one evidence entry per finding
+- `resolvePlaybookCategory()` correctly maps `SeedCategory` + hypothesis text to 5 distinct playbooks
+- `buildInvestigationPrompt()` formats chunks with citeable source paths and includes grounding reminder
+
+**`src/ai/llm-client.ts`** — `LLMClient` class:
+- Wraps OpenAI chat completions with JSON mode
+- Never throws — all errors degrade gracefully to empty findings
+- Clean separation of parse errors (returns rawResponse for debugging) vs API errors
+
+**Tests** (131 tests across 3 files):
+- schemas: 60 tests covering all validation paths including the new "no-evidence drop" constraint
+- prompts: 50 tests covering structure, playbook selection per category, chunk formatting
+- llm-client: 21 tests covering happy path, empty responses, graceful degradation, validation integration
+
+The implementation correctly fulfills all step requirements: structured JSON output, grounding enforcement, category-specific playbooks, graceful degradation, evidence citation metadata.
+
+Verdict: approve

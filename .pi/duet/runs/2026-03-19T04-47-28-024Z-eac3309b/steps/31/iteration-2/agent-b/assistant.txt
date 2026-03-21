@@ -1,0 +1,33 @@
+The implementation is thorough and well-structured. Let me verify the step requirements are all met:
+
+**Step 31 Requirements Checklist:**
+
+1. ✅ **OOMKilled termination reason detected in container statuses** — `getOOMKilledContainers()` checks both `state.terminated` and `lastState.terminated`
+2. ✅ **Cross-reference with container resource limits vs requests** — `getContainerMemoryLimit()` and `getContainerMemoryRequest()` extract from pod spec; evidence includes comparison note
+3. ✅ **Finding generated: 'Container X in Pod Y was OOMKilled (limit: 256Mi)'** — Title format: `Container '${containerName}' in Pod '${podName}' was OOMKilled${limitSuffix}`
+4. ✅ **Node conditions checked: NotReady, MemoryPressure, DiskPressure, PIDPressure** — `investigateNodeConditions()` handles all four
+5. ✅ **Node-level findings correlate with pod scheduling failures** — NotReady nodes create causal edges to FailedScheduling events
+6. ✅ **Node-health seeds in seed-generator** — `seedsFromNodes()` scans Node resources for unhealthy conditions
+7. ✅ **Causal edges: OOMKill → ContainerRestart → CrashLoopBackOff** — Implemented when `fromLastState` is true and a crashloop finding exists for the same pod
+8. ✅ **Causal edges: NodeNotReady → PodUnschedulable** — Implemented via FailedScheduling event correlation
+
+**Checks:**
+- ✅ lint — clean
+- ✅ typecheck — clean  
+- ✅ unit — 3283 tests pass across 81 files
+
+## Summary
+
+### What I reviewed
+- `src/investigators/kubernetes-investigator.ts` — Full implementation of OOM detection (`investigateOOMPods`) and node condition investigation (`investigateNodeConditions`), plus all helper functions
+- `src/investigators/seed-generator.ts` — `seedsFromNodes()` implementation and integration into `generateSeeds()`
+- `src/investigators/__tests__/kubernetes-investigator.test.ts` — 10 new test scenarios (Scenarios 13–22) covering OOM and node conditions
+- `src/investigators/__tests__/seed-generator.test.ts` — 13 new tests for node-health seeds
+
+### What I changed
+Nothing — the implementation is complete and correct.
+
+### Assessment
+The previous agent did excellent work. The implementation follows existing project patterns (helper functions, confidence constants, evidence-backed findings, causal edge chains, namespace scoping). Tests are comprehensive with both positive and negative cases. All required checks pass.
+
+Verdict: approve

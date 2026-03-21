@@ -1,0 +1,2910 @@
+diff --git a/.pi/duet/config.json b/.pi/duet/config.json
+index 31183e1..ad309b0 100644
+--- a/.pi/duet/config.json
++++ b/.pi/duet/config.json
+@@ -25,8 +25,8 @@
+     "thinking": "high"
+   },
+   "reviewer": {
+-    "label": "GPT-5.4",
+-    "model": "openai-codex/gpt-5.4",
++    "label": "Claude Opus 4.6",
++    "model": "anthropic/claude-opus-4-6",
+     "thinking": "high"
+   },
+   "executionMode": "relay",
+diff --git a/scripts/benchmark-hypotheses.mjs b/scripts/benchmark-hypotheses.mjs
+index 5c56206..4237815 100644
+--- a/scripts/benchmark-hypotheses.mjs
++++ b/scripts/benchmark-hypotheses.mjs
+@@ -26,7 +26,7 @@ const SCENARIOS = [
+   },
+   {
+     name: 'pvc-pending',
+-    expectedTopCategory: 'missing-secret',
++    expectedTopCategory: 'volume-mount-failure',
+   },
+ ];
+ 
+diff --git a/src/ai/__tests__/chunk-indexer.test.ts b/src/ai/__tests__/chunk-indexer.test.ts
+index 7852ae0..db67a0b 100644
+--- a/src/ai/__tests__/chunk-indexer.test.ts
++++ b/src/ai/__tests__/chunk-indexer.test.ts
+@@ -1,8 +1,8 @@
+ import { describe, it, expect } from 'vitest';
+-import { buildChunkIndex } from '../chunk-indexer.js';
++import { buildChunkIndex, identifiersFromHelmRelease } from '../chunk-indexer.js';
+ import type { InvestigatorContext } from '../../investigators/types.js';
+ import type { K8sResource, K8sEvent, AnalyzerResult } from '../../types/index.js';
+-import type { LogFile } from '../../parsers/index.js';
++import type { LogFile, HelmRelease } from '../../parsers/index.js';
+ import type { BundleProfile } from '../../types/index.js';
+ 
+ // ---------------------------------------------------------------------------
+@@ -29,7 +29,6 @@ const EMPTY_PROFILE: BundleProfile = {
+     log: 0,
+     'kubernetes-resource': 0,
+     event: 0,
+-    config: 0,
+     'cluster-info': 0,
+     'helm-release': 0,
+     unknown: 0,
+@@ -410,6 +409,215 @@ describe('IndexedChunk identifiers', () => {
+   });
+ });
+ 
++// ---------------------------------------------------------------------------
++// ConfigMap data value indexing (step-11 / issue 2.9)
++// ---------------------------------------------------------------------------
++
++describe('ConfigMap data value network identifier indexing', () => {
++  it('ConfigMap identifiers include hostname values from data', () => {
++    const cm = {
++      apiVersion: 'v1',
++      kind: 'ConfigMap',
++      metadata: { name: 'db-config', namespace: 'database' },
++      data: { DB_HOST: 'wrong-host.internal' },
++    } as unknown as K8sResource;
++    const ctx = makeContext({ resources: [cm] });
++    const chunks = buildChunkIndex(ctx);
++    const chunk = chunks.find((c) => c.artifactCategory === 'kubernetes-resource');
++    expect(chunk).toBeDefined();
++    expect(chunk!.identifiers).toContain('wrong-host.internal');
++  });
++
++  it('ConfigMap identifiers still include key names alongside values', () => {
++    const cm = {
++      apiVersion: 'v1',
++      kind: 'ConfigMap',
++      metadata: { name: 'db-config', namespace: 'database' },
++      data: { DB_HOST: 'wrong-host.internal', DB_PORT: '5432' },
++    } as unknown as K8sResource;
++    const ctx = makeContext({ resources: [cm] });
++    const chunks = buildChunkIndex(ctx);
++    const chunk = chunks.find((c) => c.artifactCategory === 'kubernetes-resource');
++    expect(chunk!.identifiers).toContain('DB_HOST');
++    expect(chunk!.identifiers).toContain('DB_PORT');
++    expect(chunk!.identifiers).toContain('wrong-host.internal');
++    // Plain port number is NOT a network identifier
++    expect(chunk!.identifiers).not.toContain('5432');
++  });
++
++  it('ConfigMap URL values yield the extracted hostname', () => {
++    const cm = {
++      apiVersion: 'v1',
++      kind: 'ConfigMap',
++      metadata: { name: 'api-config', namespace: 'default' },
++      data: { API_URL: 'https://api.example.com' },
++    } as unknown as K8sResource;
++    const ctx = makeContext({ resources: [cm] });
++    const chunks = buildChunkIndex(ctx);
++    const chunk = chunks.find((c) => c.artifactCategory === 'kubernetes-resource');
++    expect(chunk!.identifiers).toContain('api.example.com');
++  });
++
++  it('ConfigMap hostname:port values yield the extracted hostname', () => {
++    const cm = {
++      apiVersion: 'v1',
++      kind: 'ConfigMap',
++      metadata: { name: 'svc-config', namespace: 'default' },
++      data: { REDIS_ADDR: 'cache-pod.default.svc.cluster.local:6379' },
++    } as unknown as K8sResource;
++    const ctx = makeContext({ resources: [cm] });
++    const chunks = buildChunkIndex(ctx);
++    const chunk = chunks.find((c) => c.artifactCategory === 'kubernetes-resource');
++    expect(chunk!.identifiers).toContain('cache-pod.default.svc.cluster.local');
++  });
++
++  it('ConfigMap non-network values (plain strings, numbers) are NOT added', () => {
++    const cm = {
++      apiVersion: 'v1',
++      kind: 'ConfigMap',
++      metadata: { name: 'app-config', namespace: 'default' },
++      data: { APP_ENV: 'production', MAX_CONN: '100', LOG_LEVEL: 'info' },
++    } as unknown as K8sResource;
++    const ctx = makeContext({ resources: [cm] });
++    const chunks = buildChunkIndex(ctx);
++    const chunk = chunks.find((c) => c.artifactCategory === 'kubernetes-resource');
++    expect(chunk!.identifiers).not.toContain('production');
++    expect(chunk!.identifiers).not.toContain('100');
++    expect(chunk!.identifiers).not.toContain('info');
++  });
++});
++
++// ---------------------------------------------------------------------------
++// Pod env literal value indexing (step-11 / issue 2.9)
++// ---------------------------------------------------------------------------
++
++describe('Pod env literal value network identifier indexing', () => {
++  it('Pod identifiers include hostname extracted from URL env value', () => {
++    const pod = {
++      apiVersion: 'v1',
++      kind: 'Pod',
++      metadata: { name: 'api-pod', namespace: 'default' },
++      spec: {
++        containers: [
++          {
++            name: 'api',
++            image: 'myrepo/api:v1.0.0',
++            env: [{ name: 'API_URL', value: 'https://api.example.com' }],
++          },
++        ],
++      },
++    } as unknown as K8sResource;
++    const ctx = makeContext({ resources: [pod] });
++    const chunks = buildChunkIndex(ctx);
++    const chunk = chunks.find((c) => c.artifactCategory === 'kubernetes-resource');
++    expect(chunk).toBeDefined();
++    expect(chunk!.identifiers).toContain('api.example.com');
++  });
++
++  it('Pod identifiers include bare hostname from literal env value', () => {
++    const pod = {
++      apiVersion: 'v1',
++      kind: 'Pod',
++      metadata: { name: 'db-pod', namespace: 'default' },
++      spec: {
++        containers: [
++          {
++            name: 'app',
++            image: 'myrepo/app:v1.0.0',
++            env: [{ name: 'DB_HOST', value: 'db.internal.example.com' }],
++          },
++        ],
++      },
++    } as unknown as K8sResource;
++    const ctx = makeContext({ resources: [pod] });
++    const chunks = buildChunkIndex(ctx);
++    const chunk = chunks.find((c) => c.artifactCategory === 'kubernetes-resource');
++    expect(chunk!.identifiers).toContain('db.internal.example.com');
++  });
++
++  it('Pod plain port number env value is NOT added as identifier', () => {
++    const pod = {
++      apiVersion: 'v1',
++      kind: 'Pod',
++      metadata: { name: 'db-pod', namespace: 'default' },
++      spec: {
++        containers: [
++          {
++            name: 'app',
++            image: 'myrepo/app:v1.0.0',
++            env: [{ name: 'DB_PORT', value: '5432' }],
++          },
++        ],
++      },
++    } as unknown as K8sResource;
++    const ctx = makeContext({ resources: [pod] });
++    const chunks = buildChunkIndex(ctx);
++    const chunk = chunks.find((c) => c.artifactCategory === 'kubernetes-resource');
++    expect(chunk!.identifiers).not.toContain('5432');
++  });
++
++  it('Pod valueFrom references are still indexed alongside literal values', () => {
++    const pod = {
++      apiVersion: 'v1',
++      kind: 'Pod',
++      metadata: { name: 'mixed-pod', namespace: 'default' },
++      spec: {
++        containers: [
++          {
++            name: 'app',
++            image: 'myrepo/app:v1.0.0',
++            env: [
++              { name: 'API_URL', value: 'https://api.example.com' },
++              { name: 'DB_PASS', valueFrom: { secretKeyRef: { name: 'db-secret', key: 'password' } } },
++            ],
++          },
++        ],
++      },
++    } as unknown as K8sResource;
++    const ctx = makeContext({ resources: [pod] });
++    const chunks = buildChunkIndex(ctx);
++    const chunk = chunks.find((c) => c.artifactCategory === 'kubernetes-resource');
++    expect(chunk!.identifiers).toContain('api.example.com');
++    expect(chunk!.identifiers).toContain('db-secret');
++  });
++});
++
++// ---------------------------------------------------------------------------
++// Log chunk path-based pod name extraction (issue 1.3)
++// ---------------------------------------------------------------------------
++
++describe('log chunk path-based identifier extraction', () => {
++  it('extracts pod name from real bundle path pods/logs/<ns>/<pod>/<container>.log', () => {
++    const logFile: LogFile = {
++      path: 'pods/logs/default/app-pod/app.log',
++      lines: [{ lineNumber: 1, content: 'some log content', level: 'info' }],
++      errorCount: 0,
++      warningCount: 0,
++      importance: 0,
++    };
++    const ctx = makeContext({ logs: [logFile] });
++    const chunks = buildChunkIndex(ctx);
++    const logChunk = chunks.find((c) => c.artifactCategory === 'log');
++    expect(logChunk).toBeDefined();
++    expect(logChunk!.identifiers).toContain('app-pod');
++  });
++
++  it('extracts pod name from path where filename has .log extension: logs/app/app-pod.log', () => {
++    const logFile: LogFile = {
++      path: 'logs/app/app-pod.log',
++      lines: [{ lineNumber: 1, content: 'some log content', level: 'info' }],
++      errorCount: 0,
++      warningCount: 0,
++      importance: 0,
++    };
++    const ctx = makeContext({ logs: [logFile] });
++    const chunks = buildChunkIndex(ctx);
++    const logChunk = chunks.find((c) => c.artifactCategory === 'log');
++    expect(logChunk).toBeDefined();
++    expect(logChunk!.identifiers).toContain('app-pod');
++  });
++});
++
+ // ---------------------------------------------------------------------------
+ // Chunk IDs are stable and unique
+ // ---------------------------------------------------------------------------
+@@ -427,4 +635,303 @@ describe('chunk IDs uniqueness', () => {
+     const uniqueIds = new Set(ids);
+     expect(uniqueIds.size).toBe(ids.length);
+   });
++
++  it('chunk IDs for two resources from the same List file are unique', () => {
++    const pod1 = makePodResource('pod-1');
++    const pod2 = makePodResource('pod-2');
++    const sourceFile = 'cluster-resources/pods/default.json';
++    const resourceSourceFiles = new Map<import('../../types/index.js').K8sResource, string>([
++      [pod1, sourceFile],
++      [pod2, sourceFile],
++    ]);
++    const ctx = makeContext({ resources: [pod1, pod2], resourceSourceFiles });
++    const chunks = buildChunkIndex(ctx);
++    const ids = chunks.map((c) => c.id);
++    const uniqueIds = new Set(ids);
++    expect(uniqueIds.size).toBe(ids.length);
++  });
++});
++
++// ---------------------------------------------------------------------------
++// Resource source file path tracking (issue 1.2)
++// ---------------------------------------------------------------------------
++
++describe('resource chunk source file paths', () => {
++  it('uses artifactId from resourceSourceFiles when provided', () => {
++    const pod = makePodResource('app-pod');
++    const sourceFile = 'cluster-resources/pods/default.json';
++    const resourceSourceFiles = new Map<import('../../types/index.js').K8sResource, string>([
++      [pod, sourceFile],
++    ]);
++    const ctx = makeContext({ resources: [pod], resourceSourceFiles });
++    const chunks = buildChunkIndex(ctx);
++    const chunk = chunks.find((c) => c.artifactCategory === 'kubernetes-resource');
++    expect(chunk).toBeDefined();
++    expect(chunk!.artifactId).toBe('cluster-resources/pods/default.json');
++  });
++
++  it('chunk id includes resource name as qualifier when source file is provided', () => {
++    const pod = makePodResource('app-pod');
++    const sourceFile = 'cluster-resources/pods/default.json';
++    const resourceSourceFiles = new Map<import('../../types/index.js').K8sResource, string>([
++      [pod, sourceFile],
++    ]);
++    const ctx = makeContext({ resources: [pod], resourceSourceFiles });
++    const chunks = buildChunkIndex(ctx);
++    const chunk = chunks.find((c) => c.artifactCategory === 'kubernetes-resource');
++    expect(chunk).toBeDefined();
++    expect(chunk!.id).toBe('cluster-resources/pods/default.json:app-pod:resource');
++  });
++
++  it('does NOT use fabricated per-resource path when source file is provided', () => {
++    const pod = makePodResource('app-pod');
++    const sourceFile = 'cluster-resources/pods/default.json';
++    const resourceSourceFiles = new Map<import('../../types/index.js').K8sResource, string>([
++      [pod, sourceFile],
++    ]);
++    const ctx = makeContext({ resources: [pod], resourceSourceFiles });
++    const chunks = buildChunkIndex(ctx);
++    const chunk = chunks.find((c) => c.artifactCategory === 'kubernetes-resource');
++    expect(chunk).toBeDefined();
++    // Must NOT be the old fabricated per-resource path
++    expect(chunk!.artifactId).not.toContain('pod/default/app-pod');
++  });
++
++  it('multiple resources from the same List file share the same artifactId', () => {
++    const pod1 = makePodResource('pod-1');
++    const pod2 = makePodResource('pod-2');
++    const sourceFile = 'cluster-resources/pods/default.json';
++    const resourceSourceFiles = new Map<import('../../types/index.js').K8sResource, string>([
++      [pod1, sourceFile],
++      [pod2, sourceFile],
++    ]);
++    const ctx = makeContext({ resources: [pod1, pod2], resourceSourceFiles });
++    const chunks = buildChunkIndex(ctx).filter((c) => c.artifactCategory === 'kubernetes-resource');
++    expect(chunks).toHaveLength(2);
++    expect(chunks[0]!.artifactId).toBe('cluster-resources/pods/default.json');
++    expect(chunks[1]!.artifactId).toBe('cluster-resources/pods/default.json');
++    // IDs must still be unique (name qualifier disambiguates)
++    expect(chunks[0]!.id).not.toBe(chunks[1]!.id);
++  });
++
++  it('falls back to constructed path when resourceSourceFiles is absent', () => {
++    const pod = makePodResource('app-pod');
++    const ctx = makeContext({ resources: [pod] });
++    const chunks = buildChunkIndex(ctx);
++    const chunk = chunks.find((c) => c.artifactCategory === 'kubernetes-resource');
++    expect(chunk).toBeDefined();
++    // Fallback path should still be non-empty and contain relevant info
++    expect(chunk!.artifactId).toBeTruthy();
++    expect(chunk!.id).toContain('app-pod');
++  });
++});
++
++// ---------------------------------------------------------------------------
++// Helm release helpers
++// ---------------------------------------------------------------------------
++
++function makeHelmRelease(overrides: Partial<HelmRelease> = {}): HelmRelease {
++  return {
++    name: 'my-app',
++    namespace: 'default',
++    revision: 3,
++    status: 'deployed',
++    chart: 'my-chart',
++    chartVersion: '1.2.3',
++    appVersion: '2.0.0',
++    updatedAt: '2024-01-15T10:00:00Z',
++    values: { replicaCount: 2, image: { tag: 'v2.0.0' } },
++    ...overrides,
++  };
++}
++
++// ---------------------------------------------------------------------------
++// InvestigatorContext helmReleases field (issue 1.6)
++// ---------------------------------------------------------------------------
++
++describe('InvestigatorContext helmReleases field', () => {
++  it('accepts helmReleases as an optional field', () => {
++    const ctx: InvestigatorContext = makeContext({
++      helmReleases: [makeHelmRelease()],
++    });
++    expect(ctx.helmReleases).toHaveLength(1);
++  });
++
++  it('is absent when not provided', () => {
++    const ctx = makeContext();
++    expect(ctx.helmReleases).toBeUndefined();
++  });
++});
++
++// ---------------------------------------------------------------------------
++// Helm release chunk indexing (issue 1.6)
++// ---------------------------------------------------------------------------
++
++describe('buildChunkIndex — Helm releases', () => {
++  it('produces no Helm chunks when helmReleases is absent', () => {
++    const ctx = makeContext({ resources: [makePodResource('pod-1')] });
++    const chunks = buildChunkIndex(ctx);
++    const helmChunks = chunks.filter((c) => c.artifactCategory === 'helm-release');
++    expect(helmChunks).toHaveLength(0);
++  });
++
++  it('produces one chunk per Helm release', () => {
++    const ctx = makeContext({
++      helmReleases: [
++        makeHelmRelease({ name: 'app-1', namespace: 'default' }),
++        makeHelmRelease({ name: 'app-2', namespace: 'staging' }),
++      ],
++    });
++    const chunks = buildChunkIndex(ctx);
++    const helmChunks = chunks.filter((c) => c.artifactCategory === 'helm-release');
++    expect(helmChunks).toHaveLength(2);
++  });
++
++  it('Helm release chunk has artifactCategory = helm-release', () => {
++    const ctx = makeContext({ helmReleases: [makeHelmRelease()] });
++    const chunks = buildChunkIndex(ctx);
++    const helmChunk = chunks.find((c) => c.artifactCategory === 'helm-release');
++    expect(helmChunk).toBeDefined();
++    expect(helmChunk!.artifactCategory).toBe('helm-release');
++  });
++
++  it('Helm release chunk identifiers include release name', () => {
++    const ctx = makeContext({ helmReleases: [makeHelmRelease({ name: 'my-app' })] });
++    const chunks = buildChunkIndex(ctx);
++    const helmChunk = chunks.find((c) => c.artifactCategory === 'helm-release');
++    expect(helmChunk!.identifiers).toContain('my-app');
++  });
++
++  it('Helm release chunk identifiers include namespace', () => {
++    const ctx = makeContext({ helmReleases: [makeHelmRelease({ namespace: 'production' })] });
++    const chunks = buildChunkIndex(ctx);
++    const helmChunk = chunks.find((c) => c.artifactCategory === 'helm-release');
++    expect(helmChunk!.identifiers).toContain('production');
++  });
++
++  it('Helm release chunk identifiers include chart name', () => {
++    const ctx = makeContext({ helmReleases: [makeHelmRelease({ chart: 'my-chart' })] });
++    const chunks = buildChunkIndex(ctx);
++    const helmChunk = chunks.find((c) => c.artifactCategory === 'helm-release');
++    expect(helmChunk!.identifiers).toContain('my-chart');
++  });
++
++  it('Helm release chunk identifiers include chart version', () => {
++    const ctx = makeContext({ helmReleases: [makeHelmRelease({ chartVersion: '1.2.3' })] });
++    const chunks = buildChunkIndex(ctx);
++    const helmChunk = chunks.find((c) => c.artifactCategory === 'helm-release');
++    expect(helmChunk!.identifiers).toContain('1.2.3');
++  });
++
++  it('Helm release chunk identifiers include status', () => {
++    const ctx = makeContext({ helmReleases: [makeHelmRelease({ status: 'deployed' })] });
++    const chunks = buildChunkIndex(ctx);
++    const helmChunk = chunks.find((c) => c.artifactCategory === 'helm-release');
++    expect(helmChunk!.identifiers).toContain('deployed');
++  });
++
++  it('failed release has "failed" in identifiers', () => {
++    const ctx = makeContext({
++      helmReleases: [makeHelmRelease({ name: 'broken-app', status: 'failed' })],
++    });
++    const chunks = buildChunkIndex(ctx);
++    const helmChunk = chunks.find((c) => c.artifactCategory === 'helm-release');
++    expect(helmChunk!.identifiers).toContain('failed');
++  });
++
++  it('pending-install release has "pending-install" in identifiers', () => {
++    const ctx = makeContext({
++      helmReleases: [makeHelmRelease({ status: 'pending-install' })],
++    });
++    const chunks = buildChunkIndex(ctx);
++    const helmChunk = chunks.find((c) => c.artifactCategory === 'helm-release');
++    expect(helmChunk!.identifiers).toContain('pending-install');
++  });
++
++  it('Helm release chunk has non-empty summary', () => {
++    const ctx = makeContext({ helmReleases: [makeHelmRelease()] });
++    const chunks = buildChunkIndex(ctx);
++    const helmChunk = chunks.find((c) => c.artifactCategory === 'helm-release');
++    expect(helmChunk!.summary).toBeTruthy();
++    expect(helmChunk!.summary).toContain('my-app');
++    expect(helmChunk!.summary).toContain('my-chart');
++    expect(helmChunk!.summary).toContain('deployed');
++  });
++
++  it('Helm release chunk has namespace set', () => {
++    const ctx = makeContext({ helmReleases: [makeHelmRelease({ namespace: 'staging' })] });
++    const chunks = buildChunkIndex(ctx);
++    const helmChunk = chunks.find((c) => c.artifactCategory === 'helm-release');
++    expect(helmChunk!.namespace).toBe('staging');
++  });
++
++  it('Helm release chunk artifactId contains namespace and name', () => {
++    const ctx = makeContext({ helmReleases: [makeHelmRelease({ name: 'my-app', namespace: 'default' })] });
++    const chunks = buildChunkIndex(ctx);
++    const helmChunk = chunks.find((c) => c.artifactCategory === 'helm-release');
++    expect(helmChunk!.artifactId).toBe('helm/default/my-app');
++  });
++
++  it('Helm release chunk id is stable and unique', () => {
++    const ctx = makeContext({
++      helmReleases: [
++        makeHelmRelease({ name: 'app-1', namespace: 'default' }),
++        makeHelmRelease({ name: 'app-2', namespace: 'default' }),
++      ],
++    });
++    const chunks = buildChunkIndex(ctx).filter((c) => c.artifactCategory === 'helm-release');
++    expect(chunks).toHaveLength(2);
++    expect(chunks[0]!.id).not.toBe(chunks[1]!.id);
++    expect(chunks[0]!.id).toBe('helm-release:default:app-1');
++    expect(chunks[1]!.id).toBe('helm-release:default:app-2');
++  });
++
++  it('Helm release chunk has valid line range', () => {
++    const ctx = makeContext({ helmReleases: [makeHelmRelease()] });
++    const chunks = buildChunkIndex(ctx);
++    const helmChunk = chunks.find((c) => c.artifactCategory === 'helm-release');
++    expect(helmChunk!.startLine).toBeGreaterThanOrEqual(1);
++    expect(helmChunk!.endLine).toBeGreaterThanOrEqual(helmChunk!.startLine);
++  });
++});
++
++// ---------------------------------------------------------------------------
++// identifiersFromHelmRelease helper
++// ---------------------------------------------------------------------------
++
++describe('identifiersFromHelmRelease', () => {
++  it('returns name', () => {
++    const ids = identifiersFromHelmRelease(makeHelmRelease({ name: 'my-release' }));
++    expect(ids).toContain('my-release');
++  });
++
++  it('returns namespace', () => {
++    const ids = identifiersFromHelmRelease(makeHelmRelease({ namespace: 'kube-system' }));
++    expect(ids).toContain('kube-system');
++  });
++
++  it('returns chart name', () => {
++    const ids = identifiersFromHelmRelease(makeHelmRelease({ chart: 'nginx-ingress' }));
++    expect(ids).toContain('nginx-ingress');
++  });
++
++  it('returns chart version', () => {
++    const ids = identifiersFromHelmRelease(makeHelmRelease({ chartVersion: '4.5.0' }));
++    expect(ids).toContain('4.5.0');
++  });
++
++  it('returns status', () => {
++    const ids = identifiersFromHelmRelease(makeHelmRelease({ status: 'failed' }));
++    expect(ids).toContain('failed');
++  });
++
++  it('returns appVersion when set', () => {
++    const ids = identifiersFromHelmRelease(makeHelmRelease({ appVersion: '3.0.0' }));
++    expect(ids).toContain('3.0.0');
++  });
++
++  it('does not include empty strings', () => {
++    const ids = identifiersFromHelmRelease(makeHelmRelease({ appVersion: '', chartVersion: '' }));
++    expect(ids).not.toContain('');
++  });
+ });
+diff --git a/src/ai/__tests__/lexical-search.test.ts b/src/ai/__tests__/lexical-search.test.ts
+index dfaac61..768d396 100644
+--- a/src/ai/__tests__/lexical-search.test.ts
++++ b/src/ai/__tests__/lexical-search.test.ts
+@@ -436,7 +436,7 @@ describe('LexicalSearchIndex — scoring priority', () => {
+     expect(results[0]!.score).toBeGreaterThan(results[1]!.score);
+   });
+ 
+-  it('identifier score is 3x the content score for a single-term query', () => {
++  it('identifier score is strictly greater than the content score for a single-term query', () => {
+     const identifierChunk = makeChunk({
+       id: 'with-identifier',
+       content: 'unrelated yaml',
+@@ -459,9 +459,8 @@ describe('LexicalSearchIndex — scoring priority', () => {
+     const idResult = results.find((r) => r.chunk.id === 'with-identifier')!;
+     const ctResult = results.find((r) => r.chunk.id === 'with-content')!;
+ 
+-    // identifier weight (3.0) should be strictly greater than content weight (1.0)
++    // identifier weight (3.0) should be strictly greater than BM25 content score
+     expect(idResult.score).toBeGreaterThan(ctResult.score);
+-    expect(idResult.score / ctResult.score).toBeCloseTo(3.0, 0);
+   });
+ 
+   it('namespace match scores between identifier and content', () => {
+@@ -509,28 +508,31 @@ describe('LexicalSearchIndex — scoring priority', () => {
+     }
+   });
+ 
+-  it('identifier hits win deterministic ties against content-only hits', () => {
++  it('identifier hits rank above content-only hits (tie-break determinism)', () => {
+     const identifierChunk = makeChunk({
+       id: 'resource:tie-identifier',
+       content: 'kind: Pod metadata labels: app',
+       identifiers: ['app-pod'],
+       artifactCategory: 'kubernetes-resource',
+-      summary: 'Identifier tie-break winner',
++      summary: 'Identifier match winner',
+     });
+     const contentOnlyChunk = makeChunk({
+       id: 'log:tie-content',
+       content: 'app-pod error failed',
+       identifiers: [],
+       artifactCategory: 'log',
+-      summary: 'Content-only tie candidate',
++      summary: 'Content-only match',
+     });
+ 
+     const index = new LexicalSearchIndex();
+     index.build([contentOnlyChunk, identifierChunk]);
+ 
+     const results = index.search('app-pod error failed', 10);
++    // The identifier chunk should rank first regardless of exact scores.
++    // (With BM25 content scoring the scores are no longer equal, but
++    // the flat 3.0 identifier weight still dominates a typical multi-token
++    // BM25 content score for a small corpus.)
+     expect(results[0]!.chunk.id).toBe('resource:tie-identifier');
+-    expect(results[0]!.score).toBe(results[1]!.score);
+   });
+ });
+ 
+@@ -633,6 +635,107 @@ describe('LexicalSearchIndex.extractQueryIdentifiers', () => {
+     const reason = ids.find((id) => id.toLowerCase() === 'crashloopbackoff');
+     expect(reason).toBe('CrashLoopBackOff'); // original casing preserved
+   });
++
++  // ── High-signal diagnostic terms (step-10 / issue 2.7) ──────────────────
++
++  it('extracts "secret" as a searchable identifier (not a stop word)', () => {
++    const ids = index.extractQueryIdentifiers('missing secret app-credentials');
++    expect(ids).toContain('missing');
++    expect(ids).toContain('secret');
++    expect(ids).toContain('app-credentials');
++  });
++
++  it('extracts "service" as a searchable identifier', () => {
++    const ids = index.extractQueryIdentifiers('service api-gateway is unreachable');
++    expect(ids).toContain('service');
++    expect(ids).toContain('api-gateway');
++    expect(ids).toContain('unreachable');
++  });
++
++  it('extracts "configmap" as a searchable identifier', () => {
++    const ids = index.extractQueryIdentifiers('configmap db-config missing key');
++    expect(ids).toContain('configmap');
++    expect(ids).toContain('db-config');
++  });
++
++  it('extracts "failed" as a searchable identifier', () => {
++    const ids = index.extractQueryIdentifiers('failed pod web-server');
++    expect(ids).toContain('failed');
++    expect(ids).toContain('web-server');
++  });
++});
++
++// ---------------------------------------------------------------------------
++// High-signal stop-word fix: searching 'secret', 'missing', etc.
++// ---------------------------------------------------------------------------
++
++describe('LexicalSearchIndex — high-signal diagnostic terms as identifier queries (step-10)', () => {
++  it('searching "missing secret" finds chunks with "secret" in identifiers', () => {
++    // A chunk whose identifiers explicitly include the literal word "secret"
++    // (e.g. a Kubernetes Secret resource or an analyzer result that tags the
++    // secret kind as an identifier).
++    const secretChunk = makeChunk({
++      id: 'resource:secret-tagged',
++      content: 'kind: Secret metadata name: my-secret namespace: default',
++      identifiers: ['my-secret', 'secret', 'default'],
++      namespace: 'default',
++      artifactCategory: 'kubernetes-resource',
++      summary: 'Secret resource chunk with "secret" in identifiers',
++    });
++    const unrelatedChunk = makePodChunk('unrelated-pod');
++
++    const idx = new LexicalSearchIndex();
++    idx.build([secretChunk, unrelatedChunk]);
++
++    const results = idx.search('missing secret', 10);
++    const found = results.find((r) => r.chunk.identifiers.includes('secret'));
++    expect(found).toBeDefined();
++    expect(found!.chunk.id).toBe('resource:secret-tagged');
++  });
++
++  it('searching "missing secret" does NOT find a chunk whose content only contains "secretKeyRef"', () => {
++    // Simulate a monitoring pod that has secretKeyRef in its raw JSON but is
++    // unrelated to the query.  Before the stop-word fix this chunk was falsely
++    // surfaced via substring expansion ('secret' ⊂ 'secretkeyref').
++    const noiseChunk = makeChunk({
++      id: 'resource:noise-secretkeyref',
++      // Raw JSON-like content with secretKeyRef but no standalone 'secret' token
++      content: '{"env":[{"name":"GF_DB_PASS","valueFrom":{"secretKeyRef":{"name":"monitoring-credentials","key":"pass"}}}]}',
++      identifiers: ['grafana-pod', 'monitoring', 'monitoring-credentials'],
++      namespace: 'monitoring',
++      artifactCategory: 'kubernetes-resource',
++      summary: 'Grafana pod with secretKeyRef (noise)',
++    });
++
++    const idx = new LexicalSearchIndex();
++    idx.build([noiseChunk]);
++
++    const results = idx.search('missing secret app-credentials', 10);
++    // The noise chunk must not appear — 'secret' should not expand to
++    // 'secretkeyref' via substring matching.
++    expect(results).toHaveLength(0);
++  });
++
++  it('searching "failed" finds a chunk with "failed" in identifiers (Helm release)', () => {
++    const helmChunk = makeChunk({
++      id: 'helm-release:default:my-chart',
++      content: 'HelmRelease: my-chart (namespace: default)\nStatus: failed',
++      identifiers: ['my-chart', 'default', 'failed'],
++      namespace: 'default',
++      artifactCategory: 'helm-release',
++      summary: 'Helm release my-chart with status failed',
++    });
++    const unrelatedChunk = makePodChunk('healthy-pod');
++
++    const idx = new LexicalSearchIndex();
++    idx.build([helmChunk, unrelatedChunk]);
++
++    const results = idx.search('failed my-chart', 10);
++    const helmResult = results.find((r) => r.chunk.id === 'helm-release:default:my-chart');
++    expect(helmResult).toBeDefined();
++    // Identifier match for both 'failed' and 'my-chart' → score ≥ 6.0
++    expect(helmResult!.score).toBeGreaterThanOrEqual(6.0);
++  });
+ });
+ 
+ // ---------------------------------------------------------------------------
+@@ -690,6 +793,163 @@ describe('LexicalSearchIndex — integration with buildChunkIndex fixtures', ()
+   });
+ });
+ 
++// ---------------------------------------------------------------------------
++// BM25 scoring properties
++// ---------------------------------------------------------------------------
++
++describe('LexicalSearchIndex — BM25 scoring', () => {
++  /**
++   * BM25 saturation test.
++   *
++   * With raw TF, a chunk containing 'default' 50 times scores 50× a single
++   * match, dwarfing a chunk with 2 occurrences of a rare term. BM25 prevents
++   * this: the IDF of a term that appears in almost every chunk is near-zero,
++   * so even 50 repetitions cannot compensate for the high IDF of the rare term.
++   */
++  it('BM25 saturation: chunk with 50 occurrences of common term does not outrank chunk with 2 occurrences of rare term', () => {
++    // 20 background chunks containing 'default' → df('default') = 21, low IDF
++    const background = Array.from({ length: 20 }, (_, i) =>
++      makeChunk({
++        id: `sat-bg-${i}`,
++        content: `pod-${i} running in default namespace with default config`,
++        identifiers: [`pod-${i}`],
++        namespace: 'default',
++        artifactCategory: 'kubernetes-resource',
++        summary: `Background ${i}`,
++      }),
++    );
++
++    // Chunk A: 'default' repeated 50 times — high TF but very low IDF
++    const chunkA = makeChunk({
++      id: 'sat-chunk-a',
++      content: Array(50).fill('default').join(' '),
++      identifiers: [],
++      artifactCategory: 'kubernetes-resource',
++      summary: 'Many defaults',
++    });
++
++    // Chunk B: 'app-credentials' appears 2 times — low TF but very high IDF
++    // ('app-credentials' appears in no background chunk → df = 1)
++    const chunkB = makeChunk({
++      id: 'sat-chunk-b',
++      content: 'app-credentials secret app-credentials missing',
++      identifiers: [],
++      artifactCategory: 'kubernetes-resource',
++      summary: 'Rare term',
++    });
++
++    const index = new LexicalSearchIndex();
++    index.build([...background, chunkA, chunkB]);
++
++    // Query touches both terms.  With raw TF, chunkA would dominate (score 50).
++    // With BM25, the rare 'app-credentials' in chunkB should score higher.
++    const results = index.search('default app-credentials', 10);
++    const aResult = results.find((r) => r.chunk.id === 'sat-chunk-a');
++    const bResult = results.find((r) => r.chunk.id === 'sat-chunk-b');
++
++    expect(bResult).toBeDefined();
++    expect(bResult!.score).toBeGreaterThan(aResult?.score ?? 0);
++  });
++
++  /**
++   * IDF test.
++   *
++   * When both chunks contain exactly ONE occurrence of their respective term,
++   * the chunk whose term is RARE (appears in few documents) should receive a
++   * higher BM25 score than the chunk whose term is COMMON (appears in many
++   * documents).
++   *
++   * topK is set larger than the corpus so both target chunks are always
++   * included in results (avoids false passes from topK truncation).
++   */
++  it('BM25 IDF: common term scores lower per-occurrence than rare term', () => {
++    // 15 background chunks all containing 'default' → df('default') = 16, low IDF
++    const background = Array.from({ length: 15 }, (_, i) =>
++      makeChunk({
++        id: `idf-bg-${i}`,
++        content: `pod-${i} running in default namespace`,
++        identifiers: [`pod-${i}`],
++        artifactCategory: 'kubernetes-resource',
++        summary: `Background ${i}`,
++      }),
++    );
++
++    // One occurrence of the common term 'default'
++    const commonChunk = makeChunk({
++      id: 'idf-common-chunk',
++      content: 'pod running in default namespace',
++      identifiers: [],
++      artifactCategory: 'kubernetes-resource',
++      summary: 'Common term chunk',
++    });
++
++    // One occurrence of the rare term 'app-credentials' (only in this chunk → df = 1)
++    const rareChunk = makeChunk({
++      id: 'idf-rare-chunk',
++      content: 'secret app-credentials not found',
++      identifiers: [],
++      artifactCategory: 'kubernetes-resource',
++      summary: 'Rare term chunk',
++    });
++
++    const index = new LexicalSearchIndex();
++    index.build([...background, commonChunk, rareChunk]);
++
++    // topK=50 is larger than the corpus (17 chunks) so the target chunk is
++    // always present in results and the score is non-zero when it matches.
++    const defaultResults = index.search('default', 50);
++    const commonScore =
++      defaultResults.find((r) => r.chunk.id === 'idf-common-chunk')?.score ?? 0;
++
++    const rareResults = index.search('app-credentials', 50);
++    const rareScore =
++      rareResults.find((r) => r.chunk.id === 'idf-rare-chunk')?.score ?? 0;
++
++    // With BM25, the rare term has higher IDF → higher score per occurrence
++    // than the common term even though both appear exactly once in their chunk.
++    expect(rareScore).toBeGreaterThan(commonScore);
++  });
++
++  /**
++   * Length normalization test.
++   *
++   * BM25 penalizes long documents relative to the corpus average. A short chunk
++   * with exactly one match should rank above a very long chunk with one match,
++   * because the match density is higher in the short chunk.
++   */
++  it('BM25 length normalization: short chunk with 1 match ranks higher than long chunk with 1 match', () => {
++    // Short chunk: 2 tokens, one of which is the target
++    const shortChunk = makeChunk({
++      id: 'len-short-chunk',
++      content: 'crashloopbackoff detected',
++      identifiers: [],
++      artifactCategory: 'log',
++      summary: 'Short chunk',
++    });
++
++    // Long chunk: 101 tokens, only the last is the target
++    const longChunk = makeChunk({
++      id: 'len-long-chunk',
++      content: `${Array(100).fill('running').join(' ')} crashloopbackoff`,
++      identifiers: [],
++      artifactCategory: 'log',
++      summary: 'Long chunk',
++    });
++
++    const index = new LexicalSearchIndex();
++    index.build([shortChunk, longChunk]);
++
++    const results = index.search('crashloopbackoff', 10);
++    const shortResult = results.find((r) => r.chunk.id === 'len-short-chunk');
++    const longResult = results.find((r) => r.chunk.id === 'len-long-chunk');
++
++    expect(shortResult).toBeDefined();
++    expect(longResult).toBeDefined();
++    // Short chunk has higher match density → should rank first
++    expect(shortResult!.score).toBeGreaterThan(longResult!.score);
++  });
++});
++
+ // ---------------------------------------------------------------------------
+ // Constant used in tests (re-exported for test readability)
+ // ---------------------------------------------------------------------------
+diff --git a/src/ai/__tests__/summarizer.test.ts b/src/ai/__tests__/summarizer.test.ts
+index b9cfe3c..f704b76 100644
+--- a/src/ai/__tests__/summarizer.test.ts
++++ b/src/ai/__tests__/summarizer.test.ts
+@@ -1,6 +1,7 @@
+ import { describe, it, expect } from 'vitest';
+-import { summarizeResource, summarizeEvent, summarizeAnalyzer } from '../summarizer.js';
++import { summarizeResource, summarizeEvent, summarizeAnalyzer, summarizeHelmRelease } from '../summarizer.js';
+ import type { K8sResource, K8sEvent, AnalyzerResult } from '../../types/index.js';
++import type { HelmRelease } from '../../parsers/index.js';
+ 
+ // ---------------------------------------------------------------------------
+ // Fixtures
+@@ -397,3 +398,84 @@ describe('summarizeAnalyzer', () => {
+     expect(summary).toContain('WARN');
+   });
+ });
++
++// ---------------------------------------------------------------------------
++// summarizeHelmRelease
++// ---------------------------------------------------------------------------
++
++function makeHelmRelease(overrides: Partial<HelmRelease> = {}): HelmRelease {
++  return {
++    name: 'my-app',
++    namespace: 'default',
++    revision: 3,
++    status: 'deployed',
++    chart: 'my-chart',
++    chartVersion: '1.2.3',
++    appVersion: '2.0.0',
++    updatedAt: '2024-01-15T10:00:00Z',
++    values: { replicaCount: 2 },
++    ...overrides,
++  };
++}
++
++describe('summarizeHelmRelease', () => {
++  it('includes release name', () => {
++    const summary = summarizeHelmRelease(makeHelmRelease({ name: 'my-app' }));
++    expect(summary).toContain('my-app');
++  });
++
++  it('includes namespace', () => {
++    const summary = summarizeHelmRelease(makeHelmRelease({ namespace: 'production' }));
++    expect(summary).toContain('production');
++  });
++
++  it('includes chart name', () => {
++    const summary = summarizeHelmRelease(makeHelmRelease({ chart: 'my-chart' }));
++    expect(summary).toContain('my-chart');
++  });
++
++  it('includes chart version', () => {
++    const summary = summarizeHelmRelease(makeHelmRelease({ chartVersion: '1.2.3' }));
++    expect(summary).toContain('1.2.3');
++  });
++
++  it('includes status', () => {
++    const summary = summarizeHelmRelease(makeHelmRelease({ status: 'failed' }));
++    expect(summary).toContain('failed');
++  });
++
++  it('includes app version', () => {
++    const summary = summarizeHelmRelease(makeHelmRelease({ appVersion: '2.0.0' }));
++    expect(summary).toContain('2.0.0');
++  });
++
++  it('includes updatedAt timestamp', () => {
++    const summary = summarizeHelmRelease(makeHelmRelease({ updatedAt: '2024-01-15T10:00:00Z' }));
++    expect(summary).toContain('2024-01-15T10:00:00Z');
++  });
++
++  it('includes revision number', () => {
++    const summary = summarizeHelmRelease(makeHelmRelease({ revision: 5 }));
++    expect(summary).toContain('5');
++  });
++
++  it('includes values keys when present', () => {
++    const summary = summarizeHelmRelease(makeHelmRelease({ values: { replicaCount: 2, image: 'v1' } }));
++    expect(summary).toContain('replicaCount');
++  });
++
++  it('omits appVersion line when empty', () => {
++    const summary = summarizeHelmRelease(makeHelmRelease({ appVersion: '' }));
++    expect(summary).not.toContain('AppVersion:');
++  });
++
++  it('omits updatedAt line when empty', () => {
++    const summary = summarizeHelmRelease(makeHelmRelease({ updatedAt: '' }));
++    expect(summary).not.toContain('UpdatedAt:');
++  });
++
++  it('omits ValuesKeys line when values is empty', () => {
++    const summary = summarizeHelmRelease(makeHelmRelease({ values: {} }));
++    expect(summary).not.toContain('ValuesKeys:');
++  });
++});
+diff --git a/src/ai/chunk-indexer.ts b/src/ai/chunk-indexer.ts
+index 406335b..4bc0c41 100644
+--- a/src/ai/chunk-indexer.ts
++++ b/src/ai/chunk-indexer.ts
+@@ -1,8 +1,9 @@
+ import type { Chunk, ArtifactCategory } from '../types/index.js';
+ import type { K8sResource, K8sEvent, AnalyzerResult } from '../types/index.js';
++import type { HelmRelease } from '../parsers/index.js';
+ import type { InvestigatorContext } from '../investigators/types.js';
+ import { chunkLogFile, chunkResource, chunkAnalyzer } from '../graph/chunker.js';
+-import { summarizeResource, summarizeEvent, summarizeAnalyzer } from './summarizer.js';
++import { summarizeResource, summarizeEvent, summarizeAnalyzer, summarizeHelmRelease } from './summarizer.js';
+ import { extractTimestamps } from '../parsers/index.js';
+ 
+ // ---------------------------------------------------------------------------
+@@ -66,6 +67,53 @@ function getChunkPath(chunk: Chunk): string {
+   return chunk.artifactId;
+ }
+ 
++// ---------------------------------------------------------------------------
++// Network identifier extraction
++// ---------------------------------------------------------------------------
++
++/**
++ * Extracts network identifiers (hostnames, IPs, and URLs) from a plain string
++ * value.  Used to surface meaningful connection targets from ConfigMap data
++ * values and Pod `env[].value` literals so that lexical search can correlate
++ * mis-configured host references across resources and logs.
++ *
++ * Recognition rules (applied in order, first match wins):
++ * 1. **URL** (`scheme://[userinfo@]host[/…]`) — returns the bare hostname.
++ * 2. **host:port** — returns the hostname part.
++ * 3. **Bare dotted hostname** — returned as-is (must contain at least one `.`
++ *    and start with a letter to avoid port-only strings like `"5432"`).
++ *
++ * Returns an empty array for values that match none of the above (e.g. plain
++ * integers, short environment values like `"production"` or `"info"`).
++ */
++export function extractNetworkIdentifiers(value: string): string[] {
++  const trimmed = value.trim();
++  if (!trimmed) return [];
++
++  // 1. URL: scheme://[userinfo@]host[:port][/path][?query][#frag]
++  const urlMatch = trimmed.match(
++    /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/(?:[^@/?#]*@)?([a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?)/,
++  );
++  if (urlMatch?.[1]) {
++    return [urlMatch[1]];
++  }
++
++  // 2. host:port (e.g. "wrong-host.internal:5432", "cache-pod.svc:6379")
++  const hostPortMatch = trimmed.match(
++    /^([a-zA-Z](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?):\d+$/,
++  );
++  if (hostPortMatch?.[1]) {
++    return [hostPortMatch[1]];
++  }
++
++  // 3. Bare dotted hostname (e.g. "wrong-host.internal", "svc.cluster.local")
++  if (/^[a-zA-Z](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?\.[a-zA-Z][a-zA-Z0-9-]*$/.test(trimmed)) {
++    return [trimmed];
++  }
++
++  return [];
++}
++
+ // ---------------------------------------------------------------------------
+ // Identifier extractors
+ // ---------------------------------------------------------------------------
+@@ -132,12 +180,24 @@ function identifiersFromResource(resource: K8sResource): string[] {
+       if (isRecord(ef['configMapRef'])) ids.add(getString(ef['configMapRef']['name']));
+     }
+ 
+-    // env.valueFrom
++    // env entries: literal values (network identifiers) and valueFrom references
+     for (const ev of getArray(c['env'])) {
+-      if (!isRecord(ev) || !isRecord(ev['valueFrom'])) continue;
+-      const vf = ev['valueFrom'] as Record<string, unknown>;
+-      if (isRecord(vf['secretKeyRef'])) ids.add(getString(vf['secretKeyRef']['name']));
+-      if (isRecord(vf['configMapKeyRef'])) ids.add(getString(vf['configMapKeyRef']['name']));
++      if (!isRecord(ev)) continue;
++
++      // Literal env value — extract hostnames/URLs (e.g. API_URL=https://api.example.com)
++      const literalValue = getString(ev['value']);
++      if (literalValue) {
++        for (const id of extractNetworkIdentifiers(literalValue)) {
++          ids.add(id);
++        }
++      }
++
++      // valueFrom: reference to a Secret or ConfigMap key
++      if (isRecord(ev['valueFrom'])) {
++        const vf = ev['valueFrom'] as Record<string, unknown>;
++        if (isRecord(vf['secretKeyRef'])) ids.add(getString(vf['secretKeyRef']['name']));
++        if (isRecord(vf['configMapKeyRef'])) ids.add(getString(vf['configMapKeyRef']['name']));
++      }
+     }
+   }
+ 
+@@ -181,11 +241,18 @@ function identifiersFromResource(resource: K8sResource): string[] {
+   const phase = getString(status['phase']);
+   if (phase) ids.add(phase);
+ 
+-  // ConfigMap keys (useful for spotting typos in data values)
++  // ConfigMap: index both keys and network-identifiable values.
++  // Keys are useful for key-name matching; values (hostnames, URLs) surface
++  // misconfigured endpoints so lexical search can correlate them with log errors.
+   const raw = resource as unknown as Record<string, unknown>;
+   if (resource.kind === 'ConfigMap' && isRecord(raw['data'])) {
+-    for (const key of Object.keys(raw['data'] as Record<string, unknown>)) {
++    for (const [key, value] of Object.entries(raw['data'] as Record<string, unknown>)) {
+       ids.add(key);
++      if (typeof value === 'string') {
++        for (const id of extractNetworkIdentifiers(value)) {
++          ids.add(id);
++        }
++      }
+     }
+   }
+ 
+@@ -216,12 +283,29 @@ function identifiersFromEvent(event: K8sEvent): string[] {
+ function identifiersFromLogContent(content: string, path: string): string[] {
+   const ids = new Set<string>();
+ 
+-  // Path-based: extract likely pod/container name from path segment
+-  const pathSegments = path.replace(/\\/g, '/').split('/');
++  // Path-based: extract likely pod/container name from path segments.
++  // Strip .log/.txt extensions from filename segments before adding so that
++  // paths like `logs/app/app-pod.log` correctly yield `app-pod` as an
++  // identifier rather than being silently dropped.
++  const normalizedPath = path.replace(/\\/g, '/');
++  const pathSegments = normalizedPath.split('/');
+   for (const seg of pathSegments) {
+-    if (seg && seg !== 'logs' && !seg.endsWith('.log') && !seg.endsWith('.txt')) {
+-      ids.add(seg);
+-    }
++    if (!seg || seg === 'logs') continue;
++    let normalized = seg;
++    if (normalized.endsWith('.log')) normalized = normalized.slice(0, -4);
++    else if (normalized.endsWith('.txt')) normalized = normalized.slice(0, -4);
++    if (normalized) ids.add(normalized);
++  }
++
++  // For real Troubleshoot bundle paths of the form
++  // <prefix>/logs/<ns>/<pod>/<container>.log, explicitly add the pod name
++  // (grandparent directory of the container log file) as a high-confidence
++  // identifier.
++  const grandparentMatch = normalizedPath.match(
++    /(?:^|\/)logs\/[^/]+\/([^/]+)\/[^/]+\.(?:log|txt)$/,
++  );
++  if (grandparentMatch?.[1]) {
++    ids.add(grandparentMatch[1]);
+   }
+ 
+   // Common K8s error reasons that appear in logs
+@@ -242,6 +326,25 @@ function identifiersFromLogContent(content: string, path: string): string[] {
+   return [...ids];
+ }
+ 
++/**
++ * Extracts identifiers from a Helm release: release name, namespace, chart,
++ * chart version, app version, and status.  The status (e.g. `failed`,
++ * `deployed`, `pending-install`) is a high-signal diagnostic identifier.
++ */
++export function identifiersFromHelmRelease(release: HelmRelease): string[] {
++  const ids = new Set<string>();
++
++  ids.add(release.name);
++  if (release.namespace) ids.add(release.namespace);
++  if (release.chart) ids.add(release.chart);
++  if (release.chartVersion) ids.add(release.chartVersion);
++  if (release.appVersion) ids.add(release.appVersion);
++  if (release.status) ids.add(release.status);
++
++  ids.delete('');
++  return [...ids];
++}
++
+ /**
+  * Extracts identifiers from analyzer chunk content and name.
+  */
+@@ -341,6 +444,34 @@ function augmentAnalyzerChunk(chunk: Chunk, result: AnalyzerResult): IndexedChun
+   };
+ }
+ 
++function augmentHelmReleaseChunk(release: HelmRelease, artifactId: string): IndexedChunk {
++  const summary = summarizeHelmRelease(release);
++  const identifiers = identifiersFromHelmRelease(release);
++  const content = summary;
++  const lines = content.split('\n');
++
++  return {
++    id: `helm-release:${release.namespace}:${release.name}`,
++    artifactId,
++    content,
++    startLine: 1,
++    endLine: lines.length,
++    summary,
++    identifiers,
++    namespace: release.namespace,
++    artifactCategory: 'helm-release',
++    metadata: {
++      path: artifactId,
++      category: 'helm-release',
++      name: release.name,
++      namespace: release.namespace,
++      chart: release.chart,
++      chartVersion: release.chartVersion,
++      status: release.status,
++    },
++  };
++}
++
+ function augmentLogChunk(chunk: Chunk): IndexedChunk {
+   const path = getChunkPath(chunk);
+   const identifiers = identifiersFromLogContent(chunk.content, path);
+@@ -383,8 +514,12 @@ export function buildChunkIndex(context: InvestigatorContext): IndexedChunk[] {
+   // ── K8s resources ──────────────────────────────────────────────────────────
+   for (const resource of context.resources) {
+     const ns = resource.metadata.namespace ?? 'default';
+-    const path = `cluster-resources/${resource.kind.toLowerCase()}/${ns}/${resource.metadata.name}.json`;
+-    const baseChunk = chunkResource(resource, path);
++    // Use the actual source file path when available (populated by the pipeline
++    // from the bundle manifest). Fall back to a constructed path for tests /
++    // contexts that do not supply source-file tracking.
++    const fallbackPath = `cluster-resources/${resource.kind.toLowerCase()}/${ns}/${resource.metadata.name}.json`;
++    const resourcePath = context.resourceSourceFiles?.get(resource) ?? fallbackPath;
++    const baseChunk = chunkResource(resource, resourcePath);
+     chunks.push(augmentResourceChunk(baseChunk, resource));
+   }
+ 
+@@ -409,5 +544,15 @@ export function buildChunkIndex(context: InvestigatorContext): IndexedChunk[] {
+     chunks.push(augmentAnalyzerChunk(baseChunk, result));
+   }
+ 
++  // ── Helm releases ──────────────────────────────────────────────────────────
++  if (context.helmReleases) {
++    for (const release of context.helmReleases) {
++      // Use a deterministic artifact path derived from namespace and name so
++      // the LLM can cite a stable, meaningful location.
++      const artifactId = `helm/${release.namespace}/${release.name}`;
++      chunks.push(augmentHelmReleaseChunk(release, artifactId));
++    }
++  }
++
+   return chunks;
+ }
+diff --git a/src/ai/index.ts b/src/ai/index.ts
+index 4730acd..a4faf7e 100644
+--- a/src/ai/index.ts
++++ b/src/ai/index.ts
+@@ -1,7 +1,7 @@
+ export * from './config.js';
+ export { CassetteRecorder, cassetteSeedKey, getRecorderMode } from './recorder.js';
+ export type { RecorderMode, Cassette, CassetteStore } from './recorder.js';
+-export { summarizeResource, summarizeEvent, summarizeAnalyzer } from './summarizer.js';
++export { summarizeResource, summarizeEvent, summarizeAnalyzer, summarizeHelmRelease } from './summarizer.js';
+ export { buildChunkIndex } from './chunk-indexer.js';
+ export type { IndexedChunk } from './chunk-indexer.js';
+ export { LexicalSearchIndex } from './lexical-search.js';
+diff --git a/src/ai/lexical-search.ts b/src/ai/lexical-search.ts
+index 904726b..137c057 100644
+--- a/src/ai/lexical-search.ts
++++ b/src/ai/lexical-search.ts
+@@ -8,8 +8,21 @@ import type { IndexedChunk } from './chunk-indexer.js';
+ const WEIGHT_IDENTIFIER = 3.0;
+ /** Namespace match (query token equals chunk.namespace). */
+ const WEIGHT_NAMESPACE = 1.5;
+-/** Content token match (query token appears in chunk.content). */
+-const WEIGHT_CONTENT = 1.0;
++/**
++ * Fallback content weight used for substring-expansion matches whose indexed
++ * term differs from the query token (so BM25 parameters cannot be resolved).
++ * Kept at 1.0 to preserve pre-BM25 behaviour for those edge cases.
++ */
++const WEIGHT_CONTENT_FALLBACK = 1.0;
++
++// ---------------------------------------------------------------------------
++// BM25 parameters
++// ---------------------------------------------------------------------------
++
++/** BM25 term-frequency saturation parameter. */
++const BM25_K1 = 1.2;
++/** BM25 length-normalisation parameter. */
++const BM25_B = 0.75;
+ 
+ /** Minimum token length for content indexing and querying. */
+ const MIN_TOKEN_LEN = 2;
+@@ -51,6 +64,11 @@ const K8S_ERROR_REASONS_LOWER = new Map(
+  * Common English and K8s-context words that appear in hypothesis strings but
+  * are NOT Kubernetes resource identifiers. Filters these from
+  * `extractQueryIdentifiers` so they don't add noise to identifier lookups.
++ *
++ * Also used in {@link getContentMatches} to suppress noisy substring
++ * expansion: stop words that are short prefixes of longer K8s tokens
++ * (e.g. `'secret'` → `'secretkeyref'`) are only matched exactly, not via
++ * substring expansion.
+  */
+ const K8S_STOP_WORDS: ReadonlySet<string> = new Set([
+   // English connectives
+@@ -71,6 +89,44 @@ const K8S_STOP_WORDS: ReadonlySet<string> = new Set([
+   'missing', 'invalid', 'wrong', 'unreachable',
+ ]);
+ 
++/**
++ * Stop-word set used **exclusively** by the RFC-1123 name extraction step
++ * (step 4 of {@link extractQueryIdentifiers}).
++ *
++ * This is a strict subset of {@link K8S_STOP_WORDS}: the high-signal
++ * diagnostic terms that double as searchable K8s identifiers —
++ * `secret`, `service`, `configmap`, `missing`, `failed`, `failure`,
++ * `unreachable` — are intentionally **absent** so that queries like
++ * `"missing secret app-credentials"` correctly extract all three tokens
++ * as identifier candidates rather than silently discarding the first two.
++ *
++ * {@link K8S_STOP_WORDS} (which retains those terms) is still consulted
++ * inside {@link getContentMatches} to suppress noisy substring expansion
++ * (e.g. preventing `'secret'` from matching `'secretkeyref'` in unrelated
++ * resource JSON).
++ */
++const RFC1123_STOP_WORDS: ReadonlySet<string> = new Set([
++  // English connectives
++  'in', 'is', 'are', 'the', 'a', 'an', 'of', 'for', 'with', 'and', 'or',
++  'not', 'has', 'have', 'been', 'being', 'to', 'from', 'on', 'at', 'by',
++  'due', 'via',
++  // K8s structural keywords (non-diagnostic)
++  'pod', 'pods', 'log', 'logs', 'file', 'files', 'check', 'status', 'state',
++  'phase', 'reason', 'message', 'type', 'name', 'namespace', 'container',
++  'containers', 'image', 'images', 'event', 'events', 'resource', 'resources',
++  'cluster', 'node', 'nodes', 'deployment', 'deployments',
++  'running', 'pending',
++  // Common severity / level words
++  'high', 'low', 'medium', 'critical', 'severity', 'info', 'warn', 'error',
++  'warning',
++  // K8s lifecycle verbs (non-diagnostic)
++  'restart', 'restarts', 'back', 'off', 'loop', 'crash', 'crashloop',
++  'invalid', 'wrong',
++  // NOTE: 'secret', 'secrets', 'service', 'services', 'configmap',
++  // 'configmaps', 'missing', 'failed', 'failure', 'unreachable' are
++  // intentionally OMITTED so they can be extracted as identifier candidates.
++]);
++
+ // ---------------------------------------------------------------------------
+ // ScoredChunk
+ // ---------------------------------------------------------------------------
+@@ -202,6 +258,17 @@ export class LexicalSearchIndex {
+   /** content token → (chunk array index → token frequency in that chunk). */
+   private contentIndex = new Map<string, Map<number, number>>();
+ 
++  // ── BM25 statistics (computed during build) ──────────────────────────────
++
++  /** Total number of indexed chunks (N in BM25 literature). */
++  private bm25N = 0;
++  /** Average document length in content tokens across all chunks. */
++  private bm25Avgdl = 1;
++  /** term → number of chunks containing that term (document frequency). */
++  private bm25Df = new Map<string, number>();
++  /** Per-chunk content token counts (indexed parallel to `chunks`). */
++  private bm25DocLengths: number[] = [];
++
+   // ── build ────────────────────────────────────────────────────────────────
+ 
+   /**
+@@ -219,6 +286,7 @@ export class LexicalSearchIndex {
+     this.identifierIndex.clear();
+     this.namespaceIndex.clear();
+     this.contentIndex.clear();
++    this.bm25DocLengths = [];
+ 
+     for (let i = 0; i < chunks.length; i++) {
+       const chunk = chunks[i]!;
+@@ -234,8 +302,12 @@ export class LexicalSearchIndex {
+         addToIndex(this.namespaceIndex, chunk.namespace.toLowerCase(), i);
+       }
+ 
++      // Tokenise once; reuse tokens for both doc-length tracking and indexing.
++      const tokens = tokenizeContent(chunk.content);
++      this.bm25DocLengths.push(tokens.length);
++
+       const tokenCounts = new Map<string, number>();
+-      for (const token of tokenizeContent(chunk.content)) {
++      for (const token of tokens) {
+         tokenCounts.set(token, (tokenCounts.get(token) ?? 0) + 1);
+       }
+ 
+@@ -243,6 +315,16 @@ export class LexicalSearchIndex {
+         addToCountIndex(this.contentIndex, token, i, count);
+       }
+     }
++
++    // ── BM25 corpus statistics ────────────────────────────────────────────
++    this.bm25N = chunks.length;
++    const totalLen = this.bm25DocLengths.reduce((s, l) => s + l, 0);
++    this.bm25Avgdl = this.bm25N > 0 ? totalLen / this.bm25N : 1;
++
++    this.bm25Df.clear();
++    for (const [term, posting] of this.contentIndex) {
++      this.bm25Df.set(term, posting.size);
++    }
+   }
+ 
+   // ── search ───────────────────────────────────────────────────────────────
+@@ -301,7 +383,7 @@ export class LexicalSearchIndex {
+ 
+     for (const token of queryTokens) {
+       for (const [idx, count] of this.getContentMatches(token)) {
+-        bump(idx, WEIGHT_CONTENT * count, 'contentHits', count);
++        bump(idx, this.bm25Score(token, idx, count), 'contentHits', count);
+       }
+     }
+ 
+@@ -350,7 +432,7 @@ export class LexicalSearchIndex {
+     const k8sNamePattern = /\b([a-z][a-z0-9-]{1,62})\b/g;
+     for (const match of hypothesis.matchAll(k8sNamePattern)) {
+       const token = match[1]!;
+-      if (!K8S_STOP_WORDS.has(token)) {
++      if (!RFC1123_STOP_WORDS.has(token)) {
+         ids.add(token);
+       }
+     }
+@@ -366,6 +448,14 @@ export class LexicalSearchIndex {
+    * Exact matches are used first. When the query token is only a partial term,
+    * the search deterministically expands to indexed tokens that contain the
+    * query token as a substring (e.g. `auth` → `authentication`).
++   *
++   * Substring expansion is suppressed for tokens that are in
++   * {@link K8S_STOP_WORDS}.  These are short, generic words that produce
++   * excessive false-positive matches via substring expansion
++   * (e.g. `'secret'` matching every resource that contains `'secretkeyref'`
++   * or `'secretref'`).  Exact matches are still performed so that documents
++   * which contain the literal word (e.g. an event message that says
++   * `"secret app-credentials not found"`) are still surfaced.
+    */
+   private getContentMatches(queryToken: string): Map<number, number> {
+     const matches = new Map<number, number>();
+@@ -375,6 +465,11 @@ export class LexicalSearchIndex {
+       mergeCounts(matches, exact);
+     }
+ 
++    // Suppress noisy substring expansion for stop-word query tokens.
++    if (K8S_STOP_WORDS.has(queryToken)) {
++      return matches;
++    }
++
+     for (const [indexedToken, posting] of this.contentIndex) {
+       if (indexedToken === queryToken) continue;
+       if (!indexedToken.includes(queryToken)) continue;
+@@ -383,4 +478,35 @@ export class LexicalSearchIndex {
+ 
+     return matches;
+   }
++
++  /**
++   * Computes the BM25 score contribution for a single query term matching a
++   * specific chunk.
++   *
++   * Formula: `IDF(t) × (tf × (k1+1)) / (tf + k1 × (1 - b + b × |d|/avgdl))`
++   * where `IDF(t) = ln((N - df + 0.5) / (df + 0.5) + 1)`.
++   *
++   * If `queryToken` is not in the vocabulary (i.e. it matched via substring
++   * expansion and has no direct IDF entry), falls back to
++   * {@link WEIGHT_CONTENT_FALLBACK} × `tf` to preserve pre-BM25 behaviour
++   * for those edge cases.
++   */
++  private bm25Score(queryToken: string, chunkIdx: number, tf: number): number {
++    const df = this.bm25Df.get(queryToken);
++    if (df === undefined) {
++      // Substring-expansion match: query token not directly in index.
++      return WEIGHT_CONTENT_FALLBACK * tf;
++    }
++
++    const N = this.bm25N;
++    if (N === 0) return 0;
++
++    const idf = Math.log((N - df + 0.5) / (df + 0.5) + 1);
++    const dl = this.bm25DocLengths[chunkIdx] ?? 1;
++    const avgdl = this.bm25Avgdl;
++    const tfNorm =
++      (tf * (BM25_K1 + 1)) /
++      (tf + BM25_K1 * (1 - BM25_B + BM25_B * (dl / avgdl)));
++    return idf * tfNorm;
++  }
+ }
+diff --git a/src/ai/summarizer.ts b/src/ai/summarizer.ts
+index 2926518..837842d 100644
+--- a/src/ai/summarizer.ts
++++ b/src/ai/summarizer.ts
+@@ -1,4 +1,5 @@
+ import type { K8sResource, K8sEvent, AnalyzerResult } from '../types/index.js';
++import type { HelmRelease } from '../parsers/index.js';
+ import { extractPodStatus, getContainerErrors } from '../parsers/index.js';
+ 
+ // ---------------------------------------------------------------------------
+@@ -391,3 +392,38 @@ export function summarizeAnalyzer(result: AnalyzerResult): string {
+ 
+   return lines.join('\n');
+ }
++
++// ---------------------------------------------------------------------------
++// Public: summarizeHelmRelease
++// ---------------------------------------------------------------------------
++
++/**
++ * Produces a human-readable summary of a Helm release.
++ *
++ * Includes release name, namespace, chart, chart version, app version,
++ * status, and last updated timestamp.  Does not include raw values — those
++ * are high-signal but potentially large and are better indexed separately.
++ */
++export function summarizeHelmRelease(release: HelmRelease): string {
++  const lines: string[] = [
++    `HelmRelease: ${release.name} (namespace: ${release.namespace})`,
++    `Chart: ${release.chart}@${release.chartVersion}`,
++    `Status: ${release.status}`,
++    `Revision: ${release.revision}`,
++  ];
++
++  if (release.appVersion) {
++    lines.push(`AppVersion: ${release.appVersion}`);
++  }
++
++  if (release.updatedAt) {
++    lines.push(`UpdatedAt: ${release.updatedAt}`);
++  }
++
++  const valueKeys = Object.keys(release.values);
++  if (valueKeys.length > 0) {
++    lines.push(`ValuesKeys: ${valueKeys.join(', ')}`);
++  }
++
++  return lines.join('\n');
++}
+diff --git a/src/cli/__tests__/runner.test.ts b/src/cli/__tests__/runner.test.ts
+index 7652ccb..4528e1a 100644
+--- a/src/cli/__tests__/runner.test.ts
++++ b/src/cli/__tests__/runner.test.ts
+@@ -48,7 +48,6 @@ function makePipelineResult(): PipelineResult {
+         log: 0,
+         'kubernetes-resource': 0,
+         event: 0,
+-        config: 0,
+         'cluster-info': 0,
+         'helm-release': 0,
+         unknown: 0,
+diff --git a/src/graph/chunker.ts b/src/graph/chunker.ts
+index 5336d48..dd46772 100644
+--- a/src/graph/chunker.ts
++++ b/src/graph/chunker.ts
+@@ -74,7 +74,7 @@ export function chunkResource(resource: K8sResource, path: string): Chunk {
+   const lines = content.split('\n');
+ 
+   return {
+-    id: `${path}:resource`,
++    id: `${path}:${resource.metadata.name}:resource`,
+     artifactId: path,
+     content,
+     startLine: 1,
+diff --git a/src/ingestion/profiler.ts b/src/ingestion/profiler.ts
+index 70a0b39..5e6811b 100644
+--- a/src/ingestion/profiler.ts
++++ b/src/ingestion/profiler.ts
+@@ -20,7 +20,6 @@ function zeroCounts(): Record<ArtifactCategory, number> {
+     log: 0,
+     'kubernetes-resource': 0,
+     event: 0,
+-    config: 0,
+     'cluster-info': 0,
+     'helm-release': 0,
+     unknown: 0,
+diff --git a/src/investigators/__tests__/ai-investigator.test.ts b/src/investigators/__tests__/ai-investigator.test.ts
+index cef3880..cf91f8f 100644
+--- a/src/investigators/__tests__/ai-investigator.test.ts
++++ b/src/investigators/__tests__/ai-investigator.test.ts
+@@ -33,7 +33,6 @@ function makeProfile(): BundleProfile {
+       log: 0,
+       'kubernetes-resource': 0,
+       event: 0,
+-      config: 0,
+       'cluster-info': 0,
+       'helm-release': 0,
+       unknown: 0,
+diff --git a/src/investigators/__tests__/config-investigator.test.ts b/src/investigators/__tests__/config-investigator.test.ts
+index d0f7e9b..31ce256 100644
+--- a/src/investigators/__tests__/config-investigator.test.ts
++++ b/src/investigators/__tests__/config-investigator.test.ts
+@@ -30,7 +30,6 @@ function makeProfile(): BundleProfile {
+       log: 0,
+       'kubernetes-resource': 0,
+       event: 0,
+-      config: 0,
+       'cluster-info': 0,
+       'helm-release': 0,
+       unknown: 0,
+diff --git a/src/investigators/__tests__/differential-diagnosis.test.ts b/src/investigators/__tests__/differential-diagnosis.test.ts
+index 0015b0b..3adf39a 100644
+--- a/src/investigators/__tests__/differential-diagnosis.test.ts
++++ b/src/investigators/__tests__/differential-diagnosis.test.ts
+@@ -56,7 +56,6 @@ function makeProfile(): BundleProfile {
+       log: 0,
+       'kubernetes-resource': 0,
+       event: 0,
+-      config: 0,
+       'cluster-info': 0,
+       'helm-release': 0,
+       unknown: 0,
+diff --git a/src/investigators/__tests__/hypothesis-converter.test.ts b/src/investigators/__tests__/hypothesis-converter.test.ts
+index d605838..a3d0b8f 100644
+--- a/src/investigators/__tests__/hypothesis-converter.test.ts
++++ b/src/investigators/__tests__/hypothesis-converter.test.ts
+@@ -36,7 +36,6 @@ function makeProfile(): BundleProfile {
+       log: 0,
+       'kubernetes-resource': 0,
+       event: 0,
+-      config: 0,
+       'cluster-info': 0,
+       'helm-release': 0,
+       unknown: 0,
+@@ -220,10 +219,10 @@ describe('convertHypothesisToFinding — high-confidence hypothesis produces cor
+     expect(finding.id).toBe('finding:hypothesis:missing-secret:1');
+   });
+ 
+-  it('title includes the root cause and symptom', () => {
+-    expect(finding.title).toContain('[Hypothesis]');
+-    expect(finding.title).toContain(hypothesis.rootCause);
+-    expect(finding.title).toContain(hypothesis.symptom);
++  it('title is the hypothesis rootCause without machine prefixes/suffixes', () => {
++    expect(finding.title).toBe(hypothesis.rootCause);
++    expect(finding.title).not.toContain('[Hypothesis]');
++    expect(finding.title).not.toContain('(symptom:');
+   });
+ 
+   it('confidence matches the hypothesis confidence', () => {
+diff --git a/src/investigators/__tests__/hypothesis-evidence-collector.test.ts b/src/investigators/__tests__/hypothesis-evidence-collector.test.ts
+index 8f2b37c..050a8d1 100644
+--- a/src/investigators/__tests__/hypothesis-evidence-collector.test.ts
++++ b/src/investigators/__tests__/hypothesis-evidence-collector.test.ts
+@@ -30,7 +30,6 @@ function makeProfile(): BundleProfile {
+       log: 0,
+       'kubernetes-resource': 0,
+       event: 0,
+-      config: 0,
+       'cluster-info': 0,
+       'helm-release': 0,
+       unknown: 0,
+diff --git a/src/investigators/__tests__/hypothesis-generator.test.ts b/src/investigators/__tests__/hypothesis-generator.test.ts
+index 1162377..b4ac87d 100644
+--- a/src/investigators/__tests__/hypothesis-generator.test.ts
++++ b/src/investigators/__tests__/hypothesis-generator.test.ts
+@@ -34,7 +34,6 @@ function makeProfile(): BundleProfile {
+       log: 0,
+       'kubernetes-resource': 0,
+       event: 0,
+-      config: 0,
+       'cluster-info': 0,
+       'helm-release': 0,
+       unknown: 0,
+diff --git a/src/investigators/__tests__/hypothesis-ranking-integration.test.ts b/src/investigators/__tests__/hypothesis-ranking-integration.test.ts
+index 894c164..857acec 100644
+--- a/src/investigators/__tests__/hypothesis-ranking-integration.test.ts
++++ b/src/investigators/__tests__/hypothesis-ranking-integration.test.ts
+@@ -54,7 +54,6 @@ function makeProfile(): BundleProfile {
+       log: 0,
+       'kubernetes-resource': 0,
+       event: 0,
+-      config: 0,
+       'cluster-info': 0,
+       'helm-release': 0,
+       unknown: 0,
+diff --git a/src/investigators/__tests__/kubernetes-investigator.test.ts b/src/investigators/__tests__/kubernetes-investigator.test.ts
+index eb4c76c..32e5fa3 100644
+--- a/src/investigators/__tests__/kubernetes-investigator.test.ts
++++ b/src/investigators/__tests__/kubernetes-investigator.test.ts
+@@ -31,7 +31,6 @@ function makeProfile(): BundleProfile {
+       log: 0,
+       'kubernetes-resource': 0,
+       event: 0,
+-      config: 0,
+       'cluster-info': 0,
+       'helm-release': 0,
+       unknown: 0,
+@@ -795,3 +794,296 @@ describe('investigateKubernetes — namespace-scoped pod event correlation', ()
+     expect(finding.missingEvidence.some((m) => m.includes("namespace 'prod'"))).toBe(true);
+   });
+ });
++
++// ---------------------------------------------------------------------------
++// Scenario 12 — Pending Pod with FailedMount and ProvisioningFailed events
++// ---------------------------------------------------------------------------
++
++/** A Pending Pod stuck in ContainerCreating (mirrors pvc-pending fixture). */
++const pendingPvcPod: K8sResource = {
++  apiVersion: 'v1',
++  kind: 'Pod',
++  metadata: { name: 'db-pod', namespace: 'default' },
++  spec: {
++    containers: [{ name: 'postgres', image: 'postgres:15' }],
++    volumes: [
++      {
++        name: 'data-volume',
++        persistentVolumeClaim: { claimName: 'data-pvc' },
++      },
++    ],
++  },
++  status: {
++    phase: 'Pending',
++    conditions: [
++      { type: 'Ready', status: 'False', reason: 'ContainersNotReady' },
++      { type: 'PodScheduled', status: 'True' },
++    ],
++    containerStatuses: [
++      {
++        name: 'postgres',
++        ready: false,
++        restartCount: 0,
++        state: {
++          waiting: {
++            reason: 'ContainerCreating',
++            message: "waiting for volume 'data-volume' to be created",
++          },
++        },
++      },
++    ],
++  },
++};
++
++/** A Pending PVC referencing a non-existent StorageClass. */
++const pendingPvc: K8sResource = {
++  apiVersion: 'v1',
++  kind: 'PersistentVolumeClaim',
++  metadata: { name: 'data-pvc', namespace: 'default' },
++  spec: {
++    accessModes: ['ReadWriteOnce'],
++    storageClassName: 'fast-ssd',
++    resources: { requests: { storage: '10Gi' } },
++  },
++  status: { phase: 'Pending' },
++};
++
++/** StorageClass that exists (but is NOT 'fast-ssd'). */
++const standardStorageClass: K8sResource = {
++  apiVersion: 'storage.k8s.io/v1',
++  kind: 'StorageClass',
++  metadata: { name: 'standard' },
++  spec: {},
++  status: {},
++};
++
++/** Events for the pvc-pending scenario. */
++const pendingPvcEvents: K8sEvent[] = [
++  {
++    type: 'Warning',
++    reason: 'ProvisioningFailed',
++    message: 'storageclass.storage.k8s.io "fast-ssd" not found',
++    involvedObject: { kind: 'PersistentVolumeClaim', name: 'data-pvc', namespace: 'default' },
++    count: 8,
++    firstTimestamp: '2024-01-15T10:00:00Z',
++    lastTimestamp: '2024-01-15T10:05:00Z',
++  },
++  {
++    type: 'Warning',
++    reason: 'FailedScheduling',
++    message: 'persistentvolumeclaim "data-pvc" not found or is not bound',
++    involvedObject: { kind: 'Pod', name: 'db-pod', namespace: 'default' },
++    count: 4,
++    firstTimestamp: '2024-01-15T10:00:05Z',
++    lastTimestamp: '2024-01-15T10:05:00Z',
++  },
++  {
++    type: 'Warning',
++    reason: 'FailedMount',
++    message: 'Unable to attach or mount volumes: unmounted volumes=[data-volume], unattached volumes=[data-volume]',
++    involvedObject: { kind: 'Pod', name: 'db-pod', namespace: 'default' },
++    count: 6,
++    firstTimestamp: '2024-01-15T10:00:10Z',
++    lastTimestamp: '2024-01-15T10:06:00Z',
++  },
++];
++
++describe('investigateKubernetes — Pending Pod with FailedMount and ProvisioningFailed', () => {
++  const context = makeContext({
++    resources: [pendingPvcPod, pendingPvc, standardStorageClass],
++    events: pendingPvcEvents,
++  });
++  const result = investigateKubernetes(context, noSeeds);
++
++  it('produces exactly one finding (the pending pod)', () => {
++    expect(result.findings).toHaveLength(1);
++  });
++
++  it('finding has severity critical', () => {
++    expect(result.findings[0]!.severity).toBe('critical');
++  });
++
++  it('finding title mentions pod name and volume issue', () => {
++    const title = result.findings[0]!.title.toLowerCase();
++    expect(title).toContain('db-pod');
++    expect(
++      title.includes('pvc') || title.includes('volume') || title.includes('provision'),
++    ).toBe(true);
++  });
++
++  it('finding title mentions the missing StorageClass fast-ssd', () => {
++    const title = result.findings[0]!.title;
++    expect(title).toContain('fast-ssd');
++  });
++
++  it('confidence is ≥ 0.85 when ProvisioningFailed events are present', () => {
++    expect(result.findings[0]!.confidence).toBeGreaterThanOrEqual(0.85);
++  });
++
++  it('evidence includes the pod file path', () => {
++    const paths = result.findings[0]!.evidence.map((e) => e.path);
++    expect(paths.some((p) => p.includes('pods/default/db-pod'))).toBe(true);
++  });
++
++  it('evidence includes ProvisioningFailed event note', () => {
++    const notes = result.findings[0]!.evidence.map((e) => e.note.toLowerCase());
++    expect(notes.some((n) => n.includes('provisioningfailed') || n.includes('provisioning'))).toBe(true);
++  });
++
++  it('evidence includes FailedMount event note', () => {
++    const notes = result.findings[0]!.evidence.map((e) => e.note.toLowerCase());
++    expect(notes.some((n) => n.includes('failedmount') || n.includes('failed mount'))).toBe(true);
++  });
++
++  it('affectedComponents includes the pod identifier', () => {
++    const comps = result.findings[0]!.affectedComponents;
++    expect(comps.some((c) => c.includes('db-pod'))).toBe(true);
++    expect(comps.some((c) => c.startsWith('Pod/'))).toBe(true);
++  });
++
++  it('produces graph edges linking evidence to finding', () => {
++    const findingId = result.findings[0]!.id;
++    const supportEdges = result.edges.filter(
++      (e) => e.target === findingId && e.type === 'supports',
++    );
++    expect(supportEdges.length).toBeGreaterThan(0);
++  });
++
++  it('produces a correlates edge between FailedMount and ProvisioningFailed', () => {
++    const correlates = result.edges.filter((e) => e.type === 'correlates');
++    expect(correlates.length).toBeGreaterThan(0);
++  });
++});
++
++// ---------------------------------------------------------------------------
++// Scenario 12b — Pending Pod with FailedScheduling only
++// ---------------------------------------------------------------------------
++
++describe('investigateKubernetes — Pending Pod with FailedScheduling events', () => {
++  const pendingPodNoMount: K8sResource = {
++    apiVersion: 'v1',
++    kind: 'Pod',
++    metadata: { name: 'sched-pod', namespace: 'default' },
++    spec: {
++      containers: [{ name: 'app', image: 'myapp:v1' }],
++      nodeSelector: { 'node-type': 'gpu' },
++    },
++    status: {
++      phase: 'Pending',
++      conditions: [
++        { type: 'PodScheduled', status: 'False', reason: 'Unschedulable' },
++      ],
++      containerStatuses: [],
++    },
++  };
++
++  const schedulingEvents: K8sEvent[] = [
++    {
++      type: 'Warning',
++      reason: 'FailedScheduling',
++      message: '0/3 nodes are available: 3 node(s) didn\'t match node selector',
++      involvedObject: { kind: 'Pod', name: 'sched-pod', namespace: 'default' },
++      count: 5,
++      firstTimestamp: '2024-01-15T10:00:00Z',
++      lastTimestamp: '2024-01-15T10:05:00Z',
++    },
++  ];
++
++  const context = makeContext({ resources: [pendingPodNoMount], events: schedulingEvents });
++  const result = investigateKubernetes(context, noSeeds);
++
++  it('produces a finding for the unschedulable pod', () => {
++    expect(result.findings).toHaveLength(1);
++  });
++
++  it('finding title mentions scheduling failure', () => {
++    const title = result.findings[0]!.title.toLowerCase();
++    expect(title).toContain('scheduling');
++  });
++
++  it('evidence includes FailedScheduling event', () => {
++    const notes = result.findings[0]!.evidence.map((e) => e.note.toLowerCase());
++    expect(notes.some((n) => n.includes('failedscheduling') || n.includes('scheduling'))).toBe(true);
++  });
++
++  it('affectedComponents includes the pod identifier', () => {
++    const comps = result.findings[0]!.affectedComponents;
++    expect(comps.some((c) => c.startsWith('Pod/'))).toBe(true);
++    expect(comps.some((c) => c.includes('sched-pod'))).toBe(true);
++  });
++});
++
++// ---------------------------------------------------------------------------
++// Scenario 12c — Pending Pod with ProvisioningFailed includes PVC evidence
++// ---------------------------------------------------------------------------
++
++describe('investigateKubernetes — Pending Pod finding includes ProvisioningFailed evidence when PVC events exist', () => {
++  const context = makeContext({
++    resources: [pendingPvcPod, pendingPvc, standardStorageClass],
++    events: pendingPvcEvents,
++  });
++  const result = investigateKubernetes(context, noSeeds);
++
++  it('evidence array contains a PVC resource path', () => {
++    const paths = result.findings[0]!.evidence.map((e) => e.path);
++    expect(paths.some((p) => p.includes('persistentvolumeclaims'))).toBe(true);
++  });
++
++  it('ProvisioningFailed events appear in evidence', () => {
++    const notes = result.findings[0]!.evidence.map((e) => e.note.toLowerCase());
++    expect(notes.some((n) => n.includes('provisioningfailed') || n.includes('provisioning'))).toBe(true);
++  });
++});
++
++// ---------------------------------------------------------------------------
++// Scenario 12d — ProvisioningFailed alone still names the PVC in title/evidence
++// ---------------------------------------------------------------------------
++
++describe('investigateKubernetes — Pending Pod with ProvisioningFailed but no FailedMount still includes PVC details', () => {
++  const context = makeContext({
++    resources: [pendingPvcPod, pendingPvc, standardStorageClass],
++    events: [pendingPvcEvents[0]!],
++  });
++  const result = investigateKubernetes(context, noSeeds);
++
++  it('produces a finding that still names the PVC in the title', () => {
++    expect(result.findings).toHaveLength(1);
++    const title = result.findings[0]!.title;
++    expect(title).toContain('data-pvc');
++    expect(title).toContain('fast-ssd');
++  });
++
++  it('includes the PVC resource path even without FailedMount events', () => {
++    const paths = result.findings[0]!.evidence.map((e) => e.path);
++    expect(paths.some((p) => p.includes('persistentvolumeclaims/default/data-pvc'))).toBe(
++      true,
++    );
++  });
++});
++
++// ---------------------------------------------------------------------------
++// Scenario 12e — ImagePullBackOff in Pending phase is NOT detected as Pending Pod
++// ---------------------------------------------------------------------------
++
++describe('investigateKubernetes — ImagePullBackOff in Pending phase is not duplicated as Pending Pod', () => {
++  const imagePullPendingPod: K8sResource = {
++    ...imagePullPod,
++    // imagePullPod already has phase: Pending — it should be picked up by ImagePull detector only
++  };
++
++  const context = makeContext({
++    resources: [imagePullPendingPod],
++    events: imagePullEvents,
++  });
++  const result = investigateKubernetes(context, noSeeds);
++
++  it('produces exactly one finding (ImagePull only, not Pending Pod)', () => {
++    expect(result.findings).toHaveLength(1);
++  });
++
++  it('the finding is the ImagePullBackOff finding, not a Pending Pod finding', () => {
++    const title = result.findings[0]!.title.toLowerCase();
++    expect(title).toContain('imagepullbackoff');
++    expect(title).not.toContain('pending pod');
++  });
++});
+diff --git a/src/investigators/__tests__/log-investigator.test.ts b/src/investigators/__tests__/log-investigator.test.ts
+index 5c99298..d2301ba 100644
+--- a/src/investigators/__tests__/log-investigator.test.ts
++++ b/src/investigators/__tests__/log-investigator.test.ts
+@@ -1,8 +1,8 @@
+ import { describe, it, expect } from 'vitest';
+ import type { InvestigatorContext, InvestigationSeed } from '../types.js';
+-import type { BundleProfile, K8sResource } from '../../types/index.js';
++import type { BundleProfile, K8sResource, K8sEvent } from '../../types/index.js';
+ import type { LogFile, LogLine } from '../../parsers/index.js';
+-import { classifyLogLevel } from '../../parsers/index.js';
++import { classifyLogLevel, extractTimestamps } from '../../parsers/index.js';
+ import { investigateLog } from '../log-investigator.js';
+ 
+ // ---------------------------------------------------------------------------
+@@ -11,7 +11,10 @@ import { investigateLog } from '../log-investigator.js';
+ 
+ function makeLine(content: string, lineNumber: number): LogLine {
+   const level = classifyLogLevel(content);
+-  return { lineNumber, content, level };
++  const ts = extractTimestamps(content);
++  const line: LogLine = { lineNumber, content, level };
++  if (ts !== null) line.timestamp = ts;
++  return line;
+ }
+ 
+ function makeLogFile(path: string, rawLines: string[]): LogFile {
+@@ -42,7 +45,6 @@ function makeProfile(): BundleProfile {
+       log: 0,
+       'kubernetes-resource': 0,
+       event: 0,
+-      config: 0,
+       'cluster-info': 0,
+       'helm-release': 0,
+       unknown: 0,
+@@ -255,9 +257,10 @@ describe('investigateLog — DNS resolution failures', () => {
+       expect(f.evidence.every((e) => e.artifactType === 'log')).toBe(true);
+     });
+ 
+-    it('affectedComponents includes the log file path', () => {
++    it('affectedComponents uses Pod/<namespace>/<pod-name> when log maps to a known pod', () => {
+       const f = result.findings.find((f) => f.title.toLowerCase().includes('dns'))!;
+-      expect(f.affectedComponents.some((c) => c.includes('app-pod.log'))).toBe(true);
++      // dnsFailureLog path is 'pods/default/app/app-pod.log', dbPod is 'app-pod' in 'default'
++      expect(f.affectedComponents).toContain('Pod/default/app-pod');
+     });
+ 
+     it('affectedComponents includes the failing hostname', () => {
+@@ -829,3 +832,411 @@ describe('investigateLog — non-pod resources ignored in hostname extraction',
+     expect(dnsFindings[0]!.confidence).toBeLessThan(0.85);
+   });
+ });
++
++// ---------------------------------------------------------------------------
++// Scenario 10 — Pod-based affectedComponents and clean evidence paths
++// ---------------------------------------------------------------------------
++
++describe('investigateLog — Pod-based affectedComponents and clean paths', () => {
++  it('affectedComponents uses Pod/<namespace>/<pod-name> when log path maps to a known pod', () => {
++    const podResource: K8sResource = {
++      apiVersion: 'v1',
++      kind: 'Pod',
++      metadata: { name: 'app-pod', namespace: 'default' },
++      spec: {},
++      status: {},
++    };
++    // Log basename 'app-pod' matches the pod resource name
++    const logFile = makeLogFile('logs/app/app-pod.log', [
++      '2024-01-15T10:00:00Z ERROR dial tcp: lookup db.internal: no such host',
++      '2024-01-15T10:00:01Z ERROR dial tcp: lookup db.internal: no such host',
++    ]);
++    const context = makeContext({ logs: [logFile], resources: [podResource] });
++    const result = investigateLog(context, noSeeds);
++    const f = result.findings.find((f) => f.title.toLowerCase().includes('dns'))!;
++    expect(f).toBeDefined();
++    expect(f.affectedComponents).toContain('Pod/default/app-pod');
++    // Should not include the raw file path as a component
++    expect(f.affectedComponents.some((c) => c.includes('.log'))).toBe(false);
++  });
++
++  it('affectedComponents falls back to cleaned path when no pod name matches', () => {
++    // Log basename is 'unknown-pod', no matching Pod resource exists
++    const logFile = makeLogFile('logs/app/unknown-pod.log', [
++      '2024-01-15T10:00:00Z ERROR dial tcp: lookup db.internal: no such host',
++      '2024-01-15T10:00:01Z ERROR dial tcp: lookup db.internal: no such host',
++    ]);
++    const context = makeContext({ logs: [logFile] });
++    const result = investigateLog(context, noSeeds);
++    const f = result.findings.find((f) => f.title.toLowerCase().includes('dns'))!;
++    expect(f).toBeDefined();
++    // No Pod component — should fall back to path-based component
++    expect(f.affectedComponents.some((c) => c.startsWith('Pod/'))).toBe(false);
++    expect(f.affectedComponents.some((c) => c.includes('unknown-pod.log'))).toBe(true);
++  });
++
++  it('finding title uses bundle-relative path, not absolute temp path', () => {
++    // Simulate an absolute extraction path as would appear in a real bundle run
++    const absPath =
++      '/var/folders/tmp/sbi-bundle-XYZ/bad-image-tag/logs/app/app-pod.log';
++    const logFile = makeLogFile(absPath, [
++      '2024-01-15T10:00:00Z ERROR dial tcp: lookup db.internal: no such host',
++      '2024-01-15T10:00:01Z ERROR dial tcp: lookup db.internal: no such host',
++    ]);
++    const context = makeContext({ logs: [logFile] });
++    const result = investigateLog(context, noSeeds);
++    const f = result.findings.find((f) => f.title.toLowerCase().includes('dns'))!;
++    expect(f).toBeDefined();
++    // Title must not start with '/' or contain the temp directory prefix
++    expect(f.title).not.toMatch(/\/var\/folders|\/tmp\//);
++    // Title should contain the bundle-relative portion
++    expect(f.title).toContain('logs/app/app-pod.log');
++  });
++
++  it('evidence paths are bundle-relative (do not start with /)', () => {
++    // Simulate an absolute extraction path
++    const absPath =
++      '/var/folders/tmp/sbi-bundle-XYZ/bad-image-tag/logs/app/app-pod.log';
++    const logFile = makeLogFile(absPath, [
++      '2024-01-15T10:00:00Z ERROR dial tcp: lookup db.internal: no such host',
++      '2024-01-15T10:00:01Z ERROR dial tcp: lookup db.internal: no such host',
++    ]);
++    const context = makeContext({ logs: [logFile] });
++    const result = investigateLog(context, noSeeds);
++    for (const finding of result.findings) {
++      for (const ev of finding.evidence) {
++        expect(ev.path).not.toMatch(/^\//);
++      }
++    }
++  });
++});
++
++// ---------------------------------------------------------------------------
++// Scenario 11 — Init container log path (issue 1.4)
++// ---------------------------------------------------------------------------
++
++describe('resolveLogPodComponent — init container log path (pods/logs/<ns>/<pod>/<container>.log)', () => {
++  const podResource: K8sResource = {
++    apiVersion: 'v1',
++    kind: 'Pod',
++    metadata: { name: 'app-pod', namespace: 'default' },
++    spec: {},
++    status: {},
++  };
++
++  it('returns Pod/<ns>/<pod> for init container log at cluster-resources/pods/logs/<ns>/<pod>/<container>.log', () => {
++    // The filename is 'init-setup' (container name), not the pod name 'app-pod'.
++    // resolveLogPodComponent must use the parent directory (pod name) when the
++    // filename itself does not match any known pod.
++    const logFile = makeLogFile(
++      'cluster-resources/pods/logs/default/app-pod/init-setup.log',
++      [
++        '2024-01-15T10:00:00Z ERROR dial tcp: lookup db.internal: no such host',
++        '2024-01-15T10:00:01Z ERROR dial tcp: lookup db.internal: no such host',
++      ],
++    );
++    const context = makeContext({ logs: [logFile], resources: [podResource] });
++    const result = investigateLog(context, noSeeds);
++    const f = result.findings.find((f) => f.title.toLowerCase().includes('dns'))!;
++    expect(f).toBeDefined();
++    // Must resolve by parent directory (app-pod), not filename (init-setup)
++    expect(f.affectedComponents).toContain('Pod/default/app-pod');
++    // Must not leak the container name into the Pod component
++    expect(f.affectedComponents.some((c) => c.includes('init-setup'))).toBe(false);
++  });
++
++  it('still resolves by filename for old path format logs/app/app-pod.log (backwards compat)', () => {
++    // Old-style path where the filename encodes the pod name
++    const logFile = makeLogFile('logs/app/app-pod.log', [
++      '2024-01-15T10:00:00Z ERROR dial tcp: lookup db.internal: no such host',
++      '2024-01-15T10:00:01Z ERROR dial tcp: lookup db.internal: no such host',
++    ]);
++    const context = makeContext({ logs: [logFile], resources: [podResource] });
++    const result = investigateLog(context, noSeeds);
++    const f = result.findings.find((f) => f.title.toLowerCase().includes('dns'))!;
++    expect(f).toBeDefined();
++    // Should still resolve correctly via filename match
++    expect(f.affectedComponents).toContain('Pod/default/app-pod');
++  });
++
++  it('uses the namespace from the matching Pod resource (not from path segments)', () => {
++    // Pod is in 'production' namespace even though path says 'default'
++    const prodPod: K8sResource = {
++      apiVersion: 'v1',
++      kind: 'Pod',
++      metadata: { name: 'app-pod', namespace: 'production' },
++      spec: {},
++      status: {},
++    };
++    const logFile = makeLogFile(
++      'cluster-resources/pods/logs/default/app-pod/init-setup.log',
++      [
++        '2024-01-15T10:00:00Z ERROR dial tcp: lookup db.internal: no such host',
++        '2024-01-15T10:00:01Z ERROR dial tcp: lookup db.internal: no such host',
++      ],
++    );
++    const context = makeContext({ logs: [logFile], resources: [prodPod] });
++    const result = investigateLog(context, noSeeds);
++    const f = result.findings.find((f) => f.title.toLowerCase().includes('dns'))!;
++    expect(f).toBeDefined();
++    // Namespace comes from the Pod resource metadata, not the path
++    expect(f.affectedComponents).toContain('Pod/production/app-pod');
++  });
++
++  it('falls back to cleaned path when parent directory also does not match any pod', () => {
++    // Neither filename ('mystery-container') nor parent dir ('ghost-pod') matches
++    const logFile = makeLogFile(
++      'cluster-resources/pods/logs/default/ghost-pod/mystery-container.log',
++      [
++        '2024-01-15T10:00:00Z ERROR dial tcp: lookup db.internal: no such host',
++        '2024-01-15T10:00:01Z ERROR dial tcp: lookup db.internal: no such host',
++      ],
++    );
++    const context = makeContext({ logs: [logFile], resources: [podResource] });
++    const result = investigateLog(context, noSeeds);
++    const f = result.findings.find((f) => f.title.toLowerCase().includes('dns'))!;
++    expect(f).toBeDefined();
++    // Should fall back to path-based component (no Pod match)
++    expect(f.affectedComponents.some((c) => c.startsWith('Pod/'))).toBe(false);
++  });
++});
++
++// ---------------------------------------------------------------------------
++// Scenario 12 — Temporal event correlation
++// ---------------------------------------------------------------------------
++
++describe('investigateLog — temporal event correlation', () => {
++  /** Pod resource whose name matches the log file basename. */
++  const appPod: K8sResource = {
++    apiVersion: 'v1',
++    kind: 'Pod',
++    metadata: { name: 'app-pod', namespace: 'default' },
++    spec: {
++      containers: [
++        {
++          name: 'app',
++          image: 'myapp:v1',
++          env: [{ name: 'DB_HOST', value: 'db.internal' }],
++        },
++      ],
++    },
++    status: {},
++  };
++
++  /**
++   * BackOff event on app-pod around the same time as the DNS failure log lines.
++   * firstTimestamp is within the 10-minute window of the log error at 10:00:05.
++   */
++  const backOffEvent: K8sEvent = {
++    type: 'Warning',
++    reason: 'BackOff',
++    message: 'Back-off restarting failed container',
++    involvedObject: { kind: 'Pod', name: 'app-pod', namespace: 'default' },
++    firstTimestamp: '2024-01-15T10:00:05Z',
++    lastTimestamp: '2024-01-15T10:00:10Z',
++  };
++
++  /** Event on a different pod — must NOT appear in app-pod's findings. */
++  const otherPodEvent: K8sEvent = {
++    type: 'Warning',
++    reason: 'Failed',
++    message: 'Something failed on other pod',
++    involvedObject: { kind: 'Pod', name: 'other-pod', namespace: 'default' },
++    firstTimestamp: '2024-01-15T10:00:05Z',
++    lastTimestamp: '2024-01-15T10:00:10Z',
++  };
++
++  /** Event far outside the time window of the DNS errors — should be excluded. */
++  const farFutureEvent: K8sEvent = {
++    type: 'Warning',
++    reason: 'OOMKilled',
++    message: 'OOMKilled',
++    involvedObject: { kind: 'Pod', name: 'app-pod', namespace: 'default' },
++    firstTimestamp: '2024-01-15T12:00:00Z', // 2 hours after the errors
++    lastTimestamp: '2024-01-15T12:00:00Z',
++  };
++
++  // ── DNS findings with events ──────────────────────────────────────────────
++
++  describe('DNS failure findings enriched with pod events', () => {
++    const context = makeContext({
++      logs: [dnsFailureLog],
++      resources: [appPod],
++      events: [backOffEvent, otherPodEvent],
++    });
++    const result = investigateLog(context, noSeeds);
++    const f = result.findings.find((fi) => fi.title.toLowerCase().includes('dns'))!;
++
++    it('produces a DNS finding', () => {
++      expect(f).toBeDefined();
++    });
++
++    it('includes event evidence alongside log evidence', () => {
++      const eventEv = f.evidence.filter((e) => e.artifactType === 'event');
++      expect(eventEv.length).toBeGreaterThan(0);
++    });
++
++    it('event evidence has artifactType "event"', () => {
++      const eventEv = f.evidence.filter((e) => e.artifactType === 'event');
++      for (const ev of eventEv) {
++        expect(ev.artifactType).toBe('event');
++      }
++    });
++
++    it('event evidence note references the reason and pod name', () => {
++      const eventEv = f.evidence.filter((e) => e.artifactType === 'event');
++      expect(
++        eventEv.some(
++          (e) => e.note.includes('BackOff') || e.note.includes('app-pod'),
++        ),
++      ).toBe(true);
++    });
++
++    it('event evidence path includes the event reason', () => {
++      const eventEv = f.evidence.filter((e) => e.artifactType === 'event');
++      expect(eventEv.some((e) => e.path.includes('BackOff'))).toBe(true);
++    });
++
++    it('does not include events from other pods', () => {
++      const eventEv = f.evidence.filter((e) => e.artifactType === 'event');
++      expect(eventEv.every((e) => !e.path.includes('other-pod'))).toBe(true);
++    });
++
++    it('still has the original log evidence', () => {
++      const logEv = f.evidence.filter((e) => e.artifactType === 'log');
++      expect(logEv.length).toBeGreaterThan(0);
++    });
++  });
++
++  // ── Connection-timeout findings with events ───────────────────────────────
++
++  describe('connection-timeout findings enriched with pod events', () => {
++    const connContext = makeContext({
++      logs: [connTimeoutLog],
++      resources: [appPod],
++      events: [backOffEvent],
++    });
++    const connResult = investigateLog(connContext, noSeeds);
++    const cf = connResult.findings.find((fi) =>
++      fi.title.toLowerCase().includes('connection'),
++    )!;
++
++    it('produces a connection finding', () => {
++      expect(cf).toBeDefined();
++    });
++
++    it('includes event evidence', () => {
++      const eventEv = cf.evidence.filter((e) => e.artifactType === 'event');
++      expect(eventEv.length).toBeGreaterThan(0);
++    });
++  });
++
++  // ── Missing-resource findings with events ─────────────────────────────────
++
++  describe('missing-resource findings enriched with pod events', () => {
++    /**
++     * Event whose timestamp is within ±5 minutes of the missing-secret log
++     * errors (which occur at 2024-01-15T13:30:02Z).
++     */
++    const secretFailEvent: K8sEvent = {
++      type: 'Warning',
++      reason: 'BackOff',
++      message: 'Back-off restarting failed container',
++      involvedObject: { kind: 'Pod', name: 'app-pod', namespace: 'default' },
++      firstTimestamp: '2024-01-15T13:30:02Z',
++      lastTimestamp: '2024-01-15T13:30:02Z',
++    };
++
++    const mrContext = makeContext({
++      logs: [missingSecretLog],
++      resources: [secretPod],
++      events: [secretFailEvent],
++    });
++    const mrResult = investigateLog(mrContext, noSeeds);
++    const mrf = mrResult.findings.find((fi) =>
++      fi.title.toLowerCase().includes('missing'),
++    )!;
++
++    it('produces a missing-resource finding', () => {
++      expect(mrf).toBeDefined();
++    });
++
++    it('includes event evidence', () => {
++      const eventEv = mrf.evidence.filter((e) => e.artifactType === 'event');
++      expect(eventEv.length).toBeGreaterThan(0);
++    });
++  });
++
++  // ── No events → no event evidence ────────────────────────────────────────
++
++  it('produces no event evidence when context.events is empty', () => {
++    const context = makeContext({ logs: [dnsFailureLog], resources: [appPod], events: [] });
++    const result = investigateLog(context, noSeeds);
++    const f = result.findings.find((fi) => fi.title.toLowerCase().includes('dns'))!;
++    expect(f).toBeDefined();
++    const eventEv = f.evidence.filter((e) => e.artifactType === 'event');
++    expect(eventEv).toHaveLength(0);
++  });
++
++  // ── Events outside the time window are excluded ───────────────────────────
++
++  it('excludes events outside the ±5-minute time window', () => {
++    const context = makeContext({
++      logs: [dnsFailureLog],
++      resources: [appPod],
++      events: [backOffEvent, farFutureEvent],
++    });
++    const result = investigateLog(context, noSeeds);
++    const f = result.findings.find((fi) => fi.title.toLowerCase().includes('dns'))!;
++    expect(f).toBeDefined();
++    const eventEv = f.evidence.filter((e) => e.artifactType === 'event');
++    // farFutureEvent (12:00) is 2 hours away from errors (~10:00), outside ±5 min
++    expect(eventEv.every((e) => !e.path.includes('OOMKilled'))).toBe(true);
++    // backOffEvent (10:00:05) should still be included
++    expect(eventEv.some((e) => e.path.includes('BackOff'))).toBe(true);
++  });
++
++  // ── No matching pod → no event evidence ──────────────────────────────────
++
++  it('produces no event evidence when log path does not map to a known pod', () => {
++    // logFile basename is 'ghost-pod' but no pod resource with that name exists
++    const ghostLog = makeLogFile('logs/app/ghost-pod.log', [
++      '2024-01-15T10:00:05Z ERROR dial tcp: lookup db.internal: no such host',
++      '2024-01-15T10:00:06Z ERROR dial tcp: lookup db.internal: no such host',
++    ]);
++    const context = makeContext({
++      logs: [ghostLog],
++      resources: [],
++      events: [backOffEvent],
++    });
++    const result = investigateLog(context, noSeeds);
++    const f = result.findings.find((fi) => fi.title.toLowerCase().includes('dns'))!;
++    expect(f).toBeDefined();
++    // No pod match → no event evidence
++    const eventEv = f.evidence.filter((e) => e.artifactType === 'event');
++    expect(eventEv).toHaveLength(0);
++  });
++
++  // ── At most 5 event evidence items ───────────────────────────────────────
++
++  it('adds at most 5 event evidence items per finding', () => {
++    const manyEvents: K8sEvent[] = Array.from({ length: 10 }, (_, i) => ({
++      type: 'Warning' as const,
++      reason: `Event${i}`,
++      message: `Event number ${i}`,
++      involvedObject: { kind: 'Pod', name: 'app-pod', namespace: 'default' },
++      firstTimestamp: `2024-01-15T10:00:0${i < 9 ? i : '9'}Z`,
++      lastTimestamp: `2024-01-15T10:00:0${i < 9 ? i : '9'}Z`,
++    }));
++    const context = makeContext({
++      logs: [dnsFailureLog],
++      resources: [appPod],
++      events: manyEvents,
++    });
++    const result = investigateLog(context, noSeeds);
++    const f = result.findings.find((fi) => fi.title.toLowerCase().includes('dns'))!;
++    expect(f).toBeDefined();
++    const eventEv = f.evidence.filter((e) => e.artifactType === 'event');
++    expect(eventEv.length).toBeLessThanOrEqual(5);
++  });
++});
+diff --git a/src/investigators/__tests__/orchestrator.test.ts b/src/investigators/__tests__/orchestrator.test.ts
+index 31269a7..49ebec9 100644
+--- a/src/investigators/__tests__/orchestrator.test.ts
++++ b/src/investigators/__tests__/orchestrator.test.ts
+@@ -32,7 +32,6 @@ function makeProfile(): BundleProfile {
+       log: 0,
+       'kubernetes-resource': 0,
+       event: 0,
+-      config: 0,
+       'cluster-info': 0,
+       'helm-release': 0,
+       unknown: 0,
+@@ -588,4 +587,431 @@ describe('runInvestigation', () => {
+     const aiEdges = result.edges.filter((e) => e.id.startsWith('edge:ai:'));
+     expect(aiEdges).toHaveLength(2);
+   });
++
++  // ── Step-3 quality improvements ──────────────────────────────────────────
++
++  describe('hypothesis dedup and single-set-per-pod', () => {
++    it('generates only one hypothesis set per pod when k8s and log investigators both produce findings for the same pod', async () => {
++      // A log file whose path basename matches the pod name → resolveLogPodComponent
++      // normalises the component to Pod/default/app-pod, the same as the k8s finding.
++      const appPodLog = makeLogFile('pod-logs/default/app-pod.log', [
++        'ERROR lookup db: no such host',
++      ]);
++      const context = makeContext({
++        resources: [crashLoopPod],
++        events: [backOffEvent],
++        logs: [appPodLog],
++      });
++      const result = await runInvestigation(context);
++
++      // One hypothesis group (both findings share primary component Pod/default/app-pod)
++      // → the crashloop template produces exactly 5 hypotheses.
++      // Without step-1 normalisation we would get 2 groups → 7 hypotheses.
++      expect(result.metadata.hypothesesGenerated).toBe(5);
++    });
++  });
++
++  describe('symptom suppression', () => {
++    // ── Fixtures ────────────────────────────────────────────────────────────
++
++    /** Running pod whose Ready condition is False; has a service-env reference
++     *  that will generate DNS-failure evidence in the hypothesis layer. */
++    const notReadyDnsPod: K8sResource = {
++      apiVersion: 'v1',
++      kind: 'Pod',
++      metadata: { name: 'web-pod', namespace: 'default' },
++      spec: {
++        containers: [
++          {
++            name: 'app',
++            image: 'nginx:latest',
++            // env var whose value is a single-label service name picked up by
++            // collectPodServiceReferences and the DNS evidence collector
++            env: [{ name: 'DB_HOST', value: 'db' }],
++          },
++        ],
++      },
++      status: {
++        phase: 'Running',
++        conditions: [{ type: 'Ready', status: 'False', reason: 'ContainersNotReady' }],
++        containerStatuses: [
++          {
++            name: 'app',
++            ready: false,
++            restartCount: 0,
++            // running state (not waiting) → no CrashLoopBackOff / ImagePullBackOff
++            state: { running: {} },
++          },
++        ],
++      },
++    };
++
++    /** Log file whose basename matches notReadyDnsPod's name → component is
++     *  normalised to Pod/default/web-pod by resolveLogPodComponent. */
++    const dnsLogForWebPod = makeLogFile('pod-logs/default/web-pod.log', [
++      'ERROR lookup db: no such host',
++    ]);
++
++    /** CrashLoop pod that references a missing secret; used to trigger a
++     *  high-confidence missing-secret hypothesis. */
++    const crashLoopSecretPod: K8sResource = {
++      apiVersion: 'v1',
++      kind: 'Pod',
++      metadata: { name: 'svc-pod', namespace: 'default' },
++      spec: {
++        containers: [
++          {
++            name: 'app',
++            image: 'myapp:v1.2.3',
++            envFrom: [{ secretRef: { name: 'app-credentials' } }],
++          },
++        ],
++      },
++      status: {
++        phase: 'Running',
++        conditions: [{ type: 'Ready', status: 'False' }],
++        containerStatuses: [
++          {
++            name: 'app',
++            ready: false,
++            restartCount: 8,
++            state: {
++              waiting: { reason: 'CrashLoopBackOff', message: 'back-off' },
++            },
++          },
++        ],
++      },
++    };
++
++    /** Deployment with 0 ready replicas in the same namespace as crashLoopSecretPod. */
++    const unhealthyDeploymentFixture: K8sResource = {
++      apiVersion: 'apps/v1',
++      kind: 'Deployment',
++      metadata: { name: 'svc-deploy', namespace: 'default' },
++      spec: { replicas: 1 },
++      status: { readyReplicas: 0, availableReplicas: 0, replicas: 1 },
++    };
++
++    /**
++     * A Secret in the 'default' namespace (not the missing one) so that
++     * indexResourceNamesByNamespace returns a non-null set for 'default',
++     * allowing the missing-secret evidence collector to flag app-credentials
++     * as absent.
++     */
++    const otherDefaultSecret: K8sResource = {
++      apiVersion: 'v1',
++      kind: 'Secret',
++      metadata: { name: 'other-secret', namespace: 'default' },
++    };
++
++    /** FailedMount event corroborating the missing-secret diagnosis. */
++    const failedMountCrashEvent: K8sEvent = {
++      involvedObject: { kind: 'Pod', name: 'svc-pod', namespace: 'default' },
++      reason: 'FailedMount',
++      message:
++        'MountVolume.SetUp failed for volume "creds" : secret "app-credentials" not found',
++      type: 'Warning',
++      count: 5,
++      firstTimestamp: '2024-01-01T00:00:00Z',
++      lastTimestamp: '2024-01-01T01:00:00Z',
++    };
++
++    /** Running pod with Ready=False but NO events and NO log files — all
++     *  hypotheses score zero, so the Not Ready Pod finding must be preserved. */
++    const notReadyQuietPod: K8sResource = {
++      apiVersion: 'v1',
++      kind: 'Pod',
++      metadata: { name: 'quiet-pod', namespace: 'default' },
++      spec: { containers: [{ name: 'app', image: 'myapp:v1' }] },
++      status: {
++        phase: 'Running',
++        conditions: [{ type: 'Ready', status: 'False', reason: 'ContainersNotReady' }],
++        containerStatuses: [
++          { name: 'app', ready: false, restartCount: 0, state: { running: {} } },
++        ],
++      },
++    };
++
++    /** Pending pod backed by a PVC whose StorageClass does not exist. */
++    const pendingPvcPod: K8sResource = {
++      apiVersion: 'v1',
++      kind: 'Pod',
++      metadata: { name: 'db-pod', namespace: 'default' },
++      spec: {
++        containers: [{ name: 'db', image: 'postgres:15' }],
++        volumes: [{ name: 'data', persistentVolumeClaim: { claimName: 'data-pvc' } }],
++      },
++      status: {
++        phase: 'Pending',
++        conditions: [{ type: 'Ready', status: 'False', reason: 'ContainersNotReady' }],
++        containerStatuses: [
++          {
++            name: 'db',
++            ready: false,
++            restartCount: 0,
++            state: { waiting: { reason: 'ContainerCreating', message: 'waiting for volume' } },
++          },
++        ],
++      },
++    };
++
++    const pendingPvc: K8sResource = {
++      apiVersion: 'v1',
++      kind: 'PersistentVolumeClaim',
++      metadata: { name: 'data-pvc', namespace: 'default' },
++      spec: {
++        accessModes: ['ReadWriteOnce'],
++        storageClassName: 'fast-ssd',
++        resources: { requests: { storage: '10Gi' } },
++      },
++      status: { phase: 'Pending' },
++    };
++
++    const provisioningFailedEvent: K8sEvent = {
++      involvedObject: { kind: 'PersistentVolumeClaim', name: 'data-pvc', namespace: 'default' },
++      reason: 'ProvisioningFailed',
++      message: 'storageclass.storage.k8s.io "fast-ssd" not found',
++      type: 'Warning',
++      count: 6,
++      firstTimestamp: '2024-01-01T00:00:00Z',
++      lastTimestamp: '2024-01-01T01:00:00Z',
++    };
++
++    const failedMountPendingEvent: K8sEvent = {
++      involvedObject: { kind: 'Pod', name: 'db-pod', namespace: 'default' },
++      reason: 'FailedMount',
++      message:
++        'Unable to attach or mount volumes: unmounted volumes=[data], unattached volumes=[data]',
++      type: 'Warning',
++      count: 6,
++      firstTimestamp: '2024-01-01T00:00:05Z',
++      lastTimestamp: '2024-01-01T01:00:00Z',
++    };
++
++    // ── Tests ────────────────────────────────────────────────────────────────
++
++    it('suppresses Not Ready Pod finding when a root-cause hypothesis covers the same pod', async () => {
++      // dns-failure hypothesis gets confidence ≥ 0.5 from:
++      //   • one DNS failure log line  → supporting item (log)
++      //   • pod service ref (DB_HOST=db)  → supporting item (k8s)
++      //   • conservative "no services captured" note  → supporting item (k8s)
++      // That exceeds the 0.5 threshold and qualifies as a root-cause finding,
++      // which should suppress the Not Ready Pod heuristic for the same pod.
++      const context = makeContext({
++        resources: [notReadyDnsPod],
++        logs: [dnsLogForWebPod],
++      });
++      const result = await runInvestigation(context);
++
++      const notReadyFinding = result.findings.find((f) =>
++        f.id.startsWith('finding:k8s:notready:'),
++      );
++      expect(notReadyFinding).toBeUndefined();
++
++      // The dns-failure hypothesis (root-cause) should still be present
++      const rootCauseFinding = result.findings.find((f) =>
++        f.id.startsWith('finding:hypothesis:dns-failure:'),
++      );
++      expect(rootCauseFinding).toBeDefined();
++    });
++
++    it('suppresses Pending Pod finding when a root-cause hypothesis covers the same pod', async () => {
++      const context = makeContext({
++        resources: [pendingPvcPod, pendingPvc],
++        events: [provisioningFailedEvent, failedMountPendingEvent],
++      });
++      const result = await runInvestigation(context);
++
++      const pendingFinding = result.findings.find((f) =>
++        f.id.startsWith('finding:k8s:pending:'),
++      );
++      expect(pendingFinding).toBeUndefined();
++
++      const rootCauseFinding = result.findings.find((f) =>
++        f.id.startsWith('finding:hypothesis:volume-mount-failure:'),
++      );
++      expect(rootCauseFinding).toBeDefined();
++    });
++
++    it('removes graph edges that reference findings suppressed in the final pass', async () => {
++      const context = makeContext({
++        resources: [notReadyDnsPod],
++        logs: [dnsLogForWebPod],
++      });
++      const result = await runInvestigation(context);
++
++      const retainedFindingIds = new Set(result.findings.map((f) => f.id));
++      const findingRefs = result.edges.flatMap((edge) =>
++        [edge.source, edge.target].filter((nodeId) => nodeId.startsWith('finding:')),
++      );
++
++      expect(findingRefs.every((nodeId) => retainedFindingIds.has(nodeId))).toBe(true);
++      expect(
++        findingRefs.some((nodeId) => nodeId.startsWith('finding:k8s:notready:')),
++      ).toBe(false);
++    });
++
++    it('suppresses Unhealthy Workload finding when a root-cause finding covers a pod in the same namespace', async () => {
++      // missing-secret hypothesis reaches confidence ~1.0 from FailedMount event +
++      // pod secret reference.  Its component is Pod/default/svc-pod (namespace 'default').
++      // The workload finding component is Deployment/default/svc-deploy (same namespace).
++      // The suppression pass must remove the workload finding.
++      const context = makeContext({
++        resources: [crashLoopSecretPod, unhealthyDeploymentFixture, otherDefaultSecret],
++        events: [failedMountCrashEvent],
++      });
++      const result = await runInvestigation(context);
++
++      const workloadFinding = result.findings.find((f) =>
++        f.id.startsWith('finding:k8s:workload:'),
++      );
++      expect(workloadFinding).toBeUndefined();
++    });
++
++    it('preserves CrashLoopBackOff finding even when a root-cause hypothesis covers the same pod', async () => {
++      // CrashLoopBackOff (finding:k8s:crashloop:*) is an informative symptom that
++      // names the failure mode and must not be suppressed even when a root-cause
++      // hypothesis (e.g. missing-secret, confidence 1.0) exists for the same pod.
++      const context = makeContext({
++        resources: [crashLoopSecretPod, otherDefaultSecret],
++        events: [failedMountCrashEvent],
++      });
++      const result = await runInvestigation(context);
++
++      const crashFinding = result.findings.find((f) =>
++        f.id.startsWith('finding:k8s:crashloop:'),
++      );
++      expect(crashFinding).toBeDefined();
++    });
++
++    it('preserves Not Ready Pod finding when no root-cause hypothesis covers it', async () => {
++      // Pod with Ready=False but NO events and NO log files → all hypotheses
++      // score 0 → nonZeroHypothesisFindings is empty → rootCauseFindings is empty
++      // → the Not Ready Pod finding must survive the suppression pass.
++      const context = makeContext({ resources: [notReadyQuietPod] });
++      const result = await runInvestigation(context);
++
++      const notReadyFinding = result.findings.find((f) =>
++        f.id.startsWith('finding:k8s:notready:'),
++      );
++      expect(notReadyFinding).toBeDefined();
++    });
++  });
++
++  describe('AI-primary absorption with step-1 component normalisation', () => {
++    it('absorbs log findings into AI findings when they share the same pod component', async () => {
++      // The log file basename 'dns-app' matches the pod name → resolveLogPodComponent
++      // normalises the log finding's component to Pod/default/dns-app.
++      // The AI finding has the same component → the log finding is absorbed.
++      const dnsPod: K8sResource = {
++        apiVersion: 'v1',
++        kind: 'Pod',
++        metadata: { name: 'dns-app', namespace: 'default' },
++        spec: { containers: [{ name: 'app', image: 'myapp:v1.0' }] },
++        status: {
++          phase: 'Running',
++          conditions: [{ type: 'Ready', status: 'True' }],
++          containerStatuses: [
++            { name: 'app', ready: true, restartCount: 0, state: { running: {} } },
++          ],
++        },
++      };
++
++      const dnsAppLog = makeLogFile('pod-logs/default/dns-app.log', [
++        'ERROR lookup db: no such host',
++      ]);
++
++      const aiDnsFinding = {
++        title: 'DNS resolution failure: pod cannot reach in-cluster service',
++        severity: 'high' as const,
++        confidence: 0.9,
++        affectedComponents: ['Pod/default/dns-app'],
++        reasoningSummary: 'DNS lookup failures observed in application logs.',
++        evidence: [{ path: 'cluster-resources/pods/default/dns-app.yaml', note: 'Pod status' }],
++        contradictionsChecked: [],
++        recommendedAction: 'Check CoreDNS logs and verify service name.',
++        missingEvidence: [],
++      };
++
++      const deps = makeEmptyAIDeps();
++      (deps.llmClient.investigateSeed as ReturnType<typeof vi.fn>).mockResolvedValue({
++        findings: [aiDnsFinding],
++      });
++
++      const context = makeContext({ resources: [dnsPod], logs: [dnsAppLog] });
++      const result = await runInvestigation(context, deps);
++
++      // The log finding should be absorbed into the AI finding (same component)
++      const logFinding = result.findings.find(
++        (f) =>
++          f.id.startsWith('finding:log:') &&
++          f.affectedComponents.some((c) => c === 'Pod/default/dns-app'),
++      );
++      expect(logFinding).toBeUndefined();
++
++      // The AI finding should be present (and enriched with log evidence)
++      const aiFindingResult = result.findings.find(
++        (f) =>
++          f.id.startsWith('finding:ai:') &&
++          f.affectedComponents.some((c) => c === 'Pod/default/dns-app'),
++      );
++      expect(aiFindingResult).toBeDefined();
++    });
++  });
++
++  describe('final dedup uses full normalised title (no 80-char truncation)', () => {
++    it('preserves two findings whose titles differ only after position 80', async () => {
++      // Both titles share the same first 80 characters after normalisation but
++      // differ in the suffix.  With the old 80-char truncation, only one would
++      // survive the dedup pass.  With the full-title comparison, both survive.
++      const title1 =
++        'Connection failure: the pod cannot reach the database service endpoint at hostname-prod-a';
++      const title2 =
++        'Connection failure: the pod cannot reach the database service endpoint at hostname-prod-b';
++
++      // Sanity-check the fixture: same 80-char prefix, different full titles
++      const norm1 = title1.toLowerCase().trim();
++      const norm2 = title2.toLowerCase().trim();
++      expect(norm1.slice(0, 80)).toBe(norm2.slice(0, 80));
++      expect(norm1).not.toBe(norm2);
++
++      const aiFinding1 = {
++        title: title1,
++        severity: 'high' as const,
++        confidence: 0.9,
++        affectedComponents: ['Pod/ns-a/app'],
++        reasoningSummary: 'Pod in ns-a cannot reach endpoint.',
++        evidence: [{ path: 'logs/ns-a/app.log', note: 'Connection error' }],
++        contradictionsChecked: [],
++        recommendedAction: 'Investigate endpoint in ns-a.',
++        missingEvidence: [],
++      };
++      const aiFinding2 = {
++        title: title2,
++        severity: 'high' as const,
++        confidence: 0.8,
++        affectedComponents: ['Pod/ns-b/app'],
++        reasoningSummary: 'Pod in ns-b cannot reach endpoint.',
++        evidence: [{ path: 'logs/ns-b/app.log', note: 'Connection error' }],
++        contradictionsChecked: [],
++        recommendedAction: 'Investigate endpoint in ns-b.',
++        missingEvidence: [],
++      };
++
++      const deps = makeEmptyAIDeps();
++      (deps.llmClient.investigateSeed as ReturnType<typeof vi.fn>).mockResolvedValue({
++        findings: [aiFinding1, aiFinding2],
++      });
++
++      // Use a context that generates at least one seed so the AI mock is called
++      const context = makeContext({ resources: [crashLoopPod], events: [backOffEvent] });
++      const result = await runInvestigation(context, deps);
++
++      const found1 = result.findings.find((f) => f.title === title1);
++      const found2 = result.findings.find((f) => f.title === title2);
++
++      expect(found1).toBeDefined();
++      expect(found2).toBeDefined();
++    });
++  });
+ });
+diff --git a/src/investigators/__tests__/seed-generator.test.ts b/src/investigators/__tests__/seed-generator.test.ts
+index 23ac7e1..7c1e7b6 100644
+--- a/src/investigators/__tests__/seed-generator.test.ts
++++ b/src/investigators/__tests__/seed-generator.test.ts
+@@ -42,7 +42,6 @@ function makeMinimalProfile(): BundleProfile {
+       log: 0,
+       'kubernetes-resource': 0,
+       event: 0,
+-      config: 0,
+       'cluster-info': 0,
+       'helm-release': 0,
+       unknown: 0,
+@@ -57,11 +56,11 @@ async function loadScenarioContext(scenario: string): Promise<InvestigatorContex
+   const base = path.join(SCENARIOS, scenario);
+ 
+   const analyzerResults: AnalyzerResult[] = await parseAnalyzerFile(
+-    path.join(base, 'analyzers', 'output.json'),
++    path.join(base, 'analysis.json'),
+   );
+ 
+   const resources: K8sResource[] = await parseResourceFile(
+-    path.join(base, 'cluster-resources', 'pods', 'default', 'app-pod.yaml'),
++    path.join(base, 'cluster-resources', 'pods', 'default.json'),
+   );
+ 
+   const events: K8sEvent[] = await parseEventFile(
+@@ -69,7 +68,7 @@ async fu
+...[diff truncated at 120000 chars to control duet artifact size]

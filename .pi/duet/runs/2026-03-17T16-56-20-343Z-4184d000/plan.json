@@ -1,0 +1,97 @@
+{
+  "goal": "Add an explicit hypothesis verification/falsification layer that generates multiple candidate root-cause hypotheses per symptom, collects supporting/contradicting/missing evidence for each, ranks with calibrated confidence, and emits spec-gap recommendations when evidence is insufficient. The system should behave like a support engineer performing differential diagnosis rather than directly emitting findings.",
+  "steps": [
+    {
+      "id": "step-1",
+      "title": "Define hypothesis types and barrel exports",
+      "description": "Create `src/investigators/hypothesis-types.ts` with the core types for the hypothesis verification layer:\n\n- `HypothesisCategory`: union type covering the main root-cause classes ('missing-secret' | 'bad-db-endpoint' | 'dns-failure' | 'image-pull-failure' | 'config-error' | 'oom-kill' | 'connectivity-failure' | 'readiness-failure' | 'generic-crash' | 'missing-service')\n- `EvidenceAssessment`: { supporting: Evidence[], contradicting: Evidence[], missingDecisive: string[] }\n- `Hypothesis`: { id: string, symptom: string, rootCause: string, category: HypothesisCategory, evidenceAssessment: EvidenceAssessment, confidence: number, confidenceRationale: string, specGapRecommendations: string[], sourceFindings: string[] }\n- `HypothesisSet`: { symptomKey: string, symptomDescription: string, hypotheses: Hypothesis[], topHypothesis: Hypothesis | null }\n- `HypothesisVerificationResult`: { hypothesisSets: HypothesisSet[], metadata: { totalHypotheses: number, totalSymptomsAnalyzed: number } }\n\nUpdate `src/investigators/index.ts` barrel to export the new types. Follow existing conventions: doc comments on every type, import types with `import type`, `.js` extensions on imports.",
+      "requiredChecks": [
+        "lint",
+        "typecheck"
+      ]
+    },
+    {
+      "id": "step-2",
+      "title": "Build hypothesis generator with TDD tests",
+      "description": "Create `src/investigators/hypothesis-generator.ts` and `src/investigators/__tests__/hypothesis-generator.test.ts`.\n\nThe generator takes an `InvestigatorContext` and groups of raw findings, then produces multiple competing hypotheses per symptom:\n\n1. `groupFindingsBySymptom(findings: Finding[]): Map<string, Finding[]>` — Groups findings by affected component (e.g., all findings about Pod/default/app-pod). Uses a symptom key derived from the primary affected component.\n\n2. `generateHypothesesForSymptom(symptomKey: string, findings: Finding[], context: InvestigatorContext): Hypothesis[]` — For each symptom group, generates candidate hypotheses. For CrashLoopBackOff symptoms: missing-secret, bad-config, oom-kill, application-bug. For not-ready symptoms: dependency-failure, dns-failure, readiness-probe-misconfigured. For image-pull: bad-tag, auth-failure, registry-unavailable. Each hypothesis starts with confidence 0.0 (will be scored later).\n\n3. `generateAllHypotheses(findings: Finding[], context: InvestigatorContext): HypothesisSet[]` — Top-level function composing the above.\n\nTests (write first):\n- Empty findings → empty hypothesis sets\n- Single CrashLoopBackOff finding → generates 3+ competing hypotheses (missing-secret, bad-config, generic-crash, etc.)\n- Single ImagePullBackOff finding → generates 2+ hypotheses (bad-tag, auth-failure)\n- Single not-ready finding → generates 2+ hypotheses (dependency-failure, readiness-misconfigured)\n- Multiple findings for same pod → grouped into one symptom set\n- Findings for different pods → separate symptom sets\n- Hypotheses include the original finding's root cause as one candidate",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit"
+      ]
+    },
+    {
+      "id": "step-3",
+      "title": "Build hypothesis evidence collector with TDD tests",
+      "description": "Create `src/investigators/hypothesis-evidence-collector.ts` and `src/investigators/__tests__/hypothesis-evidence-collector.test.ts`.\n\nFor each hypothesis, search the InvestigatorContext for supporting, contradicting, and missing decisive evidence:\n\n1. `collectEvidenceForHypothesis(hypothesis: Hypothesis, context: InvestigatorContext): EvidenceAssessment` — The main function. Dispatches to category-specific collectors.\n\n2. Category-specific internal collectors:\n   - `collectMissingSecretEvidence`: Checks if referenced secrets actually exist (supporting: FailedMount events, missing secret resources; contradicting: secret exists, pod running fine; missing: pod logs showing secret-related error)\n   - `collectDnsFailureEvidence`: Checks logs for DNS patterns, services for existence (supporting: 'no such host' in logs, missing Service; contradicting: successful connection logs, service exists; missing: CoreDNS logs)\n   - `collectImagePullEvidence`: Checks events and pod status (supporting: ErrImagePull events, bad tag in spec; contradicting: image exists in status; missing: registry access logs)\n   - `collectConfigErrorEvidence`: Checks env vars, configmaps (supporting: not-found errors in logs, bad env values; contradicting: config looks correct; missing: application config file)\n   - `collectConnectivityEvidence`: Checks for connection timeouts, network policies (supporting: timeout patterns, missing endpoints; contradicting: successful later connections; missing: network policy data)\n   - `collectReadinessFailureEvidence`: Checks Unhealthy events, probe config (supporting: Unhealthy events; contradicting: pod later becomes ready; missing: detailed probe output)\n\n3. Evidence items use the existing `Evidence` type from `src/types/finding.ts` with real bundle paths.\n\nTests (write first):\n- Missing-secret hypothesis against context with missing secret → supporting evidence found\n- Missing-secret hypothesis against context where secret exists → contradicting evidence found\n- DNS-failure hypothesis against context with 'no such host' logs → supporting evidence found\n- DNS-failure hypothesis against context with successful connection logs → both supporting AND contradicting found\n- Image-pull hypothesis against context with ErrImagePull events → supporting evidence found\n- Hypothesis against empty context → missingDecisive populated, no supporting evidence\n- Each evidence item has a real `path` and descriptive `note`",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit"
+      ]
+    },
+    {
+      "id": "step-4",
+      "title": "Build hypothesis scorer and ranker with TDD tests",
+      "description": "Create `src/investigators/hypothesis-ranker.ts` and `src/investigators/__tests__/hypothesis-ranker.test.ts`.\n\nScore and rank hypotheses based on evidence assessment:\n\n1. `scoreHypothesis(hypothesis: Hypothesis): number` — Returns calibrated confidence [0, 1]:\n   - Base confidence from number of supporting evidence items (each adds ~0.15, capped)\n   - Specificity bonus: specific evidence (e.g., exact 'no such host' log) > generic (e.g., pod not ready)\n   - Contradiction penalty: each contradicting evidence item reduces by 0.15 (capped at -0.40)\n   - Missing decisive evidence penalty: each missing item reduces by 0.10 (capped at -0.30)\n   - Cross-source bonus: evidence from 2+ artifact types adds 0.10\n   - Evidence sufficiency floor: if only generic symptom evidence, cap at 0.50\n\n2. `buildConfidenceRationale(hypothesis: Hypothesis): string` — Human-readable explanation of why confidence is at this level.\n\n3. `rankHypotheses(hypotheses: Hypothesis[]): Hypothesis[]` — Sort by confidence descending, update confidenceRationale.\n\n4. `identifySpecGaps(hypothesis: Hypothesis): string[]` — When missingDecisive evidence prevents distinguishing top hypotheses, emit spec-gap recommendations.\n\nTests (write first):\n- Hypothesis with 3 supporting, 0 contradicting → high confidence (>= 0.70)\n- Hypothesis with 1 supporting, 2 contradicting → low confidence (<= 0.40)\n- Hypothesis with 2 supporting, 0 contradicting, 2 missing → medium confidence (0.40-0.65)\n- Empty evidence → very low confidence (<= 0.20)\n- Removing supporting evidence monotonically decreases confidence\n- Adding contradicting evidence monotonically decreases confidence\n- Cross-source evidence (log + k8s-resource) scores higher than same-source\n- Generic symptom-only evidence caps confidence at 0.50\n- Spec-gap recommendations emitted when missing decisive evidence exists\n- Confidence rationale is a non-empty string explaining the score",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit"
+      ]
+    },
+    {
+      "id": "step-5",
+      "title": "Build hypothesis-to-finding converter and orchestrator integration",
+      "description": "Create `src/investigators/hypothesis-converter.ts` and `src/investigators/__tests__/hypothesis-converter.test.ts`.\n\nConvert verified hypothesis sets into the existing Finding[] format:\n\n1. `convertHypothesisToFinding(hypothesis: Hypothesis, rank: number): Finding` — Maps:\n   - `id`: `finding:hypothesis:{category}:{rank}`\n   - `title`: Includes root cause and symptom\n   - `severity`: Derived from confidence and category\n   - `confidence`: From scored hypothesis\n   - `evidence`: Union of supporting evidence\n   - `contradictionsChecked`: Derived from contradicting evidence descriptions\n   - `missingEvidence`: From missingDecisive + specGapRecommendations\n   - `reasoningSummary`: Includes confidence rationale and differential diagnosis context\n   - `recommendedAction`: Category-specific action\n\n2. `convertHypothesisSetsToFindings(sets: HypothesisSet[]): Finding[]` — Converts all sets, including non-top hypotheses as lower-ranked findings for transparency.\n\n3. `mergeHypothesisFindings(hypothesisFindings: Finding[], originalFindings: Finding[]): Finding[]` — Merge hypothesis-layer findings with original heuristic findings. When a hypothesis finding covers the same issue as an original finding, prefer the hypothesis finding (better calibrated). Keep original findings that have no hypothesis equivalent.\n\nIntegrate into orchestrator (`src/investigators/orchestrator.ts`):\n- After heuristic investigators run and before the existing verifier, add a hypothesis verification step\n- `generateAllHypotheses(rawFindings, context)` → `collectEvidence for each` → `scoreAndRank` → `convertToFindings` → merge with originals\n- The hypothesis layer is always active (not AI-gated) since it works with heuristic evidence\n- Update `InvestigationResult.metadata` to include `hypothesesGenerated` and `hypothesesVerified` counts\n\nUpdate barrel exports in `src/investigators/index.ts`.\n\nTests:\n- Converting a high-confidence hypothesis produces a finding with correct fields\n- Converting a low-confidence hypothesis produces appropriate severity downgrade\n- Merge prefers hypothesis findings over originals for same component\n- Merge keeps originals that have no hypothesis equivalent\n- Orchestrator integration: CrashLoopBackOff context produces multiple hypothesis findings\n- Orchestrator metadata includes hypothesis counts\n- `--no-ai` mode still works (hypothesis layer is heuristic-only)",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit",
+        "build"
+      ]
+    },
+    {
+      "id": "step-6",
+      "title": "Add differential diagnosis and contradiction injection test suites",
+      "description": "Create `src/investigators/__tests__/differential-diagnosis.test.ts` with tests that reveal current limitations and prove improvement:\n\n### A. Differential diagnosis tests\nCreate test contexts where the same visible symptom (e.g., CrashLoopBackOff) can arise from different root causes:\n- Context with missing secret AND crash loop → missing-secret hypothesis ranked top\n- Context with bad DB endpoint AND crash loop → dns-failure hypothesis ranked top when DNS error logs present\n- Context with missing secret removed (no FailedMount, secret exists) → missing-secret drops in rank\n- For each: assert correct root cause is ranked top, incorrect alternatives are lower, confidence matches evidence strength\n\n### B. Contradiction injection tests\nCreate scenarios where evidence conflicts:\n- Logs show DNS failures, but later logs show successful DB connections → contradictions surfaced, confidence drops\n- Events show readiness failures, but pod status shows Ready=True → contradiction noted, may report 'recovered' or lower confidence\n- Analyzer says fail, but current resource state suggests recovery → confidence reduced\n- For each: assert contradictions appear in finding, confidence is lower than non-contradicted equivalent, system doesn't overclaim\n\n### C. Evidence ablation tests\nTake the wrong-db-endpoint scenario context and progressively remove evidence:\n- Full context → high confidence for DNS failure\n- Remove logs → confidence drops, missing evidence noted\n- Remove events → confidence drops further\n- Remove pod spec → confidence drops further, spec-gap recommendations appear\n- For each removal: assert confidence decreases monotonically, missing evidence is explicitly named, spec-gap recommendations appear when appropriate",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit"
+      ]
+    },
+    {
+      "id": "step-7",
+      "title": "Add ranking, noise/decoy, and counterfactual tests",
+      "description": "Create `src/investigators/__tests__/hypothesis-ranking-integration.test.ts` with advanced test scenarios:\n\n### D. Ranking tests\n- When DB DNS error logs exist, root-cause hypothesis (dns-failure) should outrank generic 'Not Ready Pod' symptom finding\n- When those logs are absent, generic symptom findings may legitimately outrank root-cause claims\n- Specific evidence (exact error message match) should produce higher confidence than pattern-only match\n- Two hypotheses with equal supporting evidence: the one with fewer contradictions ranks higher\n\n### E. Noise / decoy tests\nBuild contexts with irrelevant noise:\n- Add sidecar container warnings unrelated to the failing pod\n- Add stale historical events from a different namespace\n- Add a second healthy pod with similar name\n- For each: assert top hypothesis still identifies the correct root cause, decoys don't dominate ranking, noise doesn't inflate false confidence\n\n### F. Counterfactual identifier tests\nEnsure the system isn't overfit to fixture strings:\n- Take the wrong-db-endpoint scenario but rename pod to 'backend-server', DB host to 'postgres.services', namespace to 'production'\n- Take the missing-secret scenario but rename secret to 'database-auth', pod to 'api-server'\n- For each: assert the same underlying failure is diagnosed correctly with different identifiers\n- The hypothesis category and evidence types should be consistent regardless of name strings",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit"
+      ]
+    },
+    {
+      "id": "step-8",
+      "title": "Enhance spec-gap recommendations from hypothesis evidence gaps",
+      "description": "Update `src/reporters/spec-recommender.ts` to incorporate hypothesis-layer evidence gaps:\n\n1. Add a new function `suggestFromHypothesisGaps(findings: Finding[]): SpecRecommendation[]` that inspects findings produced by the hypothesis layer (id prefix `finding:hypothesis:`) for:\n   - `missingEvidence` entries that map to specific collector types (container logs → log collector, network policies → clusterResources collector, CoreDNS logs → CoreDNS log collector)\n   - When the top and second hypothesis have close confidence (within 0.15), recommend the evidence that would distinguish them\n   - When confidence is limited by missing bundle data, produce actionable spec recommendations\n\n2. Ensure the existing `generateSpecRecommendations` function calls the new helper and merges results.\n\n3. Update `src/reporters/__tests__/spec-recommender.test.ts` with:\n   - Hypothesis finding with missing CoreDNS logs → recommends CoreDNS log collector\n   - Hypothesis finding with missing network policy data → recommends clusterResources collector with NetworkPolicy\n   - Two close-confidence hypotheses → recommends evidence that would distinguish them\n   - No hypothesis findings → existing behavior unchanged\n\n4. Update report builder in `src/reporters/report-builder.ts` if needed to pass hypothesis metadata through to the report.",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit",
+        "build"
+      ]
+    },
+    {
+      "id": "step-9",
+      "title": "Final integration verification and golden test compatibility",
+      "description": "Verify complete integration:\n\n1. Run the full test suite to confirm all 1603+ existing tests still pass.\n\n2. Verify the three golden scenarios (bad-image-tag, missing-secret-crashloop, wrong-db-endpoint) still pass their golden expectations — the hypothesis layer should improve ranking, not break existing correct diagnoses.\n\n3. Verify the integration tests in `test/integration/__tests__/pipeline.test.ts` still pass — findings still have evidence, contradictions, recommended actions, etc.\n\n4. Verify the E2E scenario tests in `test/e2e/__tests__/scenarios.test.ts` still pass.\n\n5. Run lint, typecheck, and build to confirm no regressions.\n\n6. Spot-check that:\n   - `--no-ai` mode works (hypothesis layer is heuristic-only, not AI-gated)\n   - Missing API key fallback still works\n   - Report format is backward-compatible (additive only — hypothesis findings use the same Finding type)\n   - All new files follow project conventions: .js import extensions, barrel exports, co-located tests, doc comments\n\nIf any golden tests need expectation updates due to improved ranking (e.g., wrong-db-endpoint now correctly ranks DNS failure above Not Ready Pod), update `test/golden/expectations.ts` with tighter expectations that reflect the improvement.",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit",
+        "build"
+      ]
+    }
+  ]
+}

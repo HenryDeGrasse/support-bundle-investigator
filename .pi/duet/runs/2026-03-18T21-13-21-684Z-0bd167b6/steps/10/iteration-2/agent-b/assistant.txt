@@ -1,0 +1,30 @@
+The 4 remaining skipped tests are:
+1. DNS failure log chunk (needs steps 10 + 11)
+2. DNS failure ConfigMap chunk (needs step 11)
+3. DNS failure monitoring pod exclusion (needs steps 10 + 11)
+4. BM25 scoring quality (needs step 12)
+
+Tests 1 and 3 say they need step-10 too, but they're in a DNS-specific test suite that jointly depends on steps 10 AND 11. Keeping them skipped is correct since step-11 hasn't been implemented yet.
+
+I notice the DNS log chunk test label says "needs step-10" but the comment says it needs both steps 10 and 11. Technically `'wrong-host'` would now be extracted (step-10 is done), but the ConfigMap value indexing (step-11) is needed for the full scenario. The test also depends on ConfigMap data values being available, so keeping it skipped is correct. The label could be slightly misleading, but it matches what the step-9 agent wrote — it's a documentation minor issue, not a correctness issue.
+
+## Summary
+
+### What I reviewed:
+- `src/ai/lexical-search.ts` — the `K8S_STOP_WORDS` / `RFC1123_STOP_WORDS` separation, `extractQueryIdentifiers` step-4 using `RFC1123_STOP_WORDS`, `getContentMatches` using `K8S_STOP_WORDS` for substring expansion suppression
+- `src/ai/__tests__/lexical-search.test.ts` — all 49 tests including the 5 new diagnostic-term tests
+- `test/retrieval/__tests__/lexical-retrieval.test.ts` — the unskipped grafana-pod test, all 12 passing + 4 correctly skipped
+- Verified the exact set of terms removed from `RFC1123_STOP_WORDS` matches the step requirements
+
+### What I changed:
+Nothing. The implementation is clean, correct, and well-documented.
+
+### Assessment:
+- All required checks pass: lint ✓, typecheck ✓, unit tests ✓ (2566 passed, 9 skipped)
+- `extractQueryIdentifiers('missing secret app-credentials')` correctly returns all three terms ✓
+- Searching `'missing secret'` finds chunks with `'secret'` in identifiers ✓
+- Substring expansion is suppressed for stop-word tokens in content matching ✓
+- The grafana-pod retrieval test is unskipped and passes ✓
+- Code is well-documented with JSDoc comments explaining the dual-set design
+
+Verdict: approve

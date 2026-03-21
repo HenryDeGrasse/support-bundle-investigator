@@ -2172,9 +2172,15 @@ describe('investigateWithAI — seed deduplication', () => {
   });
 
   it('merged finding ids use the merged seed category', async () => {
-    // Verify that merged seeds produce findings with the correct id prefix
+    // Verify that merged seeds produce findings with the correct id prefix.
+    // Evidence path must match the retrieved chunk's artifactId so the finding
+    // is not dropped by the grounding check (7.1).
     const sharedChunk = makeChunk('chunk:shared', 'pods/default.json', 'shared');
-    const mockInvestigateSeed = vi.fn().mockResolvedValue({ findings: [VALID_AI_FINDING] });
+    const groundedFinding = {
+      ...VALID_AI_FINDING,
+      evidence: [{ path: 'pods/default.json', note: 'Pod in CrashLoopBackOff' }],
+    };
+    const mockInvestigateSeed = vi.fn().mockResolvedValue({ findings: [groundedFinding] });
 
     const deps: AIInvestigatorDeps = {
       llmClient: {
@@ -2199,5 +2205,264 @@ describe('investigateWithAI — seed deduplication', () => {
     // The merged seed's category is 'kubernetes' (from the first/higher-priority seed)
     expect(result.findings).toHaveLength(1);
     expect(result.findings[0]!.id).toMatch(/^finding:ai:kubernetes:/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7.1 + 7.2 — Grounding verification & confidence scoring
+// ---------------------------------------------------------------------------
+//
+// When the AI investigator retrieves non-empty chunks and passes them to the
+// LLM, every finding the LLM returns must cite at least one path that
+// corresponds to an actually-retrieved chunk.  Ungrounded citations receive a
+// confidence penalty; fully-ungrounded findings are dropped entirely.
+//
+// When the retrieved chunk set is empty (retrieval returned nothing), no
+// grounding check is applied — the LLM had no chunks to cite from.
+
+describe('grounding verification and confidence scoring (7.1 + 7.2)', () => {
+  /** Build a deps object whose lexical index returns a specific set of chunks. */
+  function makeDepsWithChunks(
+    chunks: IndexedChunk[],
+    investigateSeedImpl: () => Promise<AIFindingResponse>,
+  ): AIInvestigatorDeps {
+    const deps = makeMockDeps(investigateSeedImpl);
+    return {
+      ...deps,
+      chunkIndex: chunks,
+      lexicalIndex: {
+        build: vi.fn(),
+        search: vi.fn().mockReturnValue(chunks.map((c) => ({ chunk: c, score: 1.0 }))),
+        extractQueryIdentifiers: vi.fn().mockReturnValue([]),
+      } as unknown as AIInvestigatorDeps['lexicalIndex'],
+    };
+  }
+
+  it('drops a finding when retrieved chunks are non-empty and ALL citations are ungrounded', async () => {
+    // Retrieval returns one real chunk, but LLM cites a completely different path.
+    const realChunk = makeChunk('c1', 'cluster-resources/pods/default.json', 'pod spec');
+    const deps = makeDepsWithChunks([realChunk], async () => ({
+      findings: [
+        {
+          ...VALID_AI_FINDING,
+          evidence: [
+            { path: 'cluster-resources/pods/default/nonexistent.yaml', note: 'fabricated citation' },
+          ],
+        },
+      ],
+    }));
+
+    const seeds = [makeSeed('seed:k8s:0', 'kubernetes', 'Pod app-pod is crashing')];
+    const result = await investigateWithAI(makeContext(), seeds, deps);
+
+    // Finding must be dropped — all citations are hallucinated paths
+    expect(result.findings).toHaveLength(0);
+  });
+
+  it('keeps a finding when all citations are grounded', async () => {
+    const realChunk = makeChunk('c1', 'cluster-resources/pods/default.json', 'pod spec');
+    const deps = makeDepsWithChunks([realChunk], async () => ({
+      findings: [
+        {
+          ...VALID_AI_FINDING,
+          confidence: 0.85,
+          evidence: [
+            { path: 'cluster-resources/pods/default.json', note: 'pod in CrashLoopBackOff' },
+          ],
+        },
+      ],
+    }));
+
+    const seeds = [makeSeed('seed:k8s:0', 'kubernetes', 'Pod app-pod is crashing')];
+    const result = await investigateWithAI(makeContext(), seeds, deps);
+
+    expect(result.findings).toHaveLength(1);
+    // Confidence should be unchanged — no ungrounded citations
+    expect(result.findings[0]!.confidence).toBe(0.85);
+  });
+
+  it('penalizes confidence by 0.10 for each ungrounded citation when some are grounded', async () => {
+    const realChunk = makeChunk('c1', 'cluster-resources/pods/default.json', 'pod spec');
+    const deps = makeDepsWithChunks([realChunk], async () => ({
+      findings: [
+        {
+          ...VALID_AI_FINDING,
+          confidence: 0.9,
+          evidence: [
+            { path: 'cluster-resources/pods/default.json', note: 'grounded evidence' },
+            { path: 'cluster-resources/pods/default/fabricated.yaml', note: 'ungrounded evidence' },
+          ],
+        },
+      ],
+    }));
+
+    const seeds = [makeSeed('seed:k8s:0', 'kubernetes', 'Pod app-pod is crashing')];
+    const result = await investigateWithAI(makeContext(), seeds, deps);
+
+    expect(result.findings).toHaveLength(1);
+    // -0.10 for one ungrounded citation: 0.9 - 0.10 = 0.80
+    expect(result.findings[0]!.confidence).toBeCloseTo(0.80, 5);
+  });
+
+  it('applies -0.10 per ungrounded citation (two ungrounded)', async () => {
+    const realChunk = makeChunk('c1', 'cluster-resources/pods/default.json', 'pod spec');
+    const deps = makeDepsWithChunks([realChunk], async () => ({
+      findings: [
+        {
+          ...VALID_AI_FINDING,
+          confidence: 0.9,
+          evidence: [
+            { path: 'cluster-resources/pods/default.json', note: 'grounded' },
+            { path: 'cluster-resources/pods/default/fake1.yaml', note: 'ungrounded 1' },
+            { path: 'cluster-resources/pods/default/fake2.yaml', note: 'ungrounded 2' },
+          ],
+        },
+      ],
+    }));
+
+    const seeds = [makeSeed('seed:k8s:0', 'kubernetes', 'Pod app-pod is crashing')];
+    const result = await investigateWithAI(makeContext(), seeds, deps);
+
+    expect(result.findings).toHaveLength(1);
+    // 0.9 - 0.10 - 0.10 = 0.70
+    expect(result.findings[0]!.confidence).toBeCloseTo(0.70, 5);
+  });
+
+  it('clamps penalized confidence to 0 rather than going negative', async () => {
+    const realChunk = makeChunk('c1', 'cluster-resources/pods/default.json', 'pod spec');
+    const deps = makeDepsWithChunks([realChunk], async () => ({
+      findings: [
+        {
+          ...VALID_AI_FINDING,
+          confidence: 0.05,
+          evidence: [
+            { path: 'cluster-resources/pods/default.json', note: 'grounded' },
+            { path: 'cluster-resources/pods/default/fake.yaml', note: 'ungrounded' },
+          ],
+        },
+      ],
+    }));
+
+    const seeds = [makeSeed('seed:k8s:0', 'kubernetes', 'Pod app-pod is crashing')];
+    const result = await investigateWithAI(makeContext(), seeds, deps);
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]!.confidence).toBeGreaterThanOrEqual(0);
+  });
+
+  it('does NOT apply grounding penalty when retrieved chunks are empty', async () => {
+    // Empty retrieval → no chunks to check against → findings pass through unchanged
+    const deps = makeMockDeps(async () => ({
+      findings: [
+        {
+          ...VALID_AI_FINDING,
+          confidence: 0.9,
+          evidence: [
+            { path: 'cluster-resources/pods/default/app-pod.json', note: 'unverifiable' },
+          ],
+        },
+      ],
+    }));
+    // deps.chunkIndex = [] and lexical returns [] → mergedChunks is empty
+
+    const seeds = [makeSeed('seed:k8s:0', 'kubernetes', 'Pod app-pod is crashing')];
+    const result = await investigateWithAI(makeContext(), seeds, deps);
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]!.confidence).toBe(0.9);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7.3 — affectedComponents normalization
+// ---------------------------------------------------------------------------
+//
+// LLM responses may use variant formats for component identifiers:
+//   - Lowercase kind: pod/default/app-pod instead of Pod/default/app-pod
+//   - Correct format:  Pod/default/app-pod  (unchanged)
+//
+// convertAIFindings must normalize these before findings enter the verifier.
+
+describe('affectedComponents normalization (7.3)', () => {
+  it('normalizes lowercase pod/ prefix to Pod/', async () => {
+    const deps = makeMockDeps(async () => ({
+      findings: [
+        {
+          ...VALID_AI_FINDING,
+          affectedComponents: ['pod/default/app-pod'],
+        },
+      ],
+    }));
+    const seeds = [makeSeed('seed:k8s:0', 'kubernetes', 'Pod is crashing')];
+    const result = await investigateWithAI(makeContext(), seeds, deps);
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]!.affectedComponents).toContain('Pod/default/app-pod');
+    expect(result.findings[0]!.affectedComponents).not.toContain('pod/default/app-pod');
+  });
+
+  it('normalizes lowercase deployment/ prefix to Deployment/', async () => {
+    const deps = makeMockDeps(async () => ({
+      findings: [
+        {
+          ...VALID_AI_FINDING,
+          affectedComponents: ['deployment/default/my-app'],
+        },
+      ],
+    }));
+    const seeds = [makeSeed('seed:k8s:0', 'kubernetes', 'Deployment is unhealthy')];
+    const result = await investigateWithAI(makeContext(), seeds, deps);
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]!.affectedComponents).toContain('Deployment/default/my-app');
+  });
+
+  it('normalizes statefulset/ (lowercase) to StatefulSet/', async () => {
+    const deps = makeMockDeps(async () => ({
+      findings: [
+        {
+          ...VALID_AI_FINDING,
+          affectedComponents: ['statefulset/default/my-db'],
+        },
+      ],
+    }));
+    const seeds = [makeSeed('seed:k8s:0', 'kubernetes', 'StatefulSet is unhealthy')];
+    const result = await investigateWithAI(makeContext(), seeds, deps);
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]!.affectedComponents).toContain('StatefulSet/default/my-db');
+  });
+
+  it('leaves already-correct Pod/namespace/name unchanged', async () => {
+    const deps = makeMockDeps(async () => ({
+      findings: [
+        {
+          ...VALID_AI_FINDING,
+          affectedComponents: ['Pod/default/app-pod', 'Container/app'],
+        },
+      ],
+    }));
+    const seeds = [makeSeed('seed:k8s:0', 'kubernetes', 'Pod is crashing')];
+    const result = await investigateWithAI(makeContext(), seeds, deps);
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]!.affectedComponents).toEqual(['Pod/default/app-pod', 'Container/app']);
+  });
+
+  it('normalizes mixed-case components in the same finding', async () => {
+    const deps = makeMockDeps(async () => ({
+      findings: [
+        {
+          ...VALID_AI_FINDING,
+          affectedComponents: ['pod/default/app-pod', 'secret/default/app-secret'],
+        },
+      ],
+    }));
+    const seeds = [makeSeed('seed:k8s:0', 'kubernetes', 'Pod is crashing')];
+    const result = await investigateWithAI(makeContext(), seeds, deps);
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]!.affectedComponents).toContain('Pod/default/app-pod');
+    expect(result.findings[0]!.affectedComponents).toContain('Secret/default/app-secret');
   });
 });

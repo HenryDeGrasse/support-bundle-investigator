@@ -17,6 +17,15 @@ const SUCCESSFUL_CONNECTION_PATTERNS: RegExp[] = [
   /lookup.*success/i,
 ];
 
+/**
+ * Matches evidence notes that confirm a cross-namespace service match —
+ * produced by the DNS failure evidence collector when the referenced service
+ * is missing from its target namespace but found in another namespace.
+ *
+ * Example note: "Service 'my-svc' exists in namespace 'staging' (not 'default')."
+ */
+const CROSS_NAMESPACE_PATTERN = /exists in namespace .* \(not /i;
+
 // ---------------------------------------------------------------------------
 // Component-parsing utilities
 // ---------------------------------------------------------------------------
@@ -325,6 +334,11 @@ function detectMissingEvidence(
  *
  * Rules (evaluated in priority order):
  *
+ * 0. **`'strong'`** (priority 0) — any evidence note matches the
+ *    cross-namespace pattern (`/exists in namespace .* \(not /i`). A
+ *    cross-namespace match is a confirmed root cause and overrides all other
+ *    thresholds regardless of evidence count or missing decisive items.
+ *
  * 1. **`'strong'`** — ≥3 evidence items, from ≥2 distinct source types
  *    (`artifactType`), and 0 missing decisive items.
  *
@@ -349,6 +363,12 @@ export function computeConfidenceQuality(finding: Finding): ConfidenceQuality {
       .filter((t): t is NonNullable<typeof t> => t !== undefined),
   );
   const distinctSources = sourceTypes.size;
+
+  // Priority 0: cross-namespace match is confirmed root cause — upgrade to
+  // strong immediately regardless of evidence count or missing decisive items.
+  if (finding.evidence.some((ev) => CROSS_NAMESPACE_PATTERN.test(ev.note))) {
+    return 'strong';
+  }
 
   // Priority 1: strong
   if (evidenceCount >= 3 && distinctSources >= 2 && missingDecisiveCount === 0) {

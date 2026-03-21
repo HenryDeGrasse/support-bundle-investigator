@@ -2,31 +2,31 @@
   "sideA": {
     "label": "Claude Opus 4.6",
     "model": "anthropic/claude-opus-4-6",
-    "thinking": "xhigh"
+    "thinking": "high"
   },
   "sideB": {
     "label": "GPT-5.4",
     "model": "openai-codex/gpt-5.4",
-    "thinking": "xhigh"
+    "thinking": "high"
   },
   "planner": {
     "label": "Claude Opus 4.6",
     "model": "anthropic/claude-opus-4-6",
-    "thinking": "xhigh"
+    "thinking": "high"
   },
   "critic": {
     "label": "GPT-5.4",
     "model": "openai-codex/gpt-5.4",
-    "thinking": "xhigh"
+    "thinking": "high"
   },
   "implementer": {
-    "label": "Claude Sonnet 4.6",
-    "model": "anthropic/claude-sonnet-4-6",
+    "label": "GPT-5.4",
+    "model": "openai-codex/gpt-5.4",
     "thinking": "high"
   },
   "reviewer": {
-    "label": "Claude Opus 4.6",
-    "model": "anthropic/claude-opus-4-6",
+    "label": "GPT-5.4",
+    "model": "openai-codex/gpt-5.4",
     "thinking": "high"
   },
   "executionMode": "relay",

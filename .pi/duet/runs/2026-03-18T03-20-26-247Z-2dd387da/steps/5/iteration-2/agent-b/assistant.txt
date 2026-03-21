@@ -1,0 +1,31 @@
+Reviewed the step-5 integration work in:
+
+- `src/tui/components/App.tsx`
+- `src/tui/index.tsx`
+- `src/tui/state-machine.ts`
+- `src/tui/dashboard-state.ts`
+
+Assessment:
+- `App.tsx` is correctly wired to the pane-based dashboard state machine
+- `shift+tab` handling is present
+- export behavior still works and is gated on non-loading state
+- loading vs ready rendering matches the step requirements
+- old full-screen view imports/rendering were removed appropriately
+- `state-machine.ts` keeps backward-compatible behavior with the deprecation notice
+- `index.tsx` exports the new dashboard-state API while preserving the old exports
+
+Verification run:
+- `npm run lint` ✅
+- `npm run typecheck` ✅
+- `npm run unit` ✅
+- `npm run build` ✅
+
+Notable test coverage confirmed by the unit run:
+- `src/tui/__tests__/state-machine.test.ts` ✅
+- `src/tui/__tests__/dashboard-state.test.ts` ✅
+- `src/tui/__tests__/tui-import.test.ts` ✅
+- `src/tui/__tests__/tui-cli-integration.test.ts` ✅
+
+I didn’t find any real bugs or missing integration work that needed fixing, so I made no additional code changes.
+
+Verdict: approve

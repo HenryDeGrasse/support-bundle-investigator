@@ -1,0 +1,156 @@
+{
+  "goal": "Implement Phase 1 (Foundations, issues 1.1–1.7) and Phase 2 (Retrieval Core, issues 2.1, 2.2, 2.5–2.7, 2.9 + 6.1, 6.2) from docs/findings-and-improvements.md. Use TDD where possible — write failing tests first, then fix code. Phase 1 fixes broken fixtures, fabricated IDs, dropped identifiers, dead code, and wires unused modules. Phase 2 replaces naive scoring with BM25, adds Reciprocal Rank Fusion, extends graph retrieval, and fixes the stop-word list, guided by retrieval precision/recall tests written upfront.",
+  "steps": [
+    {
+      "id": "step-1",
+      "title": "1.5 — Remove dead `config` artifact category",
+      "description": "TDD: Write a test in `src/ingestion/__tests__/classifier.test.ts` that asserts `classifyArtifact` never returns `'config'` for any known path pattern. Then remove `'config'` from the `ArtifactCategory` union in `src/types/bundle.ts`. Update `BundleProfile.artifactsByCategory` to drop the `config` key. Fix downstream references: `src/tui/helpers.ts` (remove `'config'` case from `evidenceIcon`), `src/tui/__tests__/helpers.test.ts` (remove `evidenceIcon('config')` assertion), and `src/ingestion/profiler.ts` (remove `config: 0` init). Verify all tests pass after removal.",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit"
+      ]
+    },
+    {
+      "id": "step-2",
+      "title": "1.3 — Fix log chunk identifiers dropping the pod name",
+      "description": "TDD: Add tests in `src/ai/__tests__/chunk-indexer.test.ts` that:\n1. A log file at path `pods/logs/default/app-pod/app.log` extracts `app-pod` as an identifier (parent dir = pod name in real bundle paths).\n2. A log file at path `logs/app/app-pod.log` extracts `app-pod` (strip `.log` extension before filtering).\n\nCurrently `identifiersFromLogContent` skips segments ending in `.log`, so `app-pod.log` yields `app` not `app-pod`. Fix in `src/ai/chunk-indexer.ts` `identifiersFromLogContent`: strip the `.log`/`.txt` extension from the filename segment *before* adding it to identifiers. Also: for real bundle paths like `cluster-resources/pods/logs/<ns>/<pod>/<container>.log`, extract the grandparent segment as pod name.",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit"
+      ]
+    },
+    {
+      "id": "step-3",
+      "title": "1.4 — Fix init container log association in resolveLogPodComponent",
+      "description": "TDD: Add tests in `src/investigators/__tests__/log-investigator.test.ts` that:\n1. For a log at `cluster-resources/pods/logs/default/app-pod/init-setup.log`, `resolveLogPodComponent` returns `['Pod/default/app-pod']` by matching the parent directory (pod name), not the filename (container name `init-setup`).\n2. For a log at `logs/app/app-pod.log` (old path format), still returns `['Pod/default/app-pod']` by filename match (backwards compat).\n\nFix `resolveLogPodComponent` in `src/investigators/log-investigator.ts`: after the existing filename-based match fails, check the parent directory name against known pod names. For paths matching `pods/logs/<ns>/<pod>/<container>.log`, use the `<pod>` segment.",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit"
+      ]
+    },
+    {
+      "id": "step-4",
+      "title": "1.1 — Rewrite test fixtures to real Troubleshoot bundle format",
+      "description": "Rewrite all 4 scenario fixtures (`wrong-db-endpoint`, `missing-secret-crashloop`, `bad-image-tag`, `pvc-pending`) to match real Troubleshoot bundle layout. Changes per scenario:\n\n- **Analyzers**: Move `analyzers/output.json` → `analysis.json` at scenario root with the proper Troubleshoot format `{ analyzers: [{...}] }` structure.\n- **Resources**: Replace per-resource YAML files (`pods/default/app-pod.yaml`) with flat JSON List files (`cluster-resources/pods/default.json` containing `{kind:'PodList', items:[...]}`). Similarly for deployments, secrets, services, PVCs, storageclasses.\n- **Events**: Keep `cluster-resources/events/default.json` but wrap in `{kind:'EventList', items:[...]}` format if not already.\n- **Logs**: Move from `logs/app/pod.log` → `cluster-resources/pods/logs/<ns>/<pod>/<container>.log` (real Troubleshoot path).\n\nUpdate all tests that reference fixture file paths: `test/fixtures/__tests__/fixtures.test.ts`, `test/e2e/__tests__/scenarios.test.ts`, `test/integration/__tests__/pipeline.test.ts`, `test/golden/__tests__/*.test.ts`. Ensure the parser (`parseResourceFile`) correctly handles JSON List files (it already has `expandListResource` support). Ensure `classifyArtifact` routes the new paths correctly (the `cluster-resources/pods/logs/` → 'log' rule already exists). Leave `realistic-bundle-format/` unchanged (it's already correct).",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit"
+      ]
+    },
+    {
+      "id": "step-5",
+      "title": "1.2 — Fix chunk IDs to use actual source file paths instead of fabricated ones",
+      "description": "TDD: Add tests in `src/ai/__tests__/chunk-indexer.test.ts` that:\n1. For a Pod parsed from `cluster-resources/pods/default.json`, the chunk's `artifactId` is `cluster-resources/pods/default.json` (not `cluster-resources/pod/default/app-pod.json`).\n2. The chunk `id` includes the resource name as a qualifier: `cluster-resources/pods/default.json:app-pod:resource`.\n\nImplementation: Add an optional `sourceFile?: string` field to `K8sResource` (or use a parallel Map<resource, path> passed to `buildChunkIndex`). The cleanest approach: extend `InvestigatorContext` with a `resourceSourceFiles: Map<K8sResource, string>` or add a `_sourceFile` property during parsing in `parseResourceFile`. In `buildChunkIndex`, look up the actual file path for each resource instead of fabricating `cluster-resources/${kind}/${ns}/${name}.json`. For the chunk `id`, use `${actualPath}:${name}:resource` to disambiguate resources from the same List file. Update `chunkResource` in `src/graph/chunker.ts` to accept the actual path. Update tests that assert on specific chunk IDs/artifactIds.",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit"
+      ]
+    },
+    {
+      "id": "step-6",
+      "title": "1.6 — Wire Helm releases into the pipeline and chunk index",
+      "description": "TDD: Add tests that:\n1. `InvestigatorContext` accepts an optional `helmReleases: HelmRelease[]` field.\n2. `buildChunkIndex` produces chunks for Helm releases with identifiers including release name, chart name, status, namespace.\n3. A release with status `failed` has `failed` in its identifiers.\n\nImplementation:\n- Add `helmReleases?: HelmRelease[]` to `InvestigatorContext` in `src/investigators/types.ts` (import `HelmRelease` from parsers).\n- In `src/pipeline/analyze.ts`, after parsing resources, find files classified as `'helm-release'`, call `parseHelmReleaseFile` on each, and pass results into the context.\n- In `src/ai/chunk-indexer.ts`, add a new section in `buildChunkIndex` that creates one `IndexedChunk` per `HelmRelease` with identifiers=[name, namespace, chart, chartVersion, status], artifactCategory='helm-release', and content=JSON summary.\n- Add `identifiersFromHelmRelease` helper.\n- Update `src/ai/summarizer.ts` with a `summarizeHelmRelease` function.",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit"
+      ]
+    },
+    {
+      "id": "step-7",
+      "title": "1.7 — Wire timeline module into the investigation pipeline",
+      "description": "TDD: Add tests that:\n1. Events in `InvestigatorContext` are sorted chronologically when the pipeline constructs the context.\n2. The log investigator uses `correlateEventsWithPod` to enrich findings with temporally correlated events.\n\nImplementation:\n- In `src/pipeline/analyze.ts`, after parsing events, call `sortEventsByTime(events)` before passing to the investigation context. Import from parsers.\n- In `src/investigators/log-investigator.ts`, when creating DNS/connection/missing-resource findings, use `correlateEventsWithPod` and `getEventWindow` to find events within a time window around the log errors. Add these as additional evidence items on findings (e.g., 'Event BackOff on pod app-pod occurred at same time as DNS failure').\n- Update existing log investigator tests to verify the temporal correlation evidence is included when events are present in the context.",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit"
+      ]
+    },
+    {
+      "id": "step-8",
+      "title": "6.1 — Create realistic-scale multi-namespace test fixture for retrieval tests",
+      "description": "Create `test/fixtures/scenarios/multi-namespace-retrieval/` with real Troubleshoot bundle format (matching step-4 conventions). Contents:\n- 3 namespaces: `default`, `database`, `monitoring`\n- ~25 resources: 8 Pods (mix of healthy/unhealthy), 4 Deployments, 3 Services, 3 Secrets, 3 ConfigMaps, 2 PVCs, 2 Endpoints\n- ~50 events across namespaces (FailedMount, BackOff, Unhealthy, Pulled, Started)\n- 5 log files with ~200 total lines: 2 with DNS errors, 1 with auth failures, 1 with OOM patterns, 1 healthy\n- Plant specific diagnostic signals in specific chunks (e.g., `ConfigMap db-config` has `DB_HOST: wrong-host.internal` that matches DNS failure in logs)\n- Include both healthy and unhealthy resources to test precision (healthy resources should NOT rank high)\n\nAdd a smoke test in `test/fixtures/__tests__/fixtures.test.ts` validating the fixture parses correctly with the existing parsers.",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit"
+      ]
+    },
+    {
+      "id": "step-9",
+      "title": "6.2 — Write retrieval precision/recall tests as TDD targets (initially failing)",
+      "description": "Create `test/retrieval/__tests__/lexical-retrieval.test.ts` and `test/retrieval/__tests__/graph-retrieval.test.ts` using the multi-namespace fixture from step-8.\n\nLexical tests (against `LexicalSearchIndex`):\n- 'missing secret app-credentials' query → top-5 MUST include the Pod chunk referencing that secret and the Event chunk for FailedMount. MUST NOT include unrelated healthy pods from `monitoring` namespace.\n- 'DNS failure wrong-host.internal' → top-5 MUST include the log chunk with DNS error AND the ConfigMap chunk containing `DB_HOST: wrong-host.internal`. The stop-word fix (step-11) and value indexing (step-13) are needed for this to pass.\n- 'CrashLoopBackOff app-pod' → crash pod ranks #1, NOT the healthy pod with same app label.\n\nGraph tests (against `getRelatedChunks`):\n- Analyzer seed → returns related chunks (currently broken per 2.5, will pass after step-15).\n- Pod seed → returns Secret/ConfigMap chunks from graph neighborhood.\n\nMark tests that depend on later steps as `.todo()` or `.skip()` with clear comments about which step enables them. These tests become the quality gate for Phase 2 changes.",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit"
+      ]
+    },
+    {
+      "id": "step-10",
+      "title": "2.7 — Fix overly aggressive stop-word list in lexical search",
+      "description": "TDD: Update retrieval tests from step-9 — unskip tests that assert `secret`, `missing`, `failed`, `service`, `configmap` are searchable terms. Add unit tests in `src/ai/__tests__/lexical-search.test.ts`:\n1. `extractQueryIdentifiers('missing secret app-credentials')` returns `['missing', 'secret', 'app-credentials']` (currently only returns `['app-credentials']`).\n2. Searching 'missing secret' finds chunks with 'secret' in identifiers.\n\nFix in `src/ai/lexical-search.ts`: Remove `'secret'`, `'secrets'`, `'service'`, `'services'`, `'configmap'`, `'configmaps'`, `'missing'`, `'failed'`, `'failure'`, `'unreachable'` from `K8S_STOP_WORDS`. These are high-signal diagnostic terms. Keep them only in a separate `RFC1123_STOP_WORDS` set used exclusively by the RFC-1123 name extraction regex (step 4 of `extractQueryIdentifiers`), not by the compound term matching steps.",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit"
+      ]
+    },
+    {
+      "id": "step-11",
+      "title": "2.9 — Index ConfigMap/Secret data values for lexical retrieval",
+      "description": "TDD: Add tests in `src/ai/__tests__/chunk-indexer.test.ts`:\n1. A ConfigMap with `data: { DB_HOST: 'wrong-host.internal' }` has `'wrong-host.internal'` in its identifiers.\n2. A Pod with `env: [{ name: 'API_URL', value: 'https://api.example.com' }]` has `'api.example.com'` in its identifiers.\n\nUnskip retrieval tests from step-9 that expect ConfigMap value to surface for DNS failure queries.\n\nFix `identifiersFromResource` in `src/ai/chunk-indexer.ts`:\n- For ConfigMaps: extract values (not just keys) from `data`. Parse hostnames, URLs, and connection strings from values using simple regex patterns (`hostname:port`, `protocol://host`).\n- For Pods: extract literal `value` fields from `env[]` entries (not just `valueFrom` references). Parse hostnames/URLs from those values.\n- Add a helper `extractNetworkIdentifiers(value: string): string[]` that extracts hostnames, IPs, and URLs from a string value.",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit"
+      ]
+    },
+    {
+      "id": "step-12",
+      "title": "2.1 — Replace raw term frequency scoring with BM25 in lexical search",
+      "description": "TDD: Add tests in `src/ai/__tests__/lexical-search.test.ts`:\n1. A chunk with 50 occurrences of 'default' does NOT outrank a chunk with 2 occurrences of a rare diagnostic term (BM25 saturation test).\n2. The common term 'default' (appearing in many chunks) scores lower per-occurrence than a rare term 'app-credentials' (IDF test).\n3. A short chunk with 1 match ranks higher than a very long chunk with 1 match (length normalization test).\n4. Existing scoring priority tests (identifier > namespace > content) still pass — BM25 only replaces the content scoring path.\n\nImplementation in `src/ai/lexical-search.ts`:\n- In `build()`: precompute `df(t)` (number of chunks containing term t) per term, total chunk count `N`, and `avgdl` (average chunk token count).\n- In `search()` content scoring: replace `WEIGHT_CONTENT * count` with BM25: `IDF(t) * (tf * (k1+1)) / (tf + k1 * (1 - b + b * |d|/avgdl))` where `IDF(t) = ln((N - df + 0.5) / (df + 0.5) + 1)`, `k1=1.2`, `b=0.75`.\n- Keep identifier (3.0) and namespace (1.5) weights unchanged — BM25 replaces only the `WEIGHT_CONTENT * count` line.\n- Store chunk token lengths during `build()` for length normalization.",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit"
+      ]
+    },
+    {
+      "id": "step-13",
+      "title": "2.6 — Add hop-distance scoring to graph chunk retrieval",
+      "description": "TDD: Add tests in `src/graph/__tests__/resource-graph.test.ts`:\n1. `getNeighborhood` returns nodes with their hop distance from the start node (depth-0, depth-1, depth-2).\n2. A new `getNeighborhoodWithDepth` function returns `Array<{ node: ResourceNode, depth: number }>` so callers can score by proximity.\n3. `getRelatedChunks` returns chunks with scores: direct resource chunks (depth-0) score 1.0, depth-1 neighbors score 0.7, depth-2 neighbors score 0.4.\n\nImplementation:\n- Add `getNeighborhoodWithDepth` to `src/graph/resource-graph.ts` that returns `{ node, depth }` tuples. Modify the existing BFS in `getNeighborhood` to track depth per node.\n- Modify `getRelatedChunks` to return `ScoredChunk[]` (or a new type `GraphScoredChunk`) instead of `IndexedChunk[]`, including the hop-distance score. Update callers in `src/investigators/ai-investigator.ts` to use the scored results.\n- Export a `GraphScoredChunk` type from `src/graph/resource-graph.ts`.",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit"
+      ]
+    },
+    {
+      "id": "step-14",
+      "title": "2.5 — Extend graph retrieval to Analyzer and Log seeds",
+      "description": "TDD: Unskip retrieval tests from step-9 that assert Analyzer and Log seeds return graph-traversed chunks. Add unit tests in `src/graph/__tests__/resource-graph.test.ts`:\n1. An Analyzer seed with hypothesis mentioning 'app-pod' extracts entity names and walks from the Pod node.\n2. A Log seed resolves to its associated Pod via the log path, then walks the Pod's graph neighborhood.\n3. An Analyzer seed with no extractable entity names but in namespace 'default' finds unhealthy pods in that namespace and walks from them.\n\nFix `getRelatedChunks` in `src/graph/resource-graph.ts`:\n- For `kind === 'Analyzer'`: extract K8s entity names from `seed.hypothesis` using the same identifier extraction as `extractQueryIdentifiers`. Resolve each name to a graph node. Walk neighborhoods for all resolved nodes.\n- For `kind === 'Log'`: parse the log path to extract pod name (using the same logic as `resolveLogPodComponent`). If a pod is found, walk its neighborhood.\n- For Analyzer seeds with no entity names: scan graph nodes for unhealthy Pods (those with CrashLoopBackOff/ImagePullBackOff in the chunk index identifiers) in the same namespace, and walk from those.",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit"
+      ]
+    },
+    {
+      "id": "step-15",
+      "title": "2.2 — Replace positional merge with Reciprocal Rank Fusion (RRF)",
+      "description": "TDD: Add tests in `src/investigators/__tests__/ai-investigator.test.ts`:\n1. A chunk found by both graph (rank 1) and lexical (rank 3) ranks higher than a chunk found only by graph (rank 2) — RRF rewards cross-system agreement.\n2. A chunk found by all 3 systems (graph, lexical, semantic) ranks highest.\n3. Total merged results are still capped at MAX_CHUNKS_PER_SEED (20).\n4. The merge is deterministic (same inputs → same output order).\n\nReplace `mergeChunks` in `src/investigators/ai-investigator.ts` with RRF:\n- Each retrieval system provides a ranked list of chunks.\n- For each chunk: `rrfScore = sum over systems of 1/(k + rank_in_system)` where `k=60`.\n- Chunks not found by a system get no contribution from that system (not penalized, just no boost).\n- Sort by descending `rrfScore`, break ties by chunk ID for determinism.\n- Cap at `MAX_CHUNKS_PER_SEED`.\n\nUpdate `mergeChunks` signature to accept `{ chunks: IndexedChunk[], scores?: number[] }[]` (one entry per retrieval system) so the rank of each chunk within its system is preserved. Adapt callers: graph chunks come with hop-distance scores (from step-13), lexical chunks come with BM25 scores (from step-12), semantic chunks come with cosine similarity scores.",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit",
+        "build"
+      ]
+    }
+  ]
+}

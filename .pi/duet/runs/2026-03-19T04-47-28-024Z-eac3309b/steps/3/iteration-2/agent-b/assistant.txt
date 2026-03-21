@@ -1,0 +1,34 @@
+All checks pass:
+- **TypeScript**: clean (no errors)
+- **ESLint**: clean (no warnings/errors)
+- **Unit tests**: all 2656 tests pass, 2 skipped (pre-existing)
+
+## Review Summary
+
+I reviewed all three files changed for this step:
+
+### `src/ai/chunk-indexer.ts`
+- `estimateTokens(text)` — correctly returns `Math.floor(text.length / 4)` with thorough JSDoc. Clean, allocation-free, well-documented.
+
+### `src/investigators/ai-investigator.ts`
+- `DEFAULT_TOKEN_BUDGET = 100_000` — appropriate value (~80% of 128k context), well-documented with JSDoc explaining the rationale.
+- `mergeChunks` extended with a token budget pass (Step 5 in the algorithm):
+  - Iterates chunks in RRF priority order after the existing sort + cap logic
+  - Tracks cumulative tokens via `estimateTokens(chunk.content)`
+  - When a chunk would exceed the budget, returns a shallow copy with `content` replaced by `chunk.summary` — original chunk is never mutated
+  - Default parameter value wires it in automatically for `investigateWithAI` callers
+
+### `src/investigators/__tests__/ai-investigator.test.ts`
+- 10 new tests across 3 describe blocks:
+  - `mergeChunks — token budget` (6 tests): fits within budget, summary fallback, cumulative tracking, immutability, budget=0 edge case, all-fit case
+  - `estimateTokens` (4 tests): empty string, exact division, floor division, realistic content
+  - `DEFAULT_TOKEN_BUDGET` (1 test): validates the range
+- Tests are well-structured and cover the key behaviors specified in the step description.
+
+The implementation correctly satisfies all step requirements:
+1. ✅ `estimateTokens(text)` returns `content.length/4`
+2. ✅ `mergeChunks` tracks cumulative tokens and respects a configurable budget (default ~100k tokens)
+3. ✅ When budget is exceeded, lower-priority chunks fall back to summary-only content
+4. ✅ Wired into `investigateWithAI` (automatic via default parameter)
+
+Verdict: approve

@@ -1,0 +1,28 @@
+   apiVersion: troubleshoot.sh/v1beta2
+   kind: SupportBundle
+   metadata:
+     name: ghost-service-bundle
+   spec:
+     collectors:
+       - clusterResources:
+           namespaces:
+             - default
+             - staging
+       - logs:
+           selector:
+             - app=web-app
+           namespace: default
+           limits:
+             maxLines: 500
+       - logs:
+           selector:
+             - app=api-service
+           namespace: default
+           limits:
+             maxLines: 200
+       - logs:
+           selector:
+             - app=worker
+           namespace: staging
+           limits:
+             maxLines: 200

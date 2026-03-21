@@ -1,0 +1,30 @@
+Let me verify the step requirements checklist:
+
+1. ✅ **`SEED_CLUSTERING_SYSTEM_PROMPT` exported constant** — Defined and exported. Establishes role as senior K8s SRE, task is grouping seeds by shared root cause, has 7 grounding rules, references the output schema.
+
+2. ✅ **`buildSeedClusteringPrompt(seeds)` builder function** — Takes `InvestigationSeed[]`, returns `{ system, user }`. System is the static prompt, user serializes seeds as `{ id, hypothesis, source, category, priority }` JSON array.
+
+3. ✅ **Output schema matches spec** — `clusters[].{ label, reasoning, seedIds, representativeSeedId }`.
+
+4. ✅ **Rules embedded in prompt**:
+   - Every seed ID must appear in exactly one cluster ✅
+   - Singletons allowed ✅
+   - `representativeSeedId` must be highest-priority member ✅
+   - Group by root cause, not just category ✅
+
+5. ✅ **Exported from `src/ai/index.ts`** — Both `SEED_CLUSTERING_SYSTEM_PROMPT` and `buildSeedClusteringPrompt` are re-exported.
+
+6. ✅ **All checks pass**: typecheck, lint, build, unit tests (3463 passed, 2 skipped).
+
+## Assessment
+
+The implementation is complete and correct. The previous agent:
+- Added `SEED_CLUSTERING_SYSTEM_PROMPT` following the established grounding-constraint pattern (matches `BASE_SYSTEM_PROMPT` style)
+- Added `CLUSTERING_JSON_SCHEMA` as an internal constant with the correct schema shape
+- Added `buildSeedClusteringPrompt()` that serializes seeds with only the needed fields and constructs a well-structured user prompt
+- Properly exported both public symbols from `src/ai/index.ts`
+- All required checks pass cleanly
+
+No issues found, no changes needed.
+
+Verdict: approve

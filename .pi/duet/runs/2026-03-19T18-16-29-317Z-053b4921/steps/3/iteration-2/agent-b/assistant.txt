@@ -1,0 +1,29 @@
+Everything aligns with the step requirements. Let me do a final review:
+
+## Review Summary
+
+### What I reviewed:
+1. **`src/investigators/hypothesis-ranker.ts`** — Verified the three new constants (`EVIDENCE_DIVERSITY_BONUS = 0.05`, `CROSS_NAMESPACE_BONUS = 0.15`, `CROSS_NAMESPACE_PATTERN`), their integration into `scoreHypothesis` (diversity bonus at 3+ artifact types, cross-namespace bonus when pattern matches), and their mentions in `buildConfidenceRationale`.
+
+2. **`src/investigators/verifier.ts`** — Verified the `CROSS_NAMESPACE_PATTERN` constant and the priority-0 check in `computeConfidenceQuality` that returns `'strong'` immediately when any evidence note matches the cross-namespace pattern, overriding all other thresholds.
+
+3. **`src/investigators/__tests__/hypothesis-ranker.test.ts`** — Verified 3 new test groups: diversity bonus (3 types > 2 types, difference = 0.05), cross-namespace bonus (≥0.15 higher), and `buildConfidenceRationale` mentioning "cross-namespace".
+
+4. **`src/investigators/__tests__/verifier.test.ts`** — Verified 3 new test groups: cross-namespace override returning 'strong' with 2 items + 1 missing, with 1 item + 2 missing, and regression test for 3 items/3 sources/0 missing still returning 'strong'.
+
+### Results:
+- **143/143 targeted tests pass** (all new tests included)
+- **3436/3436 full suite tests pass** (no regressions)
+- **TypeCheck**: clean
+- **Lint**: clean
+
+### Assessment:
+The implementation is complete and correct. All step requirements are met:
+- ✅ Evidence diversity bonus (+0.05 for ≥3 artifact types) in ranker
+- ✅ Cross-namespace corroboration bonus (+0.15) in ranker  
+- ✅ `buildConfidenceRationale` mentions both bonuses when applicable
+- ✅ Priority-0 cross-namespace check in `computeConfidenceQuality` returns 'strong' immediately
+- ✅ All required tests present and passing
+- ✅ No regressions
+
+Verdict: approve

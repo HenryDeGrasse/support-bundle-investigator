@@ -1,0 +1,13 @@
+.pi/duet/runs/2026-03-16T19-55-28-917Z-c283c28f
+.pi/duet/runs/2026-03-16T20-02-17-496Z-d45258d1
+.pi/duet/runs/2026-03-17T04-14-31-149Z-a4395a84
+.pi/duet/runs/2026-03-17T16-56-20-343Z-4184d000
+.pi/duet/runs/2026-03-18T00-23-36-373Z-c30ee659
+.pi/duet/runs/2026-03-18T03-20-26-247Z-2dd387da
+src/tui/__tests__/dashboard-state.test.ts
+src/tui/components/DetailPane.tsx
+src/tui/components/FindingsPane.tsx
+src/tui/components/Pane.tsx
+src/tui/components/SpecsPane.tsx
+src/tui/components/StatusBar.tsx
+src/tui/dashboard-state.ts

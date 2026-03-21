@@ -66,6 +66,7 @@ function makePipelineResult(): PipelineResult {
       completedAt: new Date().toISOString(),
       steps: [],
     } as PipelineResult['trace'],
+    aiMode: 'off',
   };
 }
 

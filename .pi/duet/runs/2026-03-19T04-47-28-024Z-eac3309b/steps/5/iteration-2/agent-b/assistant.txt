@@ -1,0 +1,25 @@
+## Review Summary
+
+### What I reviewed:
+1. **`src/ai/late-chunking.ts`** — Core implementation with 3 public functions (`mapChunkBoundariesToTokenPositions`, `averagePoolSlice`, `lateChunkEmbed`) and 3 interfaces (`ChunkBoundary`, `TokenRange`, `LateChunkEmbeddingClient`)
+2. **`src/ai/__tests__/late-chunking.test.ts`** — 30 tests covering all three functions including edge cases (empty inputs, out-of-bounds, clamping, structural typing)
+3. **`src/ai/local-embeddings.ts`** — Modified to implement `LateChunkEmbeddingClient` with new `embedTokenLevel()` method
+4. **`src/ai/index.ts`** — All new exports properly added
+
+### Checks run:
+- ✅ **Unit tests**: 30/30 late-chunking tests pass; full suite: 2715 passed, 2 skipped (pre-existing)
+- ✅ **Typecheck**: Clean — no errors
+- ✅ **Lint**: Clean — no errors
+
+### Assessment:
+The implementation is solid and complete:
+- **No circular dependencies**: `late-chunking.ts` imports from `embeddings.ts`, `local-embeddings.ts` imports from `late-chunking.ts` — clean DAG
+- **Proper graceful degradation**: TEI → standard per-chunk fallback when `embedTokenLevel` returns `null`
+- **Correct proportional mapping**: character-offset-based approximation for tokenizer-agnostic line→token mapping
+- **Thorough edge case handling**: empty docs, zero tokens, out-of-bounds clamping, startToken ≤ endToken invariant
+- **Good test coverage**: 30 tests covering happy paths, edge cases, and both TEI and fallback code paths
+- **Clean documentation**: comprehensive JSDoc on all public APIs
+
+All step requirements are met. No changes needed.
+
+Verdict: approve

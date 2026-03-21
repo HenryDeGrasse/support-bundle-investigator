@@ -1,0 +1,29 @@
+All 3465 tests pass (3463 passed + 2 skipped). Let me verify the implementation one more time for correctness and completeness:
+
+## Review Summary
+
+**What I reviewed:**
+1. **`src/investigators/types.ts`** — The new `ClusteredSeed` interface and `SeedClusterLLMClient` interface
+2. **`src/investigators/index.ts`** — The export additions
+3. **Existing patterns** — `HydeLLMClient` in `src/ai/hyde.ts` and `KnowledgeLLMClient` in `src/graph/knowledge-extractor.ts` for interface consistency, `createMergedSeed` in `src/ai/ai-investigator.ts` for hypothesis-joining pattern
+
+**Assessment:**
+The implementation is correct and complete for this step:
+
+- **`ClusteredSeed`** properly extends `InvestigationSeed` with all three required fields: `memberSeeds`, `clusterLabel`, and `originalPriority`. The JSDoc is thorough and accurately documents the clustering behavior, singleton handling, and how the representative's `hypothesis`/`source`/`category` fields are derived.
+
+- **`SeedClusterLLMClient`** follows the exact same single-method pattern as `HydeLLMClient` and `KnowledgeLLMClient` — `generateText(systemPrompt, userPrompt): Promise<string>`. The real `LLMClient` satisfies it without adapters.
+
+- Both types are properly exported from `src/investigators/index.ts`.
+
+- The types are placed between `InvestigatorContext` and `InvestigatorResult` in the file, maintaining logical ordering.
+
+**All checks pass:**
+- ✅ TypeScript: no errors
+- ✅ ESLint: clean
+- ✅ Build: success
+- ✅ Unit tests: 3463 passed, 2 skipped
+
+No changes needed.
+
+Verdict: approve

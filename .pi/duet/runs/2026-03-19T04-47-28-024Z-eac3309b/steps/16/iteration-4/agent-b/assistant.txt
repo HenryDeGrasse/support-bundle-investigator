@@ -1,0 +1,9 @@
+All step requirements are confirmed met:
+
+1. **`CausalTemplate` type** with template library — 6 templates defined in `CAUSAL_TEMPLATES`
+2. **`matchCausalTemplate(findings, events, resources)`** — returns matched template instances with concrete node IDs and `causes` edges
+3. **Investigators emit `causes` edges** — `kubernetes-investigator.ts` emits causal edges for MissingSecret→FailedMount→CrashLoop, BadImageTag→ErrImagePull→ImagePullBackOff, and MissingStorageClass→ProvisioningFailed→FailedMount→PodPending chains; `log-investigator.ts` emits DNSFailure→ConnectionTimeout and MissingResource→ConnectionTimeout causal edges
+4. **Tests** — 89 tests in `causal-templates.test.ts`, 110 in `kubernetes-investigator.test.ts`
+5. **All checks pass** — typecheck ✅, lint ✅, unit tests ✅ (2990 passing across 77 files)
+
+Verdict: approve

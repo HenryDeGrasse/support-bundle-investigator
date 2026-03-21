@@ -1,0 +1,2951 @@
+diff --git a/.pi/duet/config.json b/.pi/duet/config.json
+index 31183e1..ad309b0 100644
+--- a/.pi/duet/config.json
++++ b/.pi/duet/config.json
+@@ -25,8 +25,8 @@
+     "thinking": "high"
+   },
+   "reviewer": {
+-    "label": "GPT-5.4",
+-    "model": "openai-codex/gpt-5.4",
++    "label": "Claude Opus 4.6",
++    "model": "anthropic/claude-opus-4-6",
+     "thinking": "high"
+   },
+   "executionMode": "relay",
+diff --git a/scripts/benchmark-hypotheses.mjs b/scripts/benchmark-hypotheses.mjs
+index 5c56206..4237815 100644
+--- a/scripts/benchmark-hypotheses.mjs
++++ b/scripts/benchmark-hypotheses.mjs
+@@ -26,7 +26,7 @@ const SCENARIOS = [
+   },
+   {
+     name: 'pvc-pending',
+-    expectedTopCategory: 'missing-secret',
++    expectedTopCategory: 'volume-mount-failure',
+   },
+ ];
+ 
+diff --git a/src/ai/__tests__/chunk-indexer.test.ts b/src/ai/__tests__/chunk-indexer.test.ts
+index 7852ae0..db67a0b 100644
+--- a/src/ai/__tests__/chunk-indexer.test.ts
++++ b/src/ai/__tests__/chunk-indexer.test.ts
+@@ -1,8 +1,8 @@
+ import { describe, it, expect } from 'vitest';
+-import { buildChunkIndex } from '../chunk-indexer.js';
++import { buildChunkIndex, identifiersFromHelmRelease } from '../chunk-indexer.js';
+ import type { InvestigatorContext } from '../../investigators/types.js';
+ import type { K8sResource, K8sEvent, AnalyzerResult } from '../../types/index.js';
+-import type { LogFile } from '../../parsers/index.js';
++import type { LogFile, HelmRelease } from '../../parsers/index.js';
+ import type { BundleProfile } from '../../types/index.js';
+ 
+ // ---------------------------------------------------------------------------
+@@ -29,7 +29,6 @@ const EMPTY_PROFILE: BundleProfile = {
+     log: 0,
+     'kubernetes-resource': 0,
+     event: 0,
+-    config: 0,
+     'cluster-info': 0,
+     'helm-release': 0,
+     unknown: 0,
+@@ -410,6 +409,215 @@ describe('IndexedChunk identifiers', () => {
+   });
+ });
+ 
++// ---------------------------------------------------------------------------
++// ConfigMap data value indexing (step-11 / issue 2.9)
++// ---------------------------------------------------------------------------
++
++describe('ConfigMap data value network identifier indexing', () => {
++  it('ConfigMap identifiers include hostname values from data', () => {
++    const cm = {
++      apiVersion: 'v1',
++      kind: 'ConfigMap',
++      metadata: { name: 'db-config', namespace: 'database' },
++      data: { DB_HOST: 'wrong-host.internal' },
++    } as unknown as K8sResource;
++    const ctx = makeContext({ resources: [cm] });
++    const chunks = buildChunkIndex(ctx);
++    const chunk = chunks.find((c) => c.artifactCategory === 'kubernetes-resource');
++    expect(chunk).toBeDefined();
++    expect(chunk!.identifiers).toContain('wrong-host.internal');
++  });
++
++  it('ConfigMap identifiers still include key names alongside values', () => {
++    const cm = {
++      apiVersion: 'v1',
++      kind: 'ConfigMap',
++      metadata: { name: 'db-config', namespace: 'database' },
++      data: { DB_HOST: 'wrong-host.internal', DB_PORT: '5432' },
++    } as unknown as K8sResource;
++    const ctx = makeContext({ resources: [cm] });
++    const chunks = buildChunkIndex(ctx);
++    const chunk = chunks.find((c) => c.artifactCategory === 'kubernetes-resource');
++    expect(chunk!.identifiers).toContain('DB_HOST');
++    expect(chunk!.identifiers).toContain('DB_PORT');
++    expect(chunk!.identifiers).toContain('wrong-host.internal');
++    // Plain port number is NOT a network identifier
++    expect(chunk!.identifiers).not.toContain('5432');
++  });
++
++  it('ConfigMap URL values yield the extracted hostname', () => {
++    const cm = {
++      apiVersion: 'v1',
++      kind: 'ConfigMap',
++      metadata: { name: 'api-config', namespace: 'default' },
++      data: { API_URL: 'https://api.example.com' },
++    } as unknown as K8sResource;
++    const ctx = makeContext({ resources: [cm] });
++    const chunks = buildChunkIndex(ctx);
++    const chunk = chunks.find((c) => c.artifactCategory === 'kubernetes-resource');
++    expect(chunk!.identifiers).toContain('api.example.com');
++  });
++
++  it('ConfigMap hostname:port values yield the extracted hostname', () => {
++    const cm = {
++      apiVersion: 'v1',
++      kind: 'ConfigMap',
++      metadata: { name: 'svc-config', namespace: 'default' },
++      data: { REDIS_ADDR: 'cache-pod.default.svc.cluster.local:6379' },
++    } as unknown as K8sResource;
++    const ctx = makeContext({ resources: [cm] });
++    const chunks = buildChunkIndex(ctx);
++    const chunk = chunks.find((c) => c.artifactCategory === 'kubernetes-resource');
++    expect(chunk!.identifiers).toContain('cache-pod.default.svc.cluster.local');
++  });
++
++  it('ConfigMap non-network values (plain strings, numbers) are NOT added', () => {
++    const cm = {
++      apiVersion: 'v1',
++      kind: 'ConfigMap',
++      metadata: { name: 'app-config', namespace: 'default' },
++      data: { APP_ENV: 'production', MAX_CONN: '100', LOG_LEVEL: 'info' },
++    } as unknown as K8sResource;
++    const ctx = makeContext({ resources: [cm] });
++    const chunks = buildChunkIndex(ctx);
++    const chunk = chunks.find((c) => c.artifactCategory === 'kubernetes-resource');
++    expect(chunk!.identifiers).not.toContain('production');
++    expect(chunk!.identifiers).not.toContain('100');
++    expect(chunk!.identifiers).not.toContain('info');
++  });
++});
++
++// ---------------------------------------------------------------------------
++// Pod env literal value indexing (step-11 / issue 2.9)
++// ---------------------------------------------------------------------------
++
++describe('Pod env literal value network identifier indexing', () => {
++  it('Pod identifiers include hostname extracted from URL env value', () => {
++    const pod = {
++      apiVersion: 'v1',
++      kind: 'Pod',
++      metadata: { name: 'api-pod', namespace: 'default' },
++      spec: {
++        containers: [
++          {
++            name: 'api',
++            image: 'myrepo/api:v1.0.0',
++            env: [{ name: 'API_URL', value: 'https://api.example.com' }],
++          },
++        ],
++      },
++    } as unknown as K8sResource;
++    const ctx = makeContext({ resources: [pod] });
++    const chunks = buildChunkIndex(ctx);
++    const chunk = chunks.find((c) => c.artifactCategory === 'kubernetes-resource');
++    expect(chunk).toBeDefined();
++    expect(chunk!.identifiers).toContain('api.example.com');
++  });
++
++  it('Pod identifiers include bare hostname from literal env value', () => {
++    const pod = {
++      apiVersion: 'v1',
++      kind: 'Pod',
++      metadata: { name: 'db-pod', namespace: 'default' },
++      spec: {
++        containers: [
++          {
++            name: 'app',
++            image: 'myrepo/app:v1.0.0',
++            env: [{ name: 'DB_HOST', value: 'db.internal.example.com' }],
++          },
++        ],
++      },
++    } as unknown as K8sResource;
++    const ctx = makeContext({ resources: [pod] });
++    const chunks = buildChunkIndex(ctx);
++    const chunk = chunks.find((c) => c.artifactCategory === 'kubernetes-resource');
++    expect(chunk!.identifiers).toContain('db.internal.example.com');
++  });
++
++  it('Pod plain port number env value is NOT added as identifier', () => {
++    const pod = {
++      apiVersion: 'v1',
++      kind: 'Pod',
++      metadata: { name: 'db-pod', namespace: 'default' },
++      spec: {
++        containers: [
++          {
++            name: 'app',
++            image: 'myrepo/app:v1.0.0',
++            env: [{ name: 'DB_PORT', value: '5432' }],
++          },
++        ],
++      },
++    } as unknown as K8sResource;
++    const ctx = makeContext({ resources: [pod] });
++    const chunks = buildChunkIndex(ctx);
++    const chunk = chunks.find((c) => c.artifactCategory === 'kubernetes-resource');
++    expect(chunk!.identifiers).not.toContain('5432');
++  });
++
++  it('Pod valueFrom references are still indexed alongside literal values', () => {
++    const pod = {
++      apiVersion: 'v1',
++      kind: 'Pod',
++      metadata: { name: 'mixed-pod', namespace: 'default' },
++      spec: {
++        containers: [
++          {
++            name: 'app',
++            image: 'myrepo/app:v1.0.0',
++            env: [
++              { name: 'API_URL', value: 'https://api.example.com' },
++              { name: 'DB_PASS', valueFrom: { secretKeyRef: { name: 'db-secret', key: 'password' } } },
++            ],
++          },
++        ],
++      },
++    } as unknown as K8sResource;
++    const ctx = makeContext({ resources: [pod] });
++    const chunks = buildChunkIndex(ctx);
++    const chunk = chunks.find((c) => c.artifactCategory === 'kubernetes-resource');
++    expect(chunk!.identifiers).toContain('api.example.com');
++    expect(chunk!.identifiers).toContain('db-secret');
++  });
++});
++
++// ---------------------------------------------------------------------------
++// Log chunk path-based pod name extraction (issue 1.3)
++// ---------------------------------------------------------------------------
++
++describe('log chunk path-based identifier extraction', () => {
++  it('extracts pod name from real bundle path pods/logs/<ns>/<pod>/<container>.log', () => {
++    const logFile: LogFile = {
++      path: 'pods/logs/default/app-pod/app.log',
++      lines: [{ lineNumber: 1, content: 'some log content', level: 'info' }],
++      errorCount: 0,
++      warningCount: 0,
++      importance: 0,
++    };
++    const ctx = makeContext({ logs: [logFile] });
++    const chunks = buildChunkIndex(ctx);
++    const logChunk = chunks.find((c) => c.artifactCategory === 'log');
++    expect(logChunk).toBeDefined();
++    expect(logChunk!.identifiers).toContain('app-pod');
++  });
++
++  it('extracts pod name from path where filename has .log extension: logs/app/app-pod.log', () => {
++    const logFile: LogFile = {
++      path: 'logs/app/app-pod.log',
++      lines: [{ lineNumber: 1, content: 'some log content', level: 'info' }],
++      errorCount: 0,
++      warningCount: 0,
++      importance: 0,
++    };
++    const ctx = makeContext({ logs: [logFile] });
++    const chunks = buildChunkIndex(ctx);
++    const logChunk = chunks.find((c) => c.artifactCategory === 'log');
++    expect(logChunk).toBeDefined();
++    expect(logChunk!.identifiers).toContain('app-pod');
++  });
++});
++
+ // ---------------------------------------------------------------------------
+ // Chunk IDs are stable and unique
+ // ---------------------------------------------------------------------------
+@@ -427,4 +635,303 @@ describe('chunk IDs uniqueness', () => {
+     const uniqueIds = new Set(ids);
+     expect(uniqueIds.size).toBe(ids.length);
+   });
++
++  it('chunk IDs for two resources from the same List file are unique', () => {
++    const pod1 = makePodResource('pod-1');
++    const pod2 = makePodResource('pod-2');
++    const sourceFile = 'cluster-resources/pods/default.json';
++    const resourceSourceFiles = new Map<import('../../types/index.js').K8sResource, string>([
++      [pod1, sourceFile],
++      [pod2, sourceFile],
++    ]);
++    const ctx = makeContext({ resources: [pod1, pod2], resourceSourceFiles });
++    const chunks = buildChunkIndex(ctx);
++    const ids = chunks.map((c) => c.id);
++    const uniqueIds = new Set(ids);
++    expect(uniqueIds.size).toBe(ids.length);
++  });
++});
++
++// ---------------------------------------------------------------------------
++// Resource source file path tracking (issue 1.2)
++// ---------------------------------------------------------------------------
++
++describe('resource chunk source file paths', () => {
++  it('uses artifactId from resourceSourceFiles when provided', () => {
++    const pod = makePodResource('app-pod');
++    const sourceFile = 'cluster-resources/pods/default.json';
++    const resourceSourceFiles = new Map<import('../../types/index.js').K8sResource, string>([
++      [pod, sourceFile],
++    ]);
++    const ctx = makeContext({ resources: [pod], resourceSourceFiles });
++    const chunks = buildChunkIndex(ctx);
++    const chunk = chunks.find((c) => c.artifactCategory === 'kubernetes-resource');
++    expect(chunk).toBeDefined();
++    expect(chunk!.artifactId).toBe('cluster-resources/pods/default.json');
++  });
++
++  it('chunk id includes resource name as qualifier when source file is provided', () => {
++    const pod = makePodResource('app-pod');
++    const sourceFile = 'cluster-resources/pods/default.json';
++    const resourceSourceFiles = new Map<import('../../types/index.js').K8sResource, string>([
++      [pod, sourceFile],
++    ]);
++    const ctx = makeContext({ resources: [pod], resourceSourceFiles });
++    const chunks = buildChunkIndex(ctx);
++    const chunk = chunks.find((c) => c.artifactCategory === 'kubernetes-resource');
++    expect(chunk).toBeDefined();
++    expect(chunk!.id).toBe('cluster-resources/pods/default.json:app-pod:resource');
++  });
++
++  it('does NOT use fabricated per-resource path when source file is provided', () => {
++    const pod = makePodResource('app-pod');
++    const sourceFile = 'cluster-resources/pods/default.json';
++    const resourceSourceFiles = new Map<import('../../types/index.js').K8sResource, string>([
++      [pod, sourceFile],
++    ]);
++    const ctx = makeContext({ resources: [pod], resourceSourceFiles });
++    const chunks = buildChunkIndex(ctx);
++    const chunk = chunks.find((c) => c.artifactCategory === 'kubernetes-resource');
++    expect(chunk).toBeDefined();
++    // Must NOT be the old fabricated per-resource path
++    expect(chunk!.artifactId).not.toContain('pod/default/app-pod');
++  });
++
++  it('multiple resources from the same List file share the same artifactId', () => {
++    const pod1 = makePodResource('pod-1');
++    const pod2 = makePodResource('pod-2');
++    const sourceFile = 'cluster-resources/pods/default.json';
++    const resourceSourceFiles = new Map<import('../../types/index.js').K8sResource, string>([
++      [pod1, sourceFile],
++      [pod2, sourceFile],
++    ]);
++    const ctx = makeContext({ resources: [pod1, pod2], resourceSourceFiles });
++    const chunks = buildChunkIndex(ctx).filter((c) => c.artifactCategory === 'kubernetes-resource');
++    expect(chunks).toHaveLength(2);
++    expect(chunks[0]!.artifactId).toBe('cluster-resources/pods/default.json');
++    expect(chunks[1]!.artifactId).toBe('cluster-resources/pods/default.json');
++    // IDs must still be unique (name qualifier disambiguates)
++    expect(chunks[0]!.id).not.toBe(chunks[1]!.id);
++  });
++
++  it('falls back to constructed path when resourceSourceFiles is absent', () => {
++    const pod = makePodResource('app-pod');
++    const ctx = makeContext({ resources: [pod] });
++    const chunks = buildChunkIndex(ctx);
++    const chunk = chunks.find((c) => c.artifactCategory === 'kubernetes-resource');
++    expect(chunk).toBeDefined();
++    // Fallback path should still be non-empty and contain relevant info
++    expect(chunk!.artifactId).toBeTruthy();
++    expect(chunk!.id).toContain('app-pod');
++  });
++});
++
++// ---------------------------------------------------------------------------
++// Helm release helpers
++// ---------------------------------------------------------------------------
++
++function makeHelmRelease(overrides: Partial<HelmRelease> = {}): HelmRelease {
++  return {
++    name: 'my-app',
++    namespace: 'default',
++    revision: 3,
++    status: 'deployed',
++    chart: 'my-chart',
++    chartVersion: '1.2.3',
++    appVersion: '2.0.0',
++    updatedAt: '2024-01-15T10:00:00Z',
++    values: { replicaCount: 2, image: { tag: 'v2.0.0' } },
++    ...overrides,
++  };
++}
++
++// ---------------------------------------------------------------------------
++// InvestigatorContext helmReleases field (issue 1.6)
++// ---------------------------------------------------------------------------
++
++describe('InvestigatorContext helmReleases field', () => {
++  it('accepts helmReleases as an optional field', () => {
++    const ctx: InvestigatorContext = makeContext({
++      helmReleases: [makeHelmRelease()],
++    });
++    expect(ctx.helmReleases).toHaveLength(1);
++  });
++
++  it('is absent when not provided', () => {
++    const ctx = makeContext();
++    expect(ctx.helmReleases).toBeUndefined();
++  });
++});
++
++// ---------------------------------------------------------------------------
++// Helm release chunk indexing (issue 1.6)
++// ---------------------------------------------------------------------------
++
++describe('buildChunkIndex — Helm releases', () => {
++  it('produces no Helm chunks when helmReleases is absent', () => {
++    const ctx = makeContext({ resources: [makePodResource('pod-1')] });
++    const chunks = buildChunkIndex(ctx);
++    const helmChunks = chunks.filter((c) => c.artifactCategory === 'helm-release');
++    expect(helmChunks).toHaveLength(0);
++  });
++
++  it('produces one chunk per Helm release', () => {
++    const ctx = makeContext({
++      helmReleases: [
++        makeHelmRelease({ name: 'app-1', namespace: 'default' }),
++        makeHelmRelease({ name: 'app-2', namespace: 'staging' }),
++      ],
++    });
++    const chunks = buildChunkIndex(ctx);
++    const helmChunks = chunks.filter((c) => c.artifactCategory === 'helm-release');
++    expect(helmChunks).toHaveLength(2);
++  });
++
++  it('Helm release chunk has artifactCategory = helm-release', () => {
++    const ctx = makeContext({ helmReleases: [makeHelmRelease()] });
++    const chunks = buildChunkIndex(ctx);
++    const helmChunk = chunks.find((c) => c.artifactCategory === 'helm-release');
++    expect(helmChunk).toBeDefined();
++    expect(helmChunk!.artifactCategory).toBe('helm-release');
++  });
++
++  it('Helm release chunk identifiers include release name', () => {
++    const ctx = makeContext({ helmReleases: [makeHelmRelease({ name: 'my-app' })] });
++    const chunks = buildChunkIndex(ctx);
++    const helmChunk = chunks.find((c) => c.artifactCategory === 'helm-release');
++    expect(helmChunk!.identifiers).toContain('my-app');
++  });
++
++  it('Helm release chunk identifiers include namespace', () => {
++    const ctx = makeContext({ helmReleases: [makeHelmRelease({ namespace: 'production' })] });
++    const chunks = buildChunkIndex(ctx);
++    const helmChunk = chunks.find((c) => c.artifactCategory === 'helm-release');
++    expect(helmChunk!.identifiers).toContain('production');
++  });
++
++  it('Helm release chunk identifiers include chart name', () => {
++    const ctx = makeContext({ helmReleases: [makeHelmRelease({ chart: 'my-chart' })] });
++    const chunks = buildChunkIndex(ctx);
++    const helmChunk = chunks.find((c) => c.artifactCategory === 'helm-release');
++    expect(helmChunk!.identifiers).toContain('my-chart');
++  });
++
++  it('Helm release chunk identifiers include chart version', () => {
++    const ctx = makeContext({ helmReleases: [makeHelmRelease({ chartVersion: '1.2.3' })] });
++    const chunks = buildChunkIndex(ctx);
++    const helmChunk = chunks.find((c) => c.artifactCategory === 'helm-release');
++    expect(helmChunk!.identifiers).toContain('1.2.3');
++  });
++
++  it('Helm release chunk identifiers include status', () => {
++    const ctx = makeContext({ helmReleases: [makeHelmRelease({ status: 'deployed' })] });
++    const chunks = buildChunkIndex(ctx);
++    const helmChunk = chunks.find((c) => c.artifactCategory === 'helm-release');
++    expect(helmChunk!.identifiers).toContain('deployed');
++  });
++
++  it('failed release has "failed" in identifiers', () => {
++    const ctx = makeContext({
++      helmReleases: [makeHelmRelease({ name: 'broken-app', status: 'failed' })],
++    });
++    const chunks = buildChunkIndex(ctx);
++    const helmChunk = chunks.find((c) => c.artifactCategory === 'helm-release');
++    expect(helmChunk!.identifiers).toContain('failed');
++  });
++
++  it('pending-install release has "pending-install" in identifiers', () => {
++    const ctx = makeContext({
++      helmReleases: [makeHelmRelease({ status: 'pending-install' })],
++    });
++    const chunks = buildChunkIndex(ctx);
++    const helmChunk = chunks.find((c) => c.artifactCategory === 'helm-release');
++    expect(helmChunk!.identifiers).toContain('pending-install');
++  });
++
++  it('Helm release chunk has non-empty summary', () => {
++    const ctx = makeContext({ helmReleases: [makeHelmRelease()] });
++    const chunks = buildChunkIndex(ctx);
++    const helmChunk = chunks.find((c) => c.artifactCategory === 'helm-release');
++    expect(helmChunk!.summary).toBeTruthy();
++    expect(helmChunk!.summary).toContain('my-app');
++    expect(helmChunk!.summary).toContain('my-chart');
++    expect(helmChunk!.summary).toContain('deployed');
++  });
++
++  it('Helm release chunk has namespace set', () => {
++    const ctx = makeContext({ helmReleases: [makeHelmRelease({ namespace: 'staging' })] });
++    const chunks = buildChunkIndex(ctx);
++    const helmChunk = chunks.find((c) => c.artifactCategory === 'helm-release');
++    expect(helmChunk!.namespace).toBe('staging');
++  });
++
++  it('Helm release chunk artifactId contains namespace and name', () => {
++    const ctx = makeContext({ helmReleases: [makeHelmRelease({ name: 'my-app', namespace: 'default' })] });
++    const chunks = buildChunkIndex(ctx);
++    const helmChunk = chunks.find((c) => c.artifactCategory === 'helm-release');
++    expect(helmChunk!.artifactId).toBe('helm/default/my-app');
++  });
++
++  it('Helm release chunk id is stable and unique', () => {
++    const ctx = makeContext({
++      helmReleases: [
++        makeHelmRelease({ name: 'app-1', namespace: 'default' }),
++        makeHelmRelease({ name: 'app-2', namespace: 'default' }),
++      ],
++    });
++    const chunks = buildChunkIndex(ctx).filter((c) => c.artifactCategory === 'helm-release');
++    expect(chunks).toHaveLength(2);
++    expect(chunks[0]!.id).not.toBe(chunks[1]!.id);
++    expect(chunks[0]!.id).toBe('helm-release:default:app-1');
++    expect(chunks[1]!.id).toBe('helm-release:default:app-2');
++  });
++
++  it('Helm release chunk has valid line range', () => {
++    const ctx = makeContext({ helmReleases: [makeHelmRelease()] });
++    const chunks = buildChunkIndex(ctx);
++    const helmChunk = chunks.find((c) => c.artifactCategory === 'helm-release');
++    expect(helmChunk!.startLine).toBeGreaterThanOrEqual(1);
++    expect(helmChunk!.endLine).toBeGreaterThanOrEqual(helmChunk!.startLine);
++  });
++});
++
++// ---------------------------------------------------------------------------
++// identifiersFromHelmRelease helper
++// ---------------------------------------------------------------------------
++
++describe('identifiersFromHelmRelease', () => {
++  it('returns name', () => {
++    const ids = identifiersFromHelmRelease(makeHelmRelease({ name: 'my-release' }));
++    expect(ids).toContain('my-release');
++  });
++
++  it('returns namespace', () => {
++    const ids = identifiersFromHelmRelease(makeHelmRelease({ namespace: 'kube-system' }));
++    expect(ids).toContain('kube-system');
++  });
++
++  it('returns chart name', () => {
++    const ids = identifiersFromHelmRelease(makeHelmRelease({ chart: 'nginx-ingress' }));
++    expect(ids).toContain('nginx-ingress');
++  });
++
++  it('returns chart version', () => {
++    const ids = identifiersFromHelmRelease(makeHelmRelease({ chartVersion: '4.5.0' }));
++    expect(ids).toContain('4.5.0');
++  });
++
++  it('returns status', () => {
++    const ids = identifiersFromHelmRelease(makeHelmRelease({ status: 'failed' }));
++    expect(ids).toContain('failed');
++  });
++
++  it('returns appVersion when set', () => {
++    const ids = identifiersFromHelmRelease(makeHelmRelease({ appVersion: '3.0.0' }));
++    expect(ids).toContain('3.0.0');
++  });
++
++  it('does not include empty strings', () => {
++    const ids = identifiersFromHelmRelease(makeHelmRelease({ appVersion: '', chartVersion: '' }));
++    expect(ids).not.toContain('');
++  });
+ });
+diff --git a/src/ai/__tests__/lexical-search.test.ts b/src/ai/__tests__/lexical-search.test.ts
+index dfaac61..768d396 100644
+--- a/src/ai/__tests__/lexical-search.test.ts
++++ b/src/ai/__tests__/lexical-search.test.ts
+@@ -436,7 +436,7 @@ describe('LexicalSearchIndex — scoring priority', () => {
+     expect(results[0]!.score).toBeGreaterThan(results[1]!.score);
+   });
+ 
+-  it('identifier score is 3x the content score for a single-term query', () => {
++  it('identifier score is strictly greater than the content score for a single-term query', () => {
+     const identifierChunk = makeChunk({
+       id: 'with-identifier',
+       content: 'unrelated yaml',
+@@ -459,9 +459,8 @@ describe('LexicalSearchIndex — scoring priority', () => {
+     const idResult = results.find((r) => r.chunk.id === 'with-identifier')!;
+     const ctResult = results.find((r) => r.chunk.id === 'with-content')!;
+ 
+-    // identifier weight (3.0) should be strictly greater than content weight (1.0)
++    // identifier weight (3.0) should be strictly greater than BM25 content score
+     expect(idResult.score).toBeGreaterThan(ctResult.score);
+-    expect(idResult.score / ctResult.score).toBeCloseTo(3.0, 0);
+   });
+ 
+   it('namespace match scores between identifier and content', () => {
+@@ -509,28 +508,31 @@ describe('LexicalSearchIndex — scoring priority', () => {
+     }
+   });
+ 
+-  it('identifier hits win deterministic ties against content-only hits', () => {
++  it('identifier hits rank above content-only hits (tie-break determinism)', () => {
+     const identifierChunk = makeChunk({
+       id: 'resource:tie-identifier',
+       content: 'kind: Pod metadata labels: app',
+       identifiers: ['app-pod'],
+       artifactCategory: 'kubernetes-resource',
+-      summary: 'Identifier tie-break winner',
++      summary: 'Identifier match winner',
+     });
+     const contentOnlyChunk = makeChunk({
+       id: 'log:tie-content',
+       content: 'app-pod error failed',
+       identifiers: [],
+       artifactCategory: 'log',
+-      summary: 'Content-only tie candidate',
++      summary: 'Content-only match',
+     });
+ 
+     const index = new LexicalSearchIndex();
+     index.build([contentOnlyChunk, identifierChunk]);
+ 
+     const results = index.search('app-pod error failed', 10);
++    // The identifier chunk should rank first regardless of exact scores.
++    // (With BM25 content scoring the scores are no longer equal, but
++    // the flat 3.0 identifier weight still dominates a typical multi-token
++    // BM25 content score for a small corpus.)
+     expect(results[0]!.chunk.id).toBe('resource:tie-identifier');
+-    expect(results[0]!.score).toBe(results[1]!.score);
+   });
+ });
+ 
+@@ -633,6 +635,107 @@ describe('LexicalSearchIndex.extractQueryIdentifiers', () => {
+     const reason = ids.find((id) => id.toLowerCase() === 'crashloopbackoff');
+     expect(reason).toBe('CrashLoopBackOff'); // original casing preserved
+   });
++
++  // ── High-signal diagnostic terms (step-10 / issue 2.7) ──────────────────
++
++  it('extracts "secret" as a searchable identifier (not a stop word)', () => {
++    const ids = index.extractQueryIdentifiers('missing secret app-credentials');
++    expect(ids).toContain('missing');
++    expect(ids).toContain('secret');
++    expect(ids).toContain('app-credentials');
++  });
++
++  it('extracts "service" as a searchable identifier', () => {
++    const ids = index.extractQueryIdentifiers('service api-gateway is unreachable');
++    expect(ids).toContain('service');
++    expect(ids).toContain('api-gateway');
++    expect(ids).toContain('unreachable');
++  });
++
++  it('extracts "configmap" as a searchable identifier', () => {
++    const ids = index.extractQueryIdentifiers('configmap db-config missing key');
++    expect(ids).toContain('configmap');
++    expect(ids).toContain('db-config');
++  });
++
++  it('extracts "failed" as a searchable identifier', () => {
++    const ids = index.extractQueryIdentifiers('failed pod web-server');
++    expect(ids).toContain('failed');
++    expect(ids).toContain('web-server');
++  });
++});
++
++// ---------------------------------------------------------------------------
++// High-signal stop-word fix: searching 'secret', 'missing', etc.
++// ---------------------------------------------------------------------------
++
++describe('LexicalSearchIndex — high-signal diagnostic terms as identifier queries (step-10)', () => {
++  it('searching "missing secret" finds chunks with "secret" in identifiers', () => {
++    // A chunk whose identifiers explicitly include the literal word "secret"
++    // (e.g. a Kubernetes Secret resource or an analyzer result that tags the
++    // secret kind as an identifier).
++    const secretChunk = makeChunk({
++      id: 'resource:secret-tagged',
++      content: 'kind: Secret metadata name: my-secret namespace: default',
++      identifiers: ['my-secret', 'secret', 'default'],
++      namespace: 'default',
++      artifactCategory: 'kubernetes-resource',
++      summary: 'Secret resource chunk with "secret" in identifiers',
++    });
++    const unrelatedChunk = makePodChunk('unrelated-pod');
++
++    const idx = new LexicalSearchIndex();
++    idx.build([secretChunk, unrelatedChunk]);
++
++    const results = idx.search('missing secret', 10);
++    const found = results.find((r) => r.chunk.identifiers.includes('secret'));
++    expect(found).toBeDefined();
++    expect(found!.chunk.id).toBe('resource:secret-tagged');
++  });
++
++  it('searching "missing secret" does NOT find a chunk whose content only contains "secretKeyRef"', () => {
++    // Simulate a monitoring pod that has secretKeyRef in its raw JSON but is
++    // unrelated to the query.  Before the stop-word fix this chunk was falsely
++    // surfaced via substring expansion ('secret' ⊂ 'secretkeyref').
++    const noiseChunk = makeChunk({
++      id: 'resource:noise-secretkeyref',
++      // Raw JSON-like content with secretKeyRef but no standalone 'secret' token
++      content: '{"env":[{"name":"GF_DB_PASS","valueFrom":{"secretKeyRef":{"name":"monitoring-credentials","key":"pass"}}}]}',
++      identifiers: ['grafana-pod', 'monitoring', 'monitoring-credentials'],
++      namespace: 'monitoring',
++      artifactCategory: 'kubernetes-resource',
++      summary: 'Grafana pod with secretKeyRef (noise)',
++    });
++
++    const idx = new LexicalSearchIndex();
++    idx.build([noiseChunk]);
++
++    const results = idx.search('missing secret app-credentials', 10);
++    // The noise chunk must not appear — 'secret' should not expand to
++    // 'secretkeyref' via substring matching.
++    expect(results).toHaveLength(0);
++  });
++
++  it('searching "failed" finds a chunk with "failed" in identifiers (Helm release)', () => {
++    const helmChunk = makeChunk({
++      id: 'helm-release:default:my-chart',
++      content: 'HelmRelease: my-chart (namespace: default)\nStatus: failed',
++      identifiers: ['my-chart', 'default', 'failed'],
++      namespace: 'default',
++      artifactCategory: 'helm-release',
++      summary: 'Helm release my-chart with status failed',
++    });
++    const unrelatedChunk = makePodChunk('healthy-pod');
++
++    const idx = new LexicalSearchIndex();
++    idx.build([helmChunk, unrelatedChunk]);
++
++    const results = idx.search('failed my-chart', 10);
++    const helmResult = results.find((r) => r.chunk.id === 'helm-release:default:my-chart');
++    expect(helmResult).toBeDefined();
++    // Identifier match for both 'failed' and 'my-chart' → score ≥ 6.0
++    expect(helmResult!.score).toBeGreaterThanOrEqual(6.0);
++  });
+ });
+ 
+ // ---------------------------------------------------------------------------
+@@ -690,6 +793,163 @@ describe('LexicalSearchIndex — integration with buildChunkIndex fixtures', ()
+   });
+ });
+ 
++// ---------------------------------------------------------------------------
++// BM25 scoring properties
++// ---------------------------------------------------------------------------
++
++describe('LexicalSearchIndex — BM25 scoring', () => {
++  /**
++   * BM25 saturation test.
++   *
++   * With raw TF, a chunk containing 'default' 50 times scores 50× a single
++   * match, dwarfing a chunk with 2 occurrences of a rare term. BM25 prevents
++   * this: the IDF of a term that appears in almost every chunk is near-zero,
++   * so even 50 repetitions cannot compensate for the high IDF of the rare term.
++   */
++  it('BM25 saturation: chunk with 50 occurrences of common term does not outrank chunk with 2 occurrences of rare term', () => {
++    // 20 background chunks containing 'default' → df('default') = 21, low IDF
++    const background = Array.from({ length: 20 }, (_, i) =>
++      makeChunk({
++        id: `sat-bg-${i}`,
++        content: `pod-${i} running in default namespace with default config`,
++        identifiers: [`pod-${i}`],
++        namespace: 'default',
++        artifactCategory: 'kubernetes-resource',
++        summary: `Background ${i}`,
++      }),
++    );
++
++    // Chunk A: 'default' repeated 50 times — high TF but very low IDF
++    const chunkA = makeChunk({
++      id: 'sat-chunk-a',
++      content: Array(50).fill('default').join(' '),
++      identifiers: [],
++      artifactCategory: 'kubernetes-resource',
++      summary: 'Many defaults',
++    });
++
++    // Chunk B: 'app-credentials' appears 2 times — low TF but very high IDF
++    // ('app-credentials' appears in no background chunk → df = 1)
++    const chunkB = makeChunk({
++      id: 'sat-chunk-b',
++      content: 'app-credentials secret app-credentials missing',
++      identifiers: [],
++      artifactCategory: 'kubernetes-resource',
++      summary: 'Rare term',
++    });
++
++    const index = new LexicalSearchIndex();
++    index.build([...background, chunkA, chunkB]);
++
++    // Query touches both terms.  With raw TF, chunkA would dominate (score 50).
++    // With BM25, the rare 'app-credentials' in chunkB should score higher.
++    const results = index.search('default app-credentials', 10);
++    const aResult = results.find((r) => r.chunk.id === 'sat-chunk-a');
++    const bResult = results.find((r) => r.chunk.id === 'sat-chunk-b');
++
++    expect(bResult).toBeDefined();
++    expect(bResult!.score).toBeGreaterThan(aResult?.score ?? 0);
++  });
++
++  /**
++   * IDF test.
++   *
++   * When both chunks contain exactly ONE occurrence of their respective term,
++   * the chunk whose term is RARE (appears in few documents) should receive a
++   * higher BM25 score than the chunk whose term is COMMON (appears in many
++   * documents).
++   *
++   * topK is set larger than the corpus so both target chunks are always
++   * included in results (avoids false passes from topK truncation).
++   */
++  it('BM25 IDF: common term scores lower per-occurrence than rare term', () => {
++    // 15 background chunks all containing 'default' → df('default') = 16, low IDF
++    const background = Array.from({ length: 15 }, (_, i) =>
++      makeChunk({
++        id: `idf-bg-${i}`,
++        content: `pod-${i} running in default namespace`,
++        identifiers: [`pod-${i}`],
++        artifactCategory: 'kubernetes-resource',
++        summary: `Background ${i}`,
++      }),
++    );
++
++    // One occurrence of the common term 'default'
++    const commonChunk = makeChunk({
++      id: 'idf-common-chunk',
++      content: 'pod running in default namespace',
++      identifiers: [],
++      artifactCategory: 'kubernetes-resource',
++      summary: 'Common term chunk',
++    });
++
++    // One occurrence of the rare term 'app-credentials' (only in this chunk → df = 1)
++    const rareChunk = makeChunk({
++      id: 'idf-rare-chunk',
++      content: 'secret app-credentials not found',
++      identifiers: [],
++      artifactCategory: 'kubernetes-resource',
++      summary: 'Rare term chunk',
++    });
++
++    const index = new LexicalSearchIndex();
++    index.build([...background, commonChunk, rareChunk]);
++
++    // topK=50 is larger than the corpus (17 chunks) so the target chunk is
++    // always present in results and the score is non-zero when it matches.
++    const defaultResults = index.search('default', 50);
++    const commonScore =
++      defaultResults.find((r) => r.chunk.id === 'idf-common-chunk')?.score ?? 0;
++
++    const rareResults = index.search('app-credentials', 50);
++    const rareScore =
++      rareResults.find((r) => r.chunk.id === 'idf-rare-chunk')?.score ?? 0;
++
++    // With BM25, the rare term has higher IDF → higher score per occurrence
++    // than the common term even though both appear exactly once in their chunk.
++    expect(rareScore).toBeGreaterThan(commonScore);
++  });
++
++  /**
++   * Length normalization test.
++   *
++   * BM25 penalizes long documents relative to the corpus average. A short chunk
++   * with exactly one match should rank above a very long chunk with one match,
++   * because the match density is higher in the short chunk.
++   */
++  it('BM25 length normalization: short chunk with 1 match ranks higher than long chunk with 1 match', () => {
++    // Short chunk: 2 tokens, one of which is the target
++    const shortChunk = makeChunk({
++      id: 'len-short-chunk',
++      content: 'crashloopbackoff detected',
++      identifiers: [],
++      artifactCategory: 'log',
++      summary: 'Short chunk',
++    });
++
++    // Long chunk: 101 tokens, only the last is the target
++    const longChunk = makeChunk({
++      id: 'len-long-chunk',
++      content: `${Array(100).fill('running').join(' ')} crashloopbackoff`,
++      identifiers: [],
++      artifactCategory: 'log',
++      summary: 'Long chunk',
++    });
++
++    const index = new LexicalSearchIndex();
++    index.build([shortChunk, longChunk]);
++
++    const results = index.search('crashloopbackoff', 10);
++    const shortResult = results.find((r) => r.chunk.id === 'len-short-chunk');
++    const longResult = results.find((r) => r.chunk.id === 'len-long-chunk');
++
++    expect(shortResult).toBeDefined();
++    expect(longResult).toBeDefined();
++    // Short chunk has higher match density → should rank first
++    expect(shortResult!.score).toBeGreaterThan(longResult!.score);
++  });
++});
++
+ // ---------------------------------------------------------------------------
+ // Constant used in tests (re-exported for test readability)
+ // ---------------------------------------------------------------------------
+diff --git a/src/ai/__tests__/summarizer.test.ts b/src/ai/__tests__/summarizer.test.ts
+index b9cfe3c..f704b76 100644
+--- a/src/ai/__tests__/summarizer.test.ts
++++ b/src/ai/__tests__/summarizer.test.ts
+@@ -1,6 +1,7 @@
+ import { describe, it, expect } from 'vitest';
+-import { summarizeResource, summarizeEvent, summarizeAnalyzer } from '../summarizer.js';
++import { summarizeResource, summarizeEvent, summarizeAnalyzer, summarizeHelmRelease } from '../summarizer.js';
+ import type { K8sResource, K8sEvent, AnalyzerResult } from '../../types/index.js';
++import type { HelmRelease } from '../../parsers/index.js';
+ 
+ // ---------------------------------------------------------------------------
+ // Fixtures
+@@ -397,3 +398,84 @@ describe('summarizeAnalyzer', () => {
+     expect(summary).toContain('WARN');
+   });
+ });
++
++// ---------------------------------------------------------------------------
++// summarizeHelmRelease
++// ---------------------------------------------------------------------------
++
++function makeHelmRelease(overrides: Partial<HelmRelease> = {}): HelmRelease {
++  return {
++    name: 'my-app',
++    namespace: 'default',
++    revision: 3,
++    status: 'deployed',
++    chart: 'my-chart',
++    chartVersion: '1.2.3',
++    appVersion: '2.0.0',
++    updatedAt: '2024-01-15T10:00:00Z',
++    values: { replicaCount: 2 },
++    ...overrides,
++  };
++}
++
++describe('summarizeHelmRelease', () => {
++  it('includes release name', () => {
++    const summary = summarizeHelmRelease(makeHelmRelease({ name: 'my-app' }));
++    expect(summary).toContain('my-app');
++  });
++
++  it('includes namespace', () => {
++    const summary = summarizeHelmRelease(makeHelmRelease({ namespace: 'production' }));
++    expect(summary).toContain('production');
++  });
++
++  it('includes chart name', () => {
++    const summary = summarizeHelmRelease(makeHelmRelease({ chart: 'my-chart' }));
++    expect(summary).toContain('my-chart');
++  });
++
++  it('includes chart version', () => {
++    const summary = summarizeHelmRelease(makeHelmRelease({ chartVersion: '1.2.3' }));
++    expect(summary).toContain('1.2.3');
++  });
++
++  it('includes status', () => {
++    const summary = summarizeHelmRelease(makeHelmRelease({ status: 'failed' }));
++    expect(summary).toContain('failed');
++  });
++
++  it('includes app version', () => {
++    const summary = summarizeHelmRelease(makeHelmRelease({ appVersion: '2.0.0' }));
++    expect(summary).toContain('2.0.0');
++  });
++
++  it('includes updatedAt timestamp', () => {
++    const summary = summarizeHelmRelease(makeHelmRelease({ updatedAt: '2024-01-15T10:00:00Z' }));
++    expect(summary).toContain('2024-01-15T10:00:00Z');
++  });
++
++  it('includes revision number', () => {
++    const summary = summarizeHelmRelease(makeHelmRelease({ revision: 5 }));
++    expect(summary).toContain('5');
++  });
++
++  it('includes values keys when present', () => {
++    const summary = summarizeHelmRelease(makeHelmRelease({ values: { replicaCount: 2, image: 'v1' } }));
++    expect(summary).toContain('replicaCount');
++  });
++
++  it('omits appVersion line when empty', () => {
++    const summary = summarizeHelmRelease(makeHelmRelease({ appVersion: '' }));
++    expect(summary).not.toContain('AppVersion:');
++  });
++
++  it('omits updatedAt line when empty', () => {
++    const summary = summarizeHelmRelease(makeHelmRelease({ updatedAt: '' }));
++    expect(summary).not.toContain('UpdatedAt:');
++  });
++
++  it('omits ValuesKeys line when values is empty', () => {
++    const summary = summarizeHelmRelease(makeHelmRelease({ values: {} }));
++    expect(summary).not.toContain('ValuesKeys:');
++  });
++});
+diff --git a/src/ai/chunk-indexer.ts b/src/ai/chunk-indexer.ts
+index 406335b..4bc0c41 100644
+--- a/src/ai/chunk-indexer.ts
++++ b/src/ai/chunk-indexer.ts
+@@ -1,8 +1,9 @@
+ import type { Chunk, ArtifactCategory } from '../types/index.js';
+ import type { K8sResource, K8sEvent, AnalyzerResult } from '../types/index.js';
++import type { HelmRelease } from '../parsers/index.js';
+ import type { InvestigatorContext } from '../investigators/types.js';
+ import { chunkLogFile, chunkResource, chunkAnalyzer } from '../graph/chunker.js';
+-import { summarizeResource, summarizeEvent, summarizeAnalyzer } from './summarizer.js';
++import { summarizeResource, summarizeEvent, summarizeAnalyzer, summarizeHelmRelease } from './summarizer.js';
+ import { extractTimestamps } from '../parsers/index.js';
+ 
+ // ---------------------------------------------------------------------------
+@@ -66,6 +67,53 @@ function getChunkPath(chunk: Chunk): string {
+   return chunk.artifactId;
+ }
+ 
++// ---------------------------------------------------------------------------
++// Network identifier extraction
++// ---------------------------------------------------------------------------
++
++/**
++ * Extracts network identifiers (hostnames, IPs, and URLs) from a plain string
++ * value.  Used to surface meaningful connection targets from ConfigMap data
++ * values and Pod `env[].value` literals so that lexical search can correlate
++ * mis-configured host references across resources and logs.
++ *
++ * Recognition rules (applied in order, first match wins):
++ * 1. **URL** (`scheme://[userinfo@]host[/…]`) — returns the bare hostname.
++ * 2. **host:port** — returns the hostname part.
++ * 3. **Bare dotted hostname** — returned as-is (must contain at least one `.`
++ *    and start with a letter to avoid port-only strings like `"5432"`).
++ *
++ * Returns an empty array for values that match none of the above (e.g. plain
++ * integers, short environment values like `"production"` or `"info"`).
++ */
++export function extractNetworkIdentifiers(value: string): string[] {
++  const trimmed = value.trim();
++  if (!trimmed) return [];
++
++  // 1. URL: scheme://[userinfo@]host[:port][/path][?query][#frag]
++  const urlMatch = trimmed.match(
++    /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/(?:[^@/?#]*@)?([a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?)/,
++  );
++  if (urlMatch?.[1]) {
++    return [urlMatch[1]];
++  }
++
++  // 2. host:port (e.g. "wrong-host.internal:5432", "cache-pod.svc:6379")
++  const hostPortMatch = trimmed.match(
++    /^([a-zA-Z](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?):\d+$/,
++  );
++  if (hostPortMatch?.[1]) {
++    return [hostPortMatch[1]];
++  }
++
++  // 3. Bare dotted hostname (e.g. "wrong-host.internal", "svc.cluster.local")
++  if (/^[a-zA-Z](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?\.[a-zA-Z][a-zA-Z0-9-]*$/.test(trimmed)) {
++    return [trimmed];
++  }
++
++  return [];
++}
++
+ // ---------------------------------------------------------------------------
+ // Identifier extractors
+ // ---------------------------------------------------------------------------
+@@ -132,12 +180,24 @@ function identifiersFromResource(resource: K8sResource): string[] {
+       if (isRecord(ef['configMapRef'])) ids.add(getString(ef['configMapRef']['name']));
+     }
+ 
+-    // env.valueFrom
++    // env entries: literal values (network identifiers) and valueFrom references
+     for (const ev of getArray(c['env'])) {
+-      if (!isRecord(ev) || !isRecord(ev['valueFrom'])) continue;
+-      const vf = ev['valueFrom'] as Record<string, unknown>;
+-      if (isRecord(vf['secretKeyRef'])) ids.add(getString(vf['secretKeyRef']['name']));
+-      if (isRecord(vf['configMapKeyRef'])) ids.add(getString(vf['configMapKeyRef']['name']));
++      if (!isRecord(ev)) continue;
++
++      // Literal env value — extract hostnames/URLs (e.g. API_URL=https://api.example.com)
++      const literalValue = getString(ev['value']);
++      if (literalValue) {
++        for (const id of extractNetworkIdentifiers(literalValue)) {
++          ids.add(id);
++        }
++      }
++
++      // valueFrom: reference to a Secret or ConfigMap key
++      if (isRecord(ev['valueFrom'])) {
++        const vf = ev['valueFrom'] as Record<string, unknown>;
++        if (isRecord(vf['secretKeyRef'])) ids.add(getString(vf['secretKeyRef']['name']));
++        if (isRecord(vf['configMapKeyRef'])) ids.add(getString(vf['configMapKeyRef']['name']));
++      }
+     }
+   }
+ 
+@@ -181,11 +241,18 @@ function identifiersFromResource(resource: K8sResource): string[] {
+   const phase = getString(status['phase']);
+   if (phase) ids.add(phase);
+ 
+-  // ConfigMap keys (useful for spotting typos in data values)
++  // ConfigMap: index both keys and network-identifiable values.
++  // Keys are useful for key-name matching; values (hostnames, URLs) surface
++  // misconfigured endpoints so lexical search can correlate them with log errors.
+   const raw = resource as unknown as Record<string, unknown>;
+   if (resource.kind === 'ConfigMap' && isRecord(raw['data'])) {
+-    for (const key of Object.keys(raw['data'] as Record<string, unknown>)) {
++    for (const [key, value] of Object.entries(raw['data'] as Record<string, unknown>)) {
+       ids.add(key);
++      if (typeof value === 'string') {
++        for (const id of extractNetworkIdentifiers(value)) {
++          ids.add(id);
++        }
++      }
+     }
+   }
+ 
+@@ -216,12 +283,29 @@ function identifiersFromEvent(event: K8sEvent): string[] {
+ function identifiersFromLogContent(content: string, path: string): string[] {
+   const ids = new Set<string>();
+ 
+-  // Path-based: extract likely pod/container name from path segment
+-  const pathSegments = path.replace(/\\/g, '/').split('/');
++  // Path-based: extract likely pod/container name from path segments.
++  // Strip .log/.txt extensions from filename segments before adding so that
++  // paths like `logs/app/app-pod.log` correctly yield `app-pod` as an
++  // identifier rather than being silently dropped.
++  const normalizedPath = path.replace(/\\/g, '/');
++  const pathSegments = normalizedPath.split('/');
+   for (const seg of pathSegments) {
+-    if (seg && seg !== 'logs' && !seg.endsWith('.log') && !seg.endsWith('.txt')) {
+-      ids.add(seg);
+-    }
++    if (!seg || seg === 'logs') continue;
++    let normalized = seg;
++    if (normalized.endsWith('.log')) normalized = normalized.slice(0, -4);
++    else if (normalized.endsWith('.txt')) normalized = normalized.slice(0, -4);
++    if (normalized) ids.add(normalized);
++  }
++
++  // For real Troubleshoot bundle paths of the form
++  // <prefix>/logs/<ns>/<pod>/<container>.log, explicitly add the pod name
++  // (grandparent directory of the container log file) as a high-confidence
++  // identifier.
++  const grandparentMatch = normalizedPath.match(
++    /(?:^|\/)logs\/[^/]+\/([^/]+)\/[^/]+\.(?:log|txt)$/,
++  );
++  if (grandparentMatch?.[1]) {
++    ids.add(grandparentMatch[1]);
+   }
+ 
+   // Common K8s error reasons that appear in logs
+@@ -242,6 +326,25 @@ function identifiersFromLogContent(content: string, path: string): string[] {
+   return [...ids];
+ }
+ 
++/**
++ * Extracts identifiers from a Helm release: release name, namespace, chart,
++ * chart version, app version, and status.  The status (e.g. `failed`,
++ * `deployed`, `pending-install`) is a high-signal diagnostic identifier.
++ */
++export function identifiersFromHelmRelease(release: HelmRelease): string[] {
++  const ids = new Set<string>();
++
++  ids.add(release.name);
++  if (release.namespace) ids.add(release.namespace);
++  if (release.chart) ids.add(release.chart);
++  if (release.chartVersion) ids.add(release.chartVersion);
++  if (release.appVersion) ids.add(release.appVersion);
++  if (release.status) ids.add(release.status);
++
++  ids.delete('');
++  return [...ids];
++}
++
+ /**
+  * Extracts identifiers from analyzer chunk content and name.
+  */
+@@ -341,6 +444,34 @@ function augmentAnalyzerChunk(chunk: Chunk, result: AnalyzerResult): IndexedChun
+   };
+ }
+ 
++function augmentHelmReleaseChunk(release: HelmRelease, artifactId: string): IndexedChunk {
++  const summary = summarizeHelmRelease(release);
++  const identifiers = identifiersFromHelmRelease(release);
++  const content = summary;
++  const lines = content.split('\n');
++
++  return {
++    id: `helm-release:${release.namespace}:${release.name}`,
++    artifactId,
++    content,
++    startLine: 1,
++    endLine: lines.length,
++    summary,
++    identifiers,
++    namespace: release.namespace,
++    artifactCategory: 'helm-release',
++    metadata: {
++      path: artifactId,
++      category: 'helm-release',
++      name: release.name,
++      namespace: release.namespace,
++      chart: release.chart,
++      chartVersion: release.chartVersion,
++      status: release.status,
++    },
++  };
++}
++
+ function augmentLogChunk(chunk: Chunk): IndexedChunk {
+   const path = getChunkPath(chunk);
+   const identifiers = identifiersFromLogContent(chunk.content, path);
+@@ -383,8 +514,12 @@ export function buildChunkIndex(context: InvestigatorContext): IndexedChunk[] {
+   // ── K8s resources ──────────────────────────────────────────────────────────
+   for (const resource of context.resources) {
+     const ns = resource.metadata.namespace ?? 'default';
+-    const path = `cluster-resources/${resource.kind.toLowerCase()}/${ns}/${resource.metadata.name}.json`;
+-    const baseChunk = chunkResource(resource, path);
++    // Use the actual source file path when available (populated by the pipeline
++    // from the bundle manifest). Fall back to a constructed path for tests /
++    // contexts that do not supply source-file tracking.
++    const fallbackPath = `cluster-resources/${resource.kind.toLowerCase()}/${ns}/${resource.metadata.name}.json`;
++    const resourcePath = context.resourceSourceFiles?.get(resource) ?? fallbackPath;
++    const baseChunk = chunkResource(resource, resourcePath);
+     chunks.push(augmentResourceChunk(baseChunk, resource));
+   }
+ 
+@@ -409,5 +544,15 @@ export function buildChunkIndex(context: InvestigatorContext): IndexedChunk[] {
+     chunks.push(augmentAnalyzerChunk(baseChunk, result));
+   }
+ 
++  // ── Helm releases ──────────────────────────────────────────────────────────
++  if (context.helmReleases) {
++    for (const release of context.helmReleases) {
++      // Use a deterministic artifact path derived from namespace and name so
++      // the LLM can cite a stable, meaningful location.
++      const artifactId = `helm/${release.namespace}/${release.name}`;
++      chunks.push(augmentHelmReleaseChunk(release, artifactId));
++    }
++  }
++
+   return chunks;
+ }
+diff --git a/src/ai/index.ts b/src/ai/index.ts
+index 4730acd..a4faf7e 100644
+--- a/src/ai/index.ts
++++ b/src/ai/index.ts
+@@ -1,7 +1,7 @@
+ export * from './config.js';
+ export { CassetteRecorder, cassetteSeedKey, getRecorderMode } from './recorder.js';
+ export type { RecorderMode, Cassette, CassetteStore } from './recorder.js';
+-export { summarizeResource, summarizeEvent, summarizeAnalyzer } from './summarizer.js';
++export { summarizeResource, summarizeEvent, summarizeAnalyzer, summarizeHelmRelease } from './summarizer.js';
+ export { buildChunkIndex } from './chunk-indexer.js';
+ export type { IndexedChunk } from './chunk-indexer.js';
+ export { LexicalSearchIndex } from './lexical-search.js';
+diff --git a/src/ai/lexical-search.ts b/src/ai/lexical-search.ts
+index 904726b..137c057 100644
+--- a/src/ai/lexical-search.ts
++++ b/src/ai/lexical-search.ts
+@@ -8,8 +8,21 @@ import type { IndexedChunk } from './chunk-indexer.js';
+ const WEIGHT_IDENTIFIER = 3.0;
+ /** Namespace match (query token equals chunk.namespace). */
+ const WEIGHT_NAMESPACE = 1.5;
+-/** Content token match (query token appears in chunk.content). */
+-const WEIGHT_CONTENT = 1.0;
++/**
++ * Fallback content weight used for substring-expansion matches whose indexed
++ * term differs from the query token (so BM25 parameters cannot be resolved).
++ * Kept at 1.0 to preserve pre-BM25 behaviour for those edge cases.
++ */
++const WEIGHT_CONTENT_FALLBACK = 1.0;
++
++// ---------------------------------------------------------------------------
++// BM25 parameters
++// ---------------------------------------------------------------------------
++
++/** BM25 term-frequency saturation parameter. */
++const BM25_K1 = 1.2;
++/** BM25 length-normalisation parameter. */
++const BM25_B = 0.75;
+ 
+ /** Minimum token length for content indexing and querying. */
+ const MIN_TOKEN_LEN = 2;
+@@ -51,6 +64,11 @@ const K8S_ERROR_REASONS_LOWER = new Map(
+  * Common English and K8s-context words that appear in hypothesis strings but
+  * are NOT Kubernetes resource identifiers. Filters these from
+  * `extractQueryIdentifiers` so they don't add noise to identifier lookups.
++ *
++ * Also used in {@link getContentMatches} to suppress noisy substring
++ * expansion: stop words that are short prefixes of longer K8s tokens
++ * (e.g. `'secret'` → `'secretkeyref'`) are only matched exactly, not via
++ * substring expansion.
+  */
+ const K8S_STOP_WORDS: ReadonlySet<string> = new Set([
+   // English connectives
+@@ -71,6 +89,44 @@ const K8S_STOP_WORDS: ReadonlySet<string> = new Set([
+   'missing', 'invalid', 'wrong', 'unreachable',
+ ]);
+ 
++/**
++ * Stop-word set used **exclusively** by the RFC-1123 name extraction step
++ * (step 4 of {@link extractQueryIdentifiers}).
++ *
++ * This is a strict subset of {@link K8S_STOP_WORDS}: the high-signal
++ * diagnostic terms that double as searchable K8s identifiers —
++ * `secret`, `service`, `configmap`, `missing`, `failed`, `failure`,
++ * `unreachable` — are intentionally **absent** so that queries like
++ * `"missing secret app-credentials"` correctly extract all three tokens
++ * as identifier candidates rather than silently discarding the first two.
++ *
++ * {@link K8S_STOP_WORDS} (which retains those terms) is still consulted
++ * inside {@link getContentMatches} to suppress noisy substring expansion
++ * (e.g. preventing `'secret'` from matching `'secretkeyref'` in unrelated
++ * resource JSON).
++ */
++const RFC1123_STOP_WORDS: ReadonlySet<string> = new Set([
++  // English connectives
++  'in', 'is', 'are', 'the', 'a', 'an', 'of', 'for', 'with', 'and', 'or',
++  'not', 'has', 'have', 'been', 'being', 'to', 'from', 'on', 'at', 'by',
++  'due', 'via',
++  // K8s structural keywords (non-diagnostic)
++  'pod', 'pods', 'log', 'logs', 'file', 'files', 'check', 'status', 'state',
++  'phase', 'reason', 'message', 'type', 'name', 'namespace', 'container',
++  'containers', 'image', 'images', 'event', 'events', 'resource', 'resources',
++  'cluster', 'node', 'nodes', 'deployment', 'deployments',
++  'running', 'pending',
++  // Common severity / level words
++  'high', 'low', 'medium', 'critical', 'severity', 'info', 'warn', 'error',
++  'warning',
++  // K8s lifecycle verbs (non-diagnostic)
++  'restart', 'restarts', 'back', 'off', 'loop', 'crash', 'crashloop',
++  'invalid', 'wrong',
++  // NOTE: 'secret', 'secrets', 'service', 'services', 'configmap',
++  // 'configmaps', 'missing', 'failed', 'failure', 'unreachable' are
++  // intentionally OMITTED so they can be extracted as identifier candidates.
++]);
++
+ // ---------------------------------------------------------------------------
+ // ScoredChunk
+ // ---------------------------------------------------------------------------
+@@ -202,6 +258,17 @@ export class LexicalSearchIndex {
+   /** content token → (chunk array index → token frequency in that chunk). */
+   private contentIndex = new Map<string, Map<number, number>>();
+ 
++  // ── BM25 statistics (computed during build) ──────────────────────────────
++
++  /** Total number of indexed chunks (N in BM25 literature). */
++  private bm25N = 0;
++  /** Average document length in content tokens across all chunks. */
++  private bm25Avgdl = 1;
++  /** term → number of chunks containing that term (document frequency). */
++  private bm25Df = new Map<string, number>();
++  /** Per-chunk content token counts (indexed parallel to `chunks`). */
++  private bm25DocLengths: number[] = [];
++
+   // ── build ────────────────────────────────────────────────────────────────
+ 
+   /**
+@@ -219,6 +286,7 @@ export class LexicalSearchIndex {
+     this.identifierIndex.clear();
+     this.namespaceIndex.clear();
+     this.contentIndex.clear();
++    this.bm25DocLengths = [];
+ 
+     for (let i = 0; i < chunks.length; i++) {
+       const chunk = chunks[i]!;
+@@ -234,8 +302,12 @@ export class LexicalSearchIndex {
+         addToIndex(this.namespaceIndex, chunk.namespace.toLowerCase(), i);
+       }
+ 
++      // Tokenise once; reuse tokens for both doc-length tracking and indexing.
++      const tokens = tokenizeContent(chunk.content);
++      this.bm25DocLengths.push(tokens.length);
++
+       const tokenCounts = new Map<string, number>();
+-      for (const token of tokenizeContent(chunk.content)) {
++      for (const token of tokens) {
+         tokenCounts.set(token, (tokenCounts.get(token) ?? 0) + 1);
+       }
+ 
+@@ -243,6 +315,16 @@ export class LexicalSearchIndex {
+         addToCountIndex(this.contentIndex, token, i, count);
+       }
+     }
++
++    // ── BM25 corpus statistics ────────────────────────────────────────────
++    this.bm25N = chunks.length;
++    const totalLen = this.bm25DocLengths.reduce((s, l) => s + l, 0);
++    this.bm25Avgdl = this.bm25N > 0 ? totalLen / this.bm25N : 1;
++
++    this.bm25Df.clear();
++    for (const [term, posting] of this.contentIndex) {
++      this.bm25Df.set(term, posting.size);
++    }
+   }
+ 
+   // ── search ───────────────────────────────────────────────────────────────
+@@ -301,7 +383,7 @@ export class LexicalSearchIndex {
+ 
+     for (const token of queryTokens) {
+       for (const [idx, count] of this.getContentMatches(token)) {
+-        bump(idx, WEIGHT_CONTENT * count, 'contentHits', count);
++        bump(idx, this.bm25Score(token, idx, count), 'contentHits', count);
+       }
+     }
+ 
+@@ -350,7 +432,7 @@ export class LexicalSearchIndex {
+     const k8sNamePattern = /\b([a-z][a-z0-9-]{1,62})\b/g;
+     for (const match of hypothesis.matchAll(k8sNamePattern)) {
+       const token = match[1]!;
+-      if (!K8S_STOP_WORDS.has(token)) {
++      if (!RFC1123_STOP_WORDS.has(token)) {
+         ids.add(token);
+       }
+     }
+@@ -366,6 +448,14 @@ export class LexicalSearchIndex {
+    * Exact matches are used first. When the query token is only a partial term,
+    * the search deterministically expands to indexed tokens that contain the
+    * query token as a substring (e.g. `auth` → `authentication`).
++   *
++   * Substring expansion is suppressed for tokens that are in
++   * {@link K8S_STOP_WORDS}.  These are short, generic words that produce
++   * excessive false-positive matches via substring expansion
++   * (e.g. `'secret'` matching every resource that contains `'secretkeyref'`
++   * or `'secretref'`).  Exact matches are still performed so that documents
++   * which contain the literal word (e.g. an event message that says
++   * `"secret app-credentials not found"`) are still surfaced.
+    */
+   private getContentMatches(queryToken: string): Map<number, number> {
+     const matches = new Map<number, number>();
+@@ -375,6 +465,11 @@ export class LexicalSearchIndex {
+       mergeCounts(matches, exact);
+     }
+ 
++    // Suppress noisy substring expansion for stop-word query tokens.
++    if (K8S_STOP_WORDS.has(queryToken)) {
++      return matches;
++    }
++
+     for (const [indexedToken, posting] of this.contentIndex) {
+       if (indexedToken === queryToken) continue;
+       if (!indexedToken.includes(queryToken)) continue;
+@@ -383,4 +478,35 @@ export class LexicalSearchIndex {
+ 
+     return matches;
+   }
++
++  /**
++   * Computes the BM25 score contribution for a single query term matching a
++   * specific chunk.
++   *
++   * Formula: `IDF(t) × (tf × (k1+1)) / (tf + k1 × (1 - b + b × |d|/avgdl))`
++   * where `IDF(t) = ln((N - df + 0.5) / (df + 0.5) + 1)`.
++   *
++   * If `queryToken` is not in the vocabulary (i.e. it matched via substring
++   * expansion and has no direct IDF entry), falls back to
++   * {@link WEIGHT_CONTENT_FALLBACK} × `tf` to preserve pre-BM25 behaviour
++   * for those edge cases.
++   */
++  private bm25Score(queryToken: string, chunkIdx: number, tf: number): number {
++    const df = this.bm25Df.get(queryToken);
++    if (df === undefined) {
++      // Substring-expansion match: query token not directly in index.
++      return WEIGHT_CONTENT_FALLBACK * tf;
++    }
++
++    const N = this.bm25N;
++    if (N === 0) return 0;
++
++    const idf = Math.log((N - df + 0.5) / (df + 0.5) + 1);
++    const dl = this.bm25DocLengths[chunkIdx] ?? 1;
++    const avgdl = this.bm25Avgdl;
++    const tfNorm =
++      (tf * (BM25_K1 + 1)) /
++      (tf + BM25_K1 * (1 - BM25_B + BM25_B * (dl / avgdl)));
++    return idf * tfNorm;
++  }
+ }
+diff --git a/src/ai/summarizer.ts b/src/ai/summarizer.ts
+index 2926518..837842d 100644
+--- a/src/ai/summarizer.ts
++++ b/src/ai/summarizer.ts
+@@ -1,4 +1,5 @@
+ import type { K8sResource, K8sEvent, AnalyzerResult } from '../types/index.js';
++import type { HelmRelease } from '../parsers/index.js';
+ import { extractPodStatus, getContainerErrors } from '../parsers/index.js';
+ 
+ // ---------------------------------------------------------------------------
+@@ -391,3 +392,38 @@ export function summarizeAnalyzer(result: AnalyzerResult): string {
+ 
+   return lines.join('\n');
+ }
++
++// ---------------------------------------------------------------------------
++// Public: summarizeHelmRelease
++// ---------------------------------------------------------------------------
++
++/**
++ * Produces a human-readable summary of a Helm release.
++ *
++ * Includes release name, namespace, chart, chart version, app version,
++ * status, and last updated timestamp.  Does not include raw values — those
++ * are high-signal but potentially large and are better indexed separately.
++ */
++export function summarizeHelmRelease(release: HelmRelease): string {
++  const lines: string[] = [
++    `HelmRelease: ${release.name} (namespace: ${release.namespace})`,
++    `Chart: ${release.chart}@${release.chartVersion}`,
++    `Status: ${release.status}`,
++    `Revision: ${release.revision}`,
++  ];
++
++  if (release.appVersion) {
++    lines.push(`AppVersion: ${release.appVersion}`);
++  }
++
++  if (release.updatedAt) {
++    lines.push(`UpdatedAt: ${release.updatedAt}`);
++  }
++
++  const valueKeys = Object.keys(release.values);
++  if (valueKeys.length > 0) {
++    lines.push(`ValuesKeys: ${valueKeys.join(', ')}`);
++  }
++
++  return lines.join('\n');
++}
+diff --git a/src/cli/__tests__/runner.test.ts b/src/cli/__tests__/runner.test.ts
+index 7652ccb..4528e1a 100644
+--- a/src/cli/__tests__/runner.test.ts
++++ b/src/cli/__tests__/runner.test.ts
+@@ -48,7 +48,6 @@ function makePipelineResult(): PipelineResult {
+         log: 0,
+         'kubernetes-resource': 0,
+         event: 0,
+-        config: 0,
+         'cluster-info': 0,
+         'helm-release': 0,
+         unknown: 0,
+diff --git a/src/graph/__tests__/resource-graph.test.ts b/src/graph/__tests__/resource-graph.test.ts
+index 8b3666c..8d507e2 100644
+--- a/src/graph/__tests__/resource-graph.test.ts
++++ b/src/graph/__tests__/resource-graph.test.ts
+@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
+ import {
+   buildResourceGraph,
+   getNeighborhood,
++  getNeighborhoodWithDepth,
+   getRelatedChunks,
+   parseSeedSource,
+ } from '../resource-graph.js';
+@@ -304,6 +305,83 @@ describe('getNeighborhood', () => {
+   });
+ });
+ 
++// ---------------------------------------------------------------------------
++// getNeighborhoodWithDepth
++// ---------------------------------------------------------------------------
++
++describe('getNeighborhoodWithDepth', () => {
++  it('returns just the source node with depth 0 at depth=0', () => {
++    const pod = makePod('my-pod', 'default', { secretNames: ['my-secret'] });
++    const graph = buildResourceGraph([pod], []);
++
++    const result = getNeighborhoodWithDepth(graph, 'Pod', 'my-pod', 'default', 0);
++    expect(result).toHaveLength(1);
++    expect(result[0]?.node.name).toBe('my-pod');
++    expect(result[0]?.depth).toBe(0);
++  });
++
++  it('returns direct neighbors with depth 1 at depth=1', () => {
++    const pod = makePod('my-pod', 'default', { secretNames: ['my-secret'] });
++    const graph = buildResourceGraph([pod], []);
++
++    const result = getNeighborhoodWithDepth(graph, 'Pod', 'my-pod', 'default', 1);
++    const podEntry = result.find((e) => e.node.name === 'my-pod');
++    const secretEntry = result.find((e) => e.node.name === 'my-secret');
++    expect(podEntry?.depth).toBe(0);
++    expect(secretEntry?.depth).toBe(1);
++  });
++
++  it('returns two-hop neighbors with depth 2 for owner → pod → secret', () => {
++    const pod = makePod('app-pod', 'default', {
++      secretNames: ['app-secret'],
++      ownerKind: 'ReplicaSet',
++      ownerName: 'app-rs',
++    });
++    const rs = makeDeployment('app-rs');
++    rs.kind = 'ReplicaSet';
++    const graph = buildResourceGraph([pod, rs], []);
++
++    // From ReplicaSet: pod is depth-1, secret is depth-2
++    const result = getNeighborhoodWithDepth(graph, 'ReplicaSet', 'app-rs', 'default', 2);
++    const rsEntry = result.find((e) => e.node.name === 'app-rs');
++    const podEntry = result.find((e) => e.node.name === 'app-pod');
++    const secretEntry = result.find((e) => e.node.name === 'app-secret');
++    expect(rsEntry?.depth).toBe(0);
++    expect(podEntry?.depth).toBe(1);
++    expect(secretEntry?.depth).toBe(2);
++  });
++
++  it('returns empty array for an unknown node', () => {
++    const graph = buildResourceGraph([], []);
++    const result = getNeighborhoodWithDepth(graph, 'Pod', 'nonexistent', 'default', 2);
++    expect(result).toHaveLength(0);
++  });
++
++  it('does not revisit nodes — each node appears exactly once', () => {
++    const graph = buildResourceGraph([], []);
++    graph.nodes.set('Pod:default/pod-a', { kind: 'Pod', name: 'pod-a', namespace: 'default' });
++    graph.nodes.set('ConfigMap:default/cm-a', { kind: 'ConfigMap', name: 'cm-a', namespace: 'default' });
++    graph.edges.push({
++      sourceKind: 'Pod', sourceName: 'pod-a', sourceNamespace: 'default',
++      targetKind: 'ConfigMap', targetName: 'cm-a', targetNamespace: 'default',
++      relationshipType: 'references-configmap',
++    });
++    graph.edges.push({
++      sourceKind: 'ConfigMap', sourceName: 'cm-a', sourceNamespace: 'default',
++      targetKind: 'Pod', targetName: 'pod-a', targetNamespace: 'default',
++      relationshipType: 'references-configmap',
++    });
++
++    const result = getNeighborhoodWithDepth(graph, 'Pod', 'pod-a', 'default', 10);
++    const podEntries = result.filter((e) => e.node.name === 'pod-a');
++    const cmEntries = result.filter((e) => e.node.name === 'cm-a');
++    expect(podEntries).toHaveLength(1);
++    expect(cmEntries).toHaveLength(1);
++    expect(podEntries[0]?.depth).toBe(0);
++    expect(cmEntries[0]?.depth).toBe(1);
++  });
++});
++
+ // ---------------------------------------------------------------------------
+ // parseSeedSource
+ // ---------------------------------------------------------------------------
+@@ -385,7 +463,7 @@ describe('getRelatedChunks', () => {
+     };
+ 
+     const result = getRelatedChunks(graph, seed, chunkIndex);
+-    const ids = result.map((c) => c.id);
++    const ids = result.map((c) => c.chunk.id);
+     expect(ids).toContain('chunk-pod');
+     expect(ids).toContain('chunk-secret'); // neighbor via graph edge
+     expect(ids).not.toContain('chunk-unrelated');
+@@ -410,7 +488,7 @@ describe('getRelatedChunks', () => {
+     };
+ 
+     const result = getRelatedChunks(graph, seed, chunkIndex);
+-    const ids = result.map((c) => c.id);
++    const ids = result.map((c) => c.chunk.id);
+     expect(ids).toContain('chunk-pod');
+     expect(ids).toContain('chunk-secret');
+     expect(ids).not.toContain('chunk-same-namespace-noise');
+@@ -444,7 +522,7 @@ describe('getRelatedChunks', () => {
+ 
+     const result = getRelatedChunks(graph, seed, chunkIndex);
+     expect(result).toHaveLength(1);
+-    expect(result[0]?.artifactId).toBe(logPath);
++    expect(result[0]?.chunk.artifactId).toBe(logPath);
+   });
+ 
+   it('returns empty array for unrecognised seed source', () => {
+@@ -479,4 +557,403 @@ describe('getRelatedChunks', () => {
+     const result = getRelatedChunks(graph, seed, chunkIndex);
+     expect(result).toHaveLength(1);
+   });
++
++  // ── Hop-distance scoring tests ──────────────────────────────────────────
++
++  it('scores the seed pod chunk as 1.0 (depth-0)', () => {
++    const pod = makePod('app-pod', 'default');
++    const graph = buildResourceGraph([pod], []);
++
++    // A chunk whose metadata identifies it as the Pod resource itself
++    const podChunk: IndexedChunk = {
++      id: 'chunk-pod',
++      artifactId: 'cluster-resources/pod/default/app-pod.json',
++      content: 'name: app-pod',
++      startLine: 1,
++      endLine: 5,
++      summary: 'Pod app-pod',
++      identifiers: ['app-pod'],
++      namespace: 'default',
++      artifactCategory: 'kubernetes-resource',
++      metadata: { kind: 'Pod', name: 'app-pod', namespace: 'default' },
++    };
++
++    const seed = {
++      id: 'seed:pod:0',
++      hypothesis: 'Pod app-pod is crashing',
++      source: 'pod:default/app-pod',
++      category: 'kubernetes' as const,
++      priority: 90,
++    };
++
++    const result = getRelatedChunks(graph, seed, [podChunk]);
++    const sc = result.find((r) => r.chunk.id === 'chunk-pod');
++    expect(sc).toBeDefined();
++    expect(sc?.score).toBe(1.0);
++  });
++
++  it('scores depth-1 neighbor chunks as 0.7', () => {
++    const pod = makePod('app-pod', 'default', { secretNames: ['db-secret'] });
++    const secret = makeSecret('db-secret', 'default');
++    const graph = buildResourceGraph([pod, secret], []);
++
++    const secretChunk: IndexedChunk = {
++      id: 'chunk-secret',
++      artifactId: 'cluster-resources/secret/default/db-secret.json',
++      content: 'name: db-secret',
++      startLine: 1,
++      endLine: 5,
++      summary: 'Secret db-secret',
++      identifiers: ['db-secret'],
++      namespace: 'default',
++      artifactCategory: 'kubernetes-resource',
++      metadata: { kind: 'Secret', name: 'db-secret', namespace: 'default' },
++    };
++
++    const seed = {
++      id: 'seed:pod:0',
++      hypothesis: 'Pod app-pod is crashing',
++      source: 'pod:default/app-pod',
++      category: 'kubernetes' as const,
++      priority: 90,
++    };
++
++    const result = getRelatedChunks(graph, seed, [secretChunk]);
++    const sc = result.find((r) => r.chunk.id === 'chunk-secret');
++    expect(sc).toBeDefined();
++    expect(sc?.score).toBe(0.7);
++  });
++
++  it('scores depth-2 neighbor chunks as 0.4', () => {
++    // Deployment → ReplicaSet → Pod chain.
++    // From the Pod seed, the Deployment is at depth-2.
++    const pod = makePod('app-pod', 'default', {
++      ownerKind: 'ReplicaSet',
++      ownerName: 'app-rs',
++    });
++    const rs = makeDeployment('app-rs');
++    rs.kind = 'ReplicaSet';
++    const deploy = makeDeployment('app-deploy');
++    // RS owned by Deployment via ownerReferences
++    (rs.metadata as unknown as Record<string, unknown>)['ownerReferences'] = [
++      { kind: 'Deployment', name: 'app-deploy', apiVersion: 'apps/v1' },
++    ];
++    const graph = buildResourceGraph([pod, rs, deploy], []);
++
++    const deployChunk: IndexedChunk = {
++      id: 'chunk-deploy',
++      artifactId: 'cluster-resources/deployment/default/app-deploy.json',
++      content: 'name: app-deploy',
++      startLine: 1,
++      endLine: 5,
++      summary: 'Deployment app-deploy',
++      identifiers: ['app-deploy'],
++      namespace: 'default',
++      artifactCategory: 'kubernetes-resource',
++      metadata: { kind: 'Deployment', name: 'app-deploy', namespace: 'default' },
++    };
++
++    const seed = {
++      id: 'seed:pod:0',
++      hypothesis: 'Pod app-pod is crashing',
++      source: 'pod:default/app-pod',
++      category: 'kubernetes' as const,
++      priority: 90,
++    };
++
++    const result = getRelatedChunks(graph, seed, [deployChunk]);
++    const sc = result.find((r) => r.chunk.id === 'chunk-deploy');
++    expect(sc).toBeDefined();
++    expect(sc?.score).toBe(0.4);
++  });
++
++  it('scores log chunks matched by direct path as 1.0', () => {
++    const graph = buildResourceGraph([], []);
++    const logPath = 'logs/default/app-pod/app.log';
++
++    const logChunk: IndexedChunk = {
++      id: `${logPath}:1-50`,
++      artifactId: logPath,
++      content: 'some log content',
++      startLine: 1,
++      endLine: 50,
++      summary: 'Log chunk',
++      identifiers: [],
++      artifactCategory: 'log',
++    };
++
++    const seed = {
++      id: 'seed:log:0',
++      hypothesis: 'Log file has errors',
++      source: `log:${logPath}`,
++      category: 'log' as const,
++      priority: 45,
++    };
++
++    const result = getRelatedChunks(graph, seed, [logChunk]);
++    expect(result).toHaveLength(1);
++    expect(result[0]?.score).toBe(1.0);
++  });
++
++  it('takes the best (highest) score when a chunk qualifies via multiple depths', () => {
++    // chunk-multi has identifier 'app-pod' (depth-0) AND 'db-secret' (depth-1)
++    // It should receive the higher score (1.0) not the lower one (0.7)
++    const pod = makePod('app-pod', 'default', { secretNames: ['db-secret'] });
++    const graph = buildResourceGraph([pod], []);
++
++    const multiChunk: IndexedChunk = {
++      id: 'chunk-multi',
++      artifactId: 'logs/default/app-pod/app.log',
++      content: 'app-pod connected to db-secret',
++      startLine: 1,
++      endLine: 5,
++      summary: 'Multi-identifier chunk',
++      identifiers: ['app-pod', 'db-secret'],
++      artifactCategory: 'log',
++    };
++
++    const seed = {
++      id: 'seed:pod:0',
++      hypothesis: 'Pod app-pod is crashing',
++      source: 'pod:default/app-pod',
++      category: 'kubernetes' as const,
++      priority: 90,
++    };
++
++    const result = getRelatedChunks(graph, seed, [multiChunk]);
++    const sc = result.find((r) => r.chunk.id === 'chunk-multi');
++    expect(sc).toBeDefined();
++    expect(sc?.score).toBe(1.0); // best of depth-0 (1.0) and depth-1 (0.7)
++  });
++
++  // ── Analyzer seed — entity extraction + graph walk ──────────────────────
++
++  it('Analyzer seed extracts entity names from hypothesis and walks Pod graph neighborhood', () => {
++    const pod = makePod('app-pod', 'default', { secretNames: ['db-secret'] });
++    const graph = buildResourceGraph([pod], []);
++
++    const podChunk: IndexedChunk = {
++      id: 'chunk-pod',
++      artifactId: 'cluster-resources/pod/default/app-pod.json',
++      content: 'name: app-pod',
++      startLine: 1,
++      endLine: 5,
++      summary: 'Pod app-pod',
++      identifiers: ['app-pod'],
++      namespace: 'default',
++      artifactCategory: 'kubernetes-resource',
++      metadata: { kind: 'Pod', name: 'app-pod', namespace: 'default' },
++    };
++    const secretChunk: IndexedChunk = {
++      id: 'chunk-secret',
++      artifactId: 'cluster-resources/secret/default/db-secret.json',
++      content: 'name: db-secret',
++      startLine: 1,
++      endLine: 5,
++      summary: 'Secret db-secret',
++      identifiers: ['db-secret'],
++      namespace: 'default',
++      artifactCategory: 'kubernetes-resource',
++      metadata: { kind: 'Secret', name: 'db-secret', namespace: 'default' },
++    };
++
++    const seed = {
++      id: 'seed:analyzer:0',
++      hypothesis: 'Pod app-pod is crashing due to missing credentials',
++      source: 'analyzer:check-app-pod',
++      category: 'kubernetes' as const,
++      priority: 80,
++    };
++
++    const result = getRelatedChunks(graph, seed, [podChunk, secretChunk]);
++    const ids = result.map((c) => c.chunk.id);
++    // Pod itself is depth-0
++    expect(ids).toContain('chunk-pod');
++    // db-secret is a direct graph neighbor of app-pod (depth-1)
++    expect(ids).toContain('chunk-secret');
++  });
++
++  it('Analyzer seed extracts entity names from analyzer chunk content (not just hypothesis)', () => {
++    const pod = makePod('app-pod', 'default');
++    const graph = buildResourceGraph([pod], []);
++
++    // Analyzer chunk whose content mentions 'app-pod' in the message
++    const analyzerChunk: IndexedChunk = {
++      id: 'analyzer:check-app',
++      artifactId: 'check-app',
++      content: "[ERROR] App Pod Failing\nPod 'app-pod' in namespace 'default' is in CrashLoopBackOff.",
++      startLine: 1,
++      endLine: 2,
++      summary: 'Analyzer: App Pod Failing',
++      identifiers: ['check-app', 'error'],
++      artifactCategory: 'analyzer',
++      metadata: { name: 'check-app', category: 'analyzer' },
++    };
++    const podChunk: IndexedChunk = {
++      id: 'chunk-pod',
++      artifactId: 'cluster-resources/pod/default/app-pod.json',
++      content: 'name: app-pod',
++      startLine: 1,
++      endLine: 5,
++      summary: 'Pod app-pod',
++      identifiers: ['app-pod'],
++      namespace: 'default',
++      artifactCategory: 'kubernetes-resource',
++      metadata: { kind: 'Pod', name: 'app-pod', namespace: 'default' },
++    };
++
++    const seed = {
++      id: 'seed:analyzer:0',
++      hypothesis: 'App Pod Failing',
++      source: 'analyzer:check-app',
++      category: 'kubernetes' as const,
++      priority: 80,
++    };
++
++    const result = getRelatedChunks(graph, seed, [analyzerChunk, podChunk]);
++    const ids = result.map((c) => c.chunk.id);
++    // Analyzer chunk matched directly
++    expect(ids).toContain('analyzer:check-app');
++    // Pod chunk found via entity name extracted from analyzer content
++    expect(ids).toContain('chunk-pod');
++  });
++
++  it('Analyzer seed fallback: finds unhealthy pods when no entity names resolve to graph nodes', () => {
++    // Generic hypothesis with no specific resource names
++    const pod = makePod('crash-pod', 'default', { secretNames: ['some-secret'] });
++    const graph = buildResourceGraph([pod], []);
++
++    // Chunk for the pod with CrashLoopBackOff identifier
++    const crashPodChunk: IndexedChunk = {
++      id: 'chunk-crash-pod',
++      artifactId: 'cluster-resources/pod/default/crash-pod.json',
++      content: 'name: crash-pod, reason: CrashLoopBackOff',
++      startLine: 1,
++      endLine: 5,
++      summary: 'Pod crash-pod (CrashLoopBackOff)',
++      identifiers: ['crash-pod', 'CrashLoopBackOff', 'default'],
++      namespace: 'default',
++      artifactCategory: 'kubernetes-resource',
++      metadata: { kind: 'Pod', name: 'crash-pod', namespace: 'default' },
++    };
++    const secretChunk: IndexedChunk = {
++      id: 'chunk-secret',
++      artifactId: 'cluster-resources/secret/default/some-secret.json',
++      content: 'name: some-secret',
++      startLine: 1,
++      endLine: 5,
++      summary: 'Secret some-secret',
++      identifiers: ['some-secret'],
++      namespace: 'default',
++      artifactCategory: 'kubernetes-resource',
++      metadata: { kind: 'Secret', name: 'some-secret', namespace: 'default' },
++    };
++
++    // Seed with a generic hypothesis that contains no specific resource names
++    const seed = {
++      id: 'seed:analyzer:0',
++      hypothesis: 'Health check failed',
++      source: 'analyzer:health-check',
++      category: 'kubernetes' as const,
++      priority: 80,
++    };
++
++    const result = getRelatedChunks(graph, seed, [crashPodChunk, secretChunk]);
++    const ids = result.map((c) => c.chunk.id);
++    // Fallback: crash-pod is an unhealthy pod (has CrashLoopBackOff) → walked
++    expect(ids).toContain('chunk-crash-pod');
++    // Its graph neighbor (some-secret) should also be reached
++    expect(ids).toContain('chunk-secret');
++  });
++
++  // ── Log seed — pod resolution + graph walk ──────────────────────────────
++
++  it('Log seed resolves pod from filename and walks graph neighborhood', () => {
++    const pod = makePod('app-pod', 'default', { secretNames: ['db-secret'] });
++    const graph = buildResourceGraph([pod], []);
++
++    const logChunk: IndexedChunk = {
++      id: 'logs/default/app-pod/app.log:1-50',
++      artifactId: 'logs/default/app-pod/app.log',
++      content: 'Error: secret not found',
++      startLine: 1,
++      endLine: 50,
++      summary: 'Log chunk from app-pod',
++      identifiers: ['app-pod'],
++      artifactCategory: 'log',
++    };
++    const secretChunk: IndexedChunk = {
++      id: 'chunk-secret',
++      artifactId: 'cluster-resources/secret/default/db-secret.json',
++      content: 'name: db-secret',
++      startLine: 1,
++      endLine: 5,
++      summary: 'Secret db-secret',
++      identifiers: ['db-secret'],
++      namespace: 'default',
++      artifactCategory: 'kubernetes-resource',
++      metadata: { kind: 'Secret', name: 'db-secret', namespace: 'default' },
++    };
++
++    // Log path where filename (without extension) matches pod name
++    const seed = {
++      id: 'seed:log:0',
++      hypothesis: 'Log file has errors',
++      source: 'log:logs/default/app-pod/app.log',
++      category: 'log' as const,
++      priority: 45,
++    };
++
++    const result = getRelatedChunks(graph, seed, [logChunk, secretChunk]);
++    const ids = result.map((c) => c.chunk.id);
++    // Direct log path match
++    expect(ids).toContain('logs/default/app-pod/app.log:1-50');
++    // Pod neighbor via graph walk (log path → pod 'app-pod' → secret 'db-secret')
++    expect(ids).toContain('chunk-secret');
++  });
++
++  it('Log seed resolves pod from parent directory for container-scoped log paths', () => {
++    // Paths like 'cluster-resources/pods/logs/<ns>/<pod>/<container>.log'
++    const pod = makePod('web-pod', 'default', { configMapNames: ['web-config'] });
++    const graph = buildResourceGraph([pod], []);
++
++    const logChunk: IndexedChunk = {
++      id: 'cluster-resources/pods/logs/default/web-pod/web.log:1-50',
++      artifactId: 'cluster-resources/pods/logs/default/web-pod/web.log',
++      content: 'Startup log output',
++      startLine: 1,
++      endLine: 50,
++      summary: 'Log chunk from web container',
++      identifiers: ['web-pod'],
++      artifactCategory: 'log',
++    };
++    const configChunk: IndexedChunk = {
++      id: 'chunk-config',
++      artifactId: 'cluster-resources/configmap/default/web-config.json',
++      content: 'name: web-config',
++      startLine: 1,
++      endLine: 5,
++      summary: 'ConfigMap web-config',
++      identifiers: ['web-config'],
++      namespace: 'default',
++      artifactCategory: 'kubernetes-resource',
++      metadata: { kind: 'ConfigMap', name: 'web-config', namespace: 'default' },
++    };
++
++    // Log path where the PARENT directory (web-pod) matches the pod name
++    const seed = {
++      id: 'seed:log:0',
++      hypothesis: 'Log file has errors',
++      source: 'log:cluster-resources/pods/logs/default/web-pod/web.log',
++      category: 'log' as const,
++      priority: 45,
++    };
++
++    const result = getRelatedChunks(graph, seed, [logChunk, configChunk]);
++    const ids = result.map((c) => c.chunk.id);
++    // Direct log path match
++    expect(ids).toContain('cluster-resources/pods/logs/default/web-pod/web.log:1-50');
++    // ConfigMap neighbor reached via pod's graph neighborhood
++    expect(ids).toContain('chunk-config');
++  });
+ });
+diff --git a/src/graph/chunker.ts b/src/graph/chunker.ts
+index 5336d48..dd46772 100644
+--- a/src/graph/chunker.ts
++++ b/src/graph/chunker.ts
+@@ -74,7 +74,7 @@ export function chunkResource(resource: K8sResource, path: string): Chunk {
+   const lines = content.split('\n');
+ 
+   return {
+-    id: `${path}:resource`,
++    id: `${path}:${resource.metadata.name}:resource`,
+     artifactId: path,
+     content,
+     startLine: 1,
+diff --git a/src/graph/index.ts b/src/graph/index.ts
+index 5093b38..6cf3654 100644
+--- a/src/graph/index.ts
++++ b/src/graph/index.ts
+@@ -19,7 +19,8 @@ export { chunkLogFile, chunkResource, chunkAnalyzer } from './chunker.js';
+ export {
+   buildResourceGraph,
+   getNeighborhood,
++  getNeighborhoodWithDepth,
+   getRelatedChunks,
+   parseSeedSource,
+ } from './resource-graph.js';
+-export type { ResourceNode, ResourceEdge, ResourceRelationshipGraph, RelationshipType } from './resource-graph.js';
++export type { ResourceNode, ResourceEdge, ResourceRelationshipGraph, RelationshipType, GraphScoredChunk } from './resource-graph.js';
+diff --git a/src/graph/resource-graph.ts b/src/graph/resource-graph.ts
+index 4bb3d1f..5f71604 100644
+--- a/src/graph/resource-graph.ts
++++ b/src/graph/resource-graph.ts
+@@ -2,6 +2,82 @@ import type { K8sResource, K8sEvent } from '../types/index.js';
+ import type { IndexedChunk } from '../ai/chunk-indexer.js';
+ import type { InvestigationSeed } from '../investigators/types.js';
+ 
++// ---------------------------------------------------------------------------
++// Entity name extraction (mirrors extractQueryIdentifiers in lexical-search.ts)
++// ---------------------------------------------------------------------------
++
++/** Known K8s error reasons used for entity extraction from free text. */
++const GRAPH_K8S_ERROR_REASONS: readonly string[] = [
++  'CrashLoopBackOff', 'ImagePullBackOff', 'ErrImagePull', 'OOMKilled',
++  'ContainerCannotRun', 'DeadlineExceeded', 'Evicted', 'BackOff',
++  'ContainersNotReady', 'Unschedulable', 'RunContainerError',
++  'CreateContainerError', 'InvalidImageName', 'CreateContainerConfigError',
++  'FailedScheduling', 'FailedMount', 'FailedAttachVolume', 'NodeNotReady',
++];
++
++const GRAPH_K8S_ERROR_REASONS_LOWER = new Map(
++  GRAPH_K8S_ERROR_REASONS.map((reason) => [reason.toLowerCase(), reason]),
++);
++
++/**
++ * Stop words filtered from RFC-1123 name token extraction.
++ * Mirrors RFC1123_STOP_WORDS in lexical-search.ts — intentionally omits
++ * diagnostic terms like 'secret', 'configmap', 'missing', 'failed', etc.
++ */
++const GRAPH_ENTITY_STOP_WORDS: ReadonlySet<string> = new Set([
++  // English connectives
++  'in', 'is', 'are', 'the', 'a', 'an', 'of', 'for', 'with', 'and', 'or',
++  'not', 'has', 'have', 'been', 'being', 'to', 'from', 'on', 'at', 'by',
++  'due', 'via',
++  // K8s structural keywords (non-diagnostic)
++  'pod', 'pods', 'log', 'logs', 'file', 'files', 'check', 'status', 'state',
++  'phase', 'reason', 'message', 'type', 'name', 'namespace', 'container',
++  'containers', 'image', 'images', 'event', 'events', 'resource', 'resources',
++  'cluster', 'node', 'nodes', 'deployment', 'deployments',
++  'running', 'pending',
++  // Common severity / level words
++  'high', 'low', 'medium', 'critical', 'severity', 'info', 'warn', 'error',
++  'warning',
++  // K8s lifecycle verbs (non-diagnostic)
++  'restart', 'restarts', 'back', 'off', 'loop', 'crash', 'crashloop',
++  'invalid', 'wrong',
++]);
++
++/**
++ * Extracts K8s entity names from free text.
++ *
++ * Applies the same extraction pipeline as
++ * `LexicalSearchIndex.extractQueryIdentifiers`:
++ * 1. Known K8s error reasons (canonical casing).
++ * 2. RFC-1123 resource-name tokens (lowercase, 2–63 chars), filtered through
++ *    {@link GRAPH_ENTITY_STOP_WORDS}.
++ *
++ * Used by {@link getRelatedChunks} to resolve entity names mentioned in
++ * analyzer messages or seed hypotheses to graph nodes.
++ */
++function extractEntityNamesFromText(text: string): string[] {
++  const ids = new Set<string>();
++  const lowerText = text.toLowerCase();
++
++  // Step 1: known K8s error reasons
++  for (const [lowerReason, canonicalReason] of GRAPH_K8S_ERROR_REASONS_LOWER) {
++    if (lowerText.includes(lowerReason)) {
++      ids.add(canonicalReason);
++    }
++  }
++
++  // Step 2: RFC-1123 resource names (allow hyphens, 2–63 chars total)
++  const k8sNamePattern = /\b([a-z][a-z0-9-]{1,62})\b/g;
++  for (const match of lowerText.matchAll(k8sNamePattern)) {
++    const token = match[1]!;
++    if (!GRAPH_ENTITY_STOP_WORDS.has(token)) {
++      ids.add(token);
++    }
++  }
++
++  return [...ids];
++}
++
+ // ---------------------------------------------------------------------------
+ // Types
+ // ---------------------------------------------------------------------------
+@@ -35,6 +111,20 @@ export interface ResourceRelationshipGraph {
+   edges: ResourceEdge[];
+ }
+ 
++/**
++ * A chunk retrieved from the graph neighborhood, paired with a hop-distance
++ * score that reflects proximity to the seed resource.
++ *
++ * Scores:
++ * - `1.0` — direct resource (depth 0) or exact seed match (log/analyzer/event)
++ * - `0.7` — depth-1 neighbor
++ * - `0.4` — depth-2 neighbor
++ */
++export interface GraphScoredChunk {
++  chunk: IndexedChunk;
++  score: number;
++}
++
+ // ---------------------------------------------------------------------------
+ // Internal type guards
+ // ---------------------------------------------------------------------------
+@@ -346,28 +436,44 @@ export function buildResourceGraph(
+ }
+ 
+ // ---------------------------------------------------------------------------
+-// getNeighborhood
++// Hop-distance scoring helper
++// ---------------------------------------------------------------------------
++
++/**
++ * Returns the retrieval score for a given hop depth:
++ * - depth 0 (direct resource): `1.0`
++ * - depth 1 (one hop away): `0.7`
++ * - depth ≥ 2 (two or more hops): `0.4`
++ */
++function scoreForDepth(depth: number): number {
++  if (depth === 0) return 1.0;
++  if (depth === 1) return 0.7;
++  return 0.4;
++}
++
++// ---------------------------------------------------------------------------
++// getNeighborhoodWithDepth
+ // ---------------------------------------------------------------------------
+ 
+ /**
+  * Returns all {@link ResourceNode}s reachable within `depth` hops from the
+- * specified resource (undirected traversal — follows edges in both directions).
++ * specified resource, along with their exact hop distance from the start node
++ * (undirected traversal — follows edges in both directions).
+  *
+- * The source node itself is included at depth 0.
++ * The source node itself is returned with depth `0`.
+  */
+-export function getNeighborhood(
++export function getNeighborhoodWithDepth(
+   graph: ResourceRelationshipGraph,
+   kind: string,
+   name: string,
+   namespace: string,
+   depth = 2,
+-): ResourceNode[] {
++): Array<{ node: ResourceNode; depth: number }> {
+   const startId = nodeId(kind, namespace, name);
+-  const visited = new Set<string>([startId]);
+-  const result: ResourceNode[] = [];
+-
+-  // Queue entries: [nodeId, remaining depth]
+-  const queue: Array<[string, number]> = [[startId, depth]];
++  // Track visited nodes with their assigned depth to prevent revisiting
++  const visitedDepth = new Map<string, number>();
++  visitedDepth.set(startId, 0);
++  const result: Array<{ node: ResourceNode; depth: number }> = [];
+ 
+   // Build adjacency for fast lookup (undirected)
+   const adj = new Map<string, Set<string>>();
+@@ -381,17 +487,20 @@ export function getNeighborhood(
+     adj.get(tId)!.add(sId);
+   }
+ 
++  // BFS tracking current depth
++  const queue: Array<[string, number]> = [[startId, 0]];
++
+   while (queue.length > 0) {
+-    const [current, remaining] = queue.shift()!;
++    const [current, currentDepth] = queue.shift()!;
+     const node = graph.nodes.get(current);
+-    if (node) result.push(node);
++    if (node) result.push({ node, depth: currentDepth });
+ 
+-    if (remaining <= 0) continue;
++    if (currentDepth >= depth) continue;
+ 
+     for (const neighbor of adj.get(current) ?? []) {
+-      if (!visited.has(neighbor)) {
+-        visited.add(neighbor);
+-        queue.push([neighbor, remaining - 1]);
++      if (!visitedDepth.has(neighbor)) {
++        visitedDepth.set(neighbor, currentDepth + 1);
++        queue.push([neighbor, currentDepth + 1]);
+       }
+     }
+   }
+@@ -399,6 +508,28 @@ export function getNeighborhood(
+   return result;
+ }
+ 
++// ---------------------------------------------------------------------------
++// getNeighborhood
++// ---------------------------------------------------------------------------
++
++/**
++ * Returns all {@link ResourceNode}s reachable within `depth` hops from the
++ * specified resource (undirected traversal — follows edges in both directions).
++ *
++ * The source node itself is included at depth 0.
++ *
++ * @see {@link getNeighborhoodWithDepth} for the depth-aware variant.
++ */
++export function getNeighborhood(
++  graph: ResourceRelationshipGraph,
++  kind: string,
++  name: string,
++  namespace: string,
++  depth = 2,
++): ResourceNode[] {
++  return getNeighborhoodWithDepth(graph, kind, name, namespace, depth).map(({ node }) => node);
++}
++
+ // ---------------------------------------------------------------------------
+ // parseSeedSource
+ // ---------------------------------------------------------------------------
+@@ -452,41 +583,136 @@ export function parseSeedSource(source: string): { kind: string; namespace: stri
+ 
+ /**
+  * Given a seed's source string and a flat chunk index, returns all
+- * {@link IndexedChunk}s that are relevant to the seed's target resource and
+- * its graph neighborhood.
++ * {@link GraphScoredChunk}s that are relevant to the seed's target resource
++ * and its graph neighborhood, scored by hop distance.
++ *
++ * Scoring:
++ * - Log / Analyzer / exact-event chunks: `1.0` (direct seed match)
++ * - K8s resource chunks at depth 0 (the seed resource itself): `1.0`
++ * - K8s resource chunks at depth 1 (direct graph neighbors): `0.7`
++ * - K8s resource chunks at depth 2 (two-hop graph neighbors): `0.4`
++ *
++ * When a chunk qualifies via multiple matching paths (e.g. both node-id match
++ * and name match), the highest score (lowest depth) wins.
+  *
+  * Strategy:
+  * 1. Parse the seed source into (kind, namespace, name).
+- * 2. Walk the resource graph neighborhood (depth=2) for K8s resources.
+- * 3. Collect chunks whose identifiers overlap with any neighborhood resource
+- *    name or namespace.
+- * 4. Also always include the direct resource's chunks by exact artifact match.
++ * 2. Walk the resource graph neighborhood (depth=2) for K8s resources,
++ *    building `nodeIdToMinDepth` and `nameToMinDepth` maps.
++ * 3. Collect chunks whose identifiers or node-id overlap with any neighborhood
++ *    resource, assigning scores from the maps.
++ * 4. Log and Analyzer seeds use direct path/name matching → score 1.0.
+  */
+ export function getRelatedChunks(
+   graph: ResourceRelationshipGraph,
+   seed: InvestigationSeed,
+   chunkIndex: IndexedChunk[],
+-): IndexedChunk[] {
++): GraphScoredChunk[] {
+   const parsed = parseSeedSource(seed.source);
+   if (!parsed) return [];
+ 
+   const { kind, namespace, name } = parsed;
+-  const relevantNames = new Set<string>();
+-  const relevantNodeIds = new Set<string>();
+-  const seen = new Set<string>();
+-  const matched: IndexedChunk[] = [];
+ 
+-  const addNodeNeighborhood = (nodeKind: string, nodeName: string, nodeNamespace: string): void => {
+-    for (const neighbor of getNeighborhood(graph, nodeKind, nodeName, nodeNamespace, 2)) {
+-      relevantNodeIds.add(nodeId(neighbor.kind, neighbor.namespace, neighbor.name));
+-      relevantNames.add(neighbor.name.toLowerCase());
++  // Maps for hop-distance lookup during chunk scoring
++  const nodeIdToMinDepth = new Map<string, number>();
++  const nameToMinDepth = new Map<string, number>();
++  const seen = new Set<string>();
++  const matched: GraphScoredChunk[] = [];
++
++  /**
++   * Runs BFS from the given node and populates `nodeIdToMinDepth` /
++   * `nameToMinDepth` with the minimum depth seen for each node / name.
++   */
++  const addNeighborhoodWithDepth = (nodeKind: string, nodeName: string, nodeNamespace: string): void => {
++    for (const { node, depth } of getNeighborhoodWithDepth(graph, nodeKind, nodeName, nodeNamespace, 2)) {
++      const id = nodeId(node.kind, node.namespace, node.name);
++      const existingDepth = nodeIdToMinDepth.get(id);
++      if (existingDepth === undefined || depth < existingDepth) {
++        nodeIdToMinDepth.set(id, depth);
++      }
++      const lowerName = node.name.toLowerCase();
++      const existingNameDepth = nameToMinDepth.get(lowerName);
++      if (existingNameDepth === undefined || depth < existingNameDepth) {
++        nameToMinDepth.set(lowerName, depth);
++      }
+     }
+   };
+ 
+   if (kind === 'Pod') {
+-    relevantNodeIds.add(nodeId(kind, namespace || 'default', name));
+-    relevantNames.add(name.toLowerCase());
+-    addNodeNeighborhood(kind, name, namespace || 'default');
++    addNeighborhoodWithDepth(kind, name, namespace || 'default');
++  }
++
++  // ─��� Analyzer seed: extract entity names → walk graph neighborhoods ────────
++  if (kind === 'Analyzer') {
++    // Find the matching analyzer chunk(s) in the index
++    const analyzerChunks = chunkIndex.filter(
++      (chunk) =>
++        chunk.artifactCategory === 'analyzer' &&
++        (chunk.artifactId === name ||
++          (isRecord(chunk.metadata) && getString(chunk.metadata['name']) === name) ||
++          chunk.identifiers.some((id) => id === name)),
++    );
++
++    // Extract entity names from hypothesis AND analyzer chunk content
++    const textParts: string[] = [seed.hypothesis];
++    for (const ac of analyzerChunks) {
++      textParts.push(ac.content);
++    }
++    const entityNames = extractEntityNamesFromText(textParts.join(' '));
++
++    // Resolve entity names to graph nodes and walk neighborhoods
++    let foundAnyNodes = false;
++    for (const entityName of entityNames) {
++      for (const [, node] of graph.nodes) {
++        if (node.name === entityName) {
++          addNeighborhoodWithDepth(node.kind, node.name, node.namespace);
++          foundAnyNodes = true;
++        }
++      }
++    }
++
++    // Fallback: if no entity names resolved to nodes, find unhealthy pods
++    if (!foundAnyNodes) {
++      const unhealthyPodNames = new Set<string>();
++      for (const chunk of chunkIndex) {
++        if (
++          chunk.artifactCategory === 'kubernetes-resource' &&
++          (chunk.identifiers.includes('CrashLoopBackOff') ||
++            chunk.identifiers.includes('ImagePullBackOff'))
++        ) {
++          for (const id of chunk.identifiers) {
++            unhealthyPodNames.add(id);
++          }
++        }
++      }
++      for (const [, node] of graph.nodes) {
++        if (node.kind === 'Pod' && unhealthyPodNames.has(node.name)) {
++          addNeighborhoodWithDepth('Pod', node.name, node.namespace);
++        }
++      }
++    }
++  }
++
++  // ── Log seed: resolve pod from path → walk graph neighborhood ─────────────
++  if (kind === 'Log') {
++    // Parse log path to extract pod name using same heuristics as
++    // resolveLogPodComponent: filename-without-extension first, then
++    // parent directory (for container-scoped logs like pods/logs/ns/pod/ctr.log)
++    const logPathSegments = name.split('/');
++    const logFilename = logPathSegments[logPathSegments.length - 1] ?? '';
++    const dotIdx = logFilename.lastIndexOf('.');
++    const logBasename = dotIdx !== -1 ? logFilename.slice(0, dotIdx) : logFilename;
++    const logParentDir = logPathSegments[logPathSegments.length - 2];
++
++    const podNamesToCheck = new Set<string>();
++    if (logBasename) podNamesToCheck.add(logBasename);
++    if (logParentDir) podNamesToCheck.add(logParentDir);
++
++    for (const [, node] of graph.nodes) {
++      if (node.kind === 'Pod' && podNamesToCheck.has(node.name)) {
++        addNeighborhoodWithDepth('Pod', node.name, node.namespace);
++      }
++    }
+   }
+ 
+   let eventReason = '';
+@@ -495,8 +721,10 @@ export function getRelatedChunks(
+     const eventParts = name.split(':');
+     eventObjectName = eventParts.pop() ?? name;
+     eventReason = eventParts.join(':');
+-    relevantNames.add(eventObjectName.toLowerCase());
+-    if (eventReason) relevantNames.add(eventReason.toLowerCase());
++
++    // The event reason and involved-object name are depth-0 from the event seed
++    nameToMinDepth.set(eventObjectName.toLowerCase(), 0);
++    if (eventReason) nameToMinDepth.set(eventReason.toLowerCase(), 0);
+ 
+     const matchingEventChunks = chunkIndex.filter((chunk) => {
+       if (chunk.artifactCategory !== 'event' || !isRecord(chunk.metadata)) return false;
+@@ -514,30 +742,32 @@ export function getRelatedChunks(
+         const eventKind =
+           (isRecord(chunk.metadata) ? getString(chunk.metadata['kind']) : '') ||
+           'Pod';
+-        relevantNodeIds.add(nodeId('Event', eventNamespace, `${eventReason}:${eventObjectName}`));
+-        addNodeNeighborhood(eventKind, eventObjectName, eventNamespace);
++        nodeIdToMinDepth.set(nodeId('Event', eventNamespace, `${eventReason}:${eventObjectName}`), 0);
++        addNeighborhoodWithDepth(eventKind, eventObjectName, eventNamespace);
+       }
+     } else {
+-      addNodeNeighborhood('Pod', eventObjectName, namespace || 'default');
++      addNeighborhoodWithDepth('Pod', eventObjectName, namespace || 'default');
+     }
+   }
+ 
+   for (const chunk of chunkIndex) {
+     if (seen.has(chunk.id)) continue;
+ 
++    // ── Direct Log match ───────────────────────────────────────────────────
+     if (kind === 'Log' && chunk.artifactId === name) {
+-      matched.push(chunk);
++      matched.push({ chunk, score: 1.0 });
+       seen.add(chunk.id);
+       continue;
+     }
+ 
++    // ── Direct Analyzer match ──────────────────────────────────────────────
+     if (
+       kind === 'Analyzer' &&
+       (chunk.artifactId === name ||
+         (isRecord(chunk.metadata) && getString(chunk.metadata['name']) === name) ||
+         chunk.identifiers.some((identifier) => identifier === name))
+     ) {
+-      matched.push(chunk);
++      matched.push({ chunk, score: 1.0 });
+       seen.add(chunk.id);
+       continue;
+     }
+@@ -551,7 +781,7 @@ export function getRelatedChunks(
+         ? nodeId(metaKind, metaNamespace || chunk.namespace || 'default', metaName)
+         : '';
+ 
+-    const exactGraphMatch = chunkNodeId !== '' && relevantNodeIds.has(chunkNodeId);
++    // ── Exact event match → always depth-0 score ──────────────────────────
+     const exactEventMatch =
+       kind === 'Event' &&
+       chunk.artifactCategory === 'event' &&
+@@ -559,10 +789,30 @@ export function getRelatedChunks(
+       getString(metadata['reason']).toLowerCase() === eventReason.toLowerCase() &&
+       getString(metadata['name']).toLowerCase() === eventObjectName.toLowerCase();
+ 
+-    const hasNameMatch = chunk.identifiers.some((identifier) => relevantNames.has(identifier.toLowerCase()));
++    if (exactEventMatch) {
++      matched.push({ chunk, score: 1.0 });
++      seen.add(chunk.id);
++      continue;
++    }
++
++    // ── Hop-distance scoring via graph node id and/or name match ──────────
++    let bestDepth: number | undefined;
++
++    if (chunkNodeId !== '' && nodeIdToMinDepth.has(chunkNodeId)) {
++      const d = nodeIdToMinDepth.get(chunkNodeId)!;
++      if (bestDepth === undefined || d < bestDepth) bestDepth = d;
++    }
++
++    for (const identifier of chunk.identifiers) {
++      const lowerIdentifier = identifier.toLowerCase();
++      if (nameToMinDepth.has(lowerIdentifier)) {
++        const d = nameToMinDepth.get(lowerIdentifier)!;
++        if (bestDepth === undefined || d < bestDepth) bestDepth = d;
++      }
++    }
+ 
+-    if (exactGraphMatch || exactEventMatch || hasNameMatch) {
+-      matched.push(chunk);
++    if (bestDepth !== undefined) {
++      matched.push({ chunk, score: scoreForDepth(bestDepth) });
+       seen.add(chunk.id);
+     }
+   }
+diff --git a/src/ingestion/profiler.ts b/src/ingestion/profiler.ts
+index 70a0b39..5e6811b 100644
+--- a/src/ingestion/profiler.ts
++++ b/src/ingestion/profiler.ts
+@@ -20,7 +20,6 @@ function zeroCounts(): Record<ArtifactCategory, number> {
+     log: 0,
+     'kubernetes-resource': 0,
+     event: 0,
+-    config: 0,
+     'cluster-info': 0,
+     'helm-release': 0,
+     unknown: 0,
+diff --git a/src/investigators/__tests__/ai-investigator.test.ts b/src/investigators/__tests__/ai-investigator.test.ts
+index cef3880..627486c 100644
+--- a/src/investigators/__tests__/ai-investigator.test.ts
++++ b/src/investigators/__tests__/ai-investigator.test.ts
+@@ -6,7 +6,8 @@ import type { AIInvestigatorDeps } from '../ai-investigator.js';
+ import type { IndexedChunk } from '../../ai/chunk-indexer.js';
+ import type { ResourceRelationshipGraph } from '../../graph/resource-graph.js';
+ import type { AIFindingResponse } from '../../ai/llm-client.js';
+-import { investigateWithAI, DEFAULT_MAX_SEEDS } from '../ai-investigator.js';
++import { investigateWithAI, DEFAULT_MAX_SEEDS, mergeChunks } from '../ai-investigator.js';
++import type { RetrievalList } from '../ai-investigator.js';
+ 
+ // ---------------------------------------------------------------------------
+ // Fixture helpers
+@@ -33,7 +34,6 @@ function makeProfile(): BundleProfile {
+       log: 0,
+       'kubernetes-resource': 0,
+       event: 0,
+-      config: 0,
+       'cluster-info': 0,
+       'helm-release': 0,
+       unknown: 0,
+@@ -1076,3 +1076,127 @@ describe('investigateWithAI', () => {
+     }
+   });
+ });
++
++// ---------------------------------------------------------------------------
++// RRF mergeChunks unit tests
++// ---------------------------------------------------------------------------
++
++describe('mergeChunks (RRF)', () => {
++  // ── RRF-1: cross-system agreement rewards a chunk seen in both graph and lexical ──
++
++  it('ranks a chunk found in both graph (rank 1) and lexical (rank 1) above chunks found in only one system', () => {
++    // chunkA appears at rank 1 in both graph and lexical → double RRF boost
++    // chunkB appears at graph rank 2 only → single, lower-ranked contribution
++    // chunkC appears at lexical rank 2 only → single, lower-ranked contribution
++    const chunkA = makeChunk('chunk:a', 'path/a.json', 'content a');
++    const chunkB = makeChunk('chunk:b', 'path/b.json', 'content b');
++    const chunkC = makeChunk('chunk:c', 'path/c.json', 'content c');
++
++    const graphList: RetrievalList = { chunks: [chunkA, chunkB] };
++    const lexicalList: RetrievalList = { chunks: [chunkA, chunkC] };
++
++    // chunkA: 1/(60+1) + 1/(60+1) = 2/61 ≈ 0.03279
++    // chunkB: 1/(60+2) = 1/62 ≈ 0.01613 (graph only)
++    // chunkC: 1/(60+2) = 1/62 ≈ 0.01613 (lexical only)
++    const result = mergeChunks([graphList, lexicalList]);
++
++    expect(result[0]!.id).toBe('chunk:a');
++  });
++
++  it('ranks a chunk found by graph (rank 1) and lexical (rank 3) above a chunk found only by graph (rank 2)', () => {
++    const chunkA = makeChunk('chunk:a', 'path/a.json', 'content a');
++    const chunkB = makeChunk('chunk:b', 'path/b.json', 'content b');
++    const chunkC = makeChunk('chunk:c', 'path/c.json', 'filler content c');
++    const chunkX = makeChunk('chunk:x', 'path/x.json', 'extra content');
++
++    // chunkA: graph rank 1 (1/61) + lexical rank 3 (1/63) ≈ 0.032266
++    // chunkB: graph rank 2 only (1/62) ≈ 0.016129
++    // chunkC: lexical rank 1 only (1/61) ≈ 0.016393
++    // chunkX: lexical rank 2 only (1/62) ≈ 0.016129
++    // chunkA (cross-system agreement) outranks chunkB (single-system only)
++    const graphList: RetrievalList = { chunks: [chunkA, chunkB] };
++    const lexicalList: RetrievalList = { chunks: [chunkC, chunkX, chunkA] };
++
++    const result = mergeChunks([graphList, lexicalList]);
++
++    expect(result[0]!.id).toBe('chunk:a');
++    // chunkB only appears in graph, so it has lower RRF than cross-system chunkA
++    const chunkBIdx = result.findIndex((c) => c.id === 'chunk:b');
++    const chunkAIdx = result.findIndex((c) => c.id === 'chunk:a');
++    expect(chunkAIdx).toBeLessThan(chunkBIdx);
++  });
++
++  // ── RRF-2: chunk found by all 3 systems ranks highest ────────────────────
++
++  it('ranks a chunk found by all 3 systems (graph, lexical, semantic) highest', () => {
++    const tripleChunk = makeChunk('chunk:triple', 'path/triple.json', 'triple hit');
++    const graphOnly = makeChunk('chunk:graph', 'path/graph.json', 'graph only');
++    const lexOnly = makeChunk('chunk:lex', 'path/lex.json', 'lexical only');
++    const semOnly = makeChunk('chunk:sem', 'path/sem.json', 'semantic only');
++
++    const graphList: RetrievalList = { chunks: [tripleChunk, graphOnly] };
++    const lexicalList: RetrievalList = { chunks: [tripleChunk, lexOnly] };
++    const semanticList: RetrievalList = { chunks: [tripleChunk, semOnly] };
++
++    // tripleChunk: 3 × 1/(60+1) = 3/61 ≈ 0.04918
++    // graphOnly: 1/(60+2) = 1/62 ≈ 0.01613
++    // lexOnly: 1/(60+2) = 1/62 ≈ 0.01613
++    // semOnly: 1/(60+2) = 1/62 ≈ 0.01613
++    const result = mergeChunks([graphList, lexicalList, semanticList]);
++
++    expect(result[0]!.id).toBe('chunk:triple');
++  });
++
++  // ── RRF-3: results are capped at MAX_CHUNKS_PER_SEED (20) ────────────────
++
++  it('caps merged results at MAX_CHUNKS_PER_SEED (20)', () => {
++    // Create 30 unique chunks across graph + lexical
++    const graphChunks = Array.from({ length: 15 }, (_, i) =>
++      makeChunk(`chunk:g${i}`, `path/g${i}.json`, `graph content ${i}`),
++    );
++    const lexicalChunks = Array.from({ length: 15 }, (_, i) =>
++      makeChunk(`chunk:l${i}`, `path/l${i}.json`, `lexical content ${i}`),
++    );
++
++    const graphList: RetrievalList = { chunks: graphChunks };
++    const lexicalList: RetrievalList = { chunks: lexicalChunks };
++
++    const result = mergeChunks([graphList, lexicalList]);
++
++    expect(result.length).toBeLessThanOrEqual(20);
++  });
++
++  // ── RRF-4: merge is deterministic ────────────────────────────────────────
++
++  it('produces deterministic output for the same inputs', () => {
++    const chunks = Array.from({ length: 10 }, (_, i) =>
++      makeChunk(`chunk:${i}`, `path/${i}.json`, `content ${i}`),
++    );
++
++    // Mix chunks across lists in non-trivial ways
++    const graphList: RetrievalList = { chunks: [chunks[2]!, chunks[0]!, chunks[7]!, chunks[4]!] };
++    const lexicalList: RetrievalList = { chunks: [chunks[0]!, chunks[3]!, chunks[2]!, chunks[9]!] };
++    const semanticList: RetrievalList = { chunks: [chunks[7]!, chunks[2]!, chunks[5]!] };
++
++    const result1 = mergeChunks([graphList, lexicalList, semanticList]);
++    const result2 = mergeChunks([graphList, lexicalList, semanticList]);
++
++    // Both runs must produce identical ordering
++    expect(result1.map((c) => c.id)).toEqual(result2.map((c) => c.id));
++  });
++
++  it('is deterministic when two chunks have identical RRF scores (tie-break by ID)', () => {
++    // Two chunks each appearing in only one system at the same rank — identical RRF scores
++    const chunkAlpha = makeChunk('chunk:alpha', 'path/alpha.json', 'content alpha');
++    const chunkZeta = makeChunk('chunk:zeta', 'path/zeta.json', 'content zeta');
++
++    const graphList: RetrievalList = { chunks: [chunkAlpha] };
++    const lexicalList: RetrievalList = { chunks: [chunkZeta] };
++
++    // Both have RRF = 1/61; tie broken by id: 'chunk:alpha' < 'chunk:zeta'
++    const result = mergeChunks([graphList, lexicalList]);
++
++    expect(result[0]!.id).toBe('chunk:alpha');
++    expect(result[1]!.id).toBe('chunk:zeta');
++  });
++});
+diff --git a/src/investigators/__tests__/config-investigator.test.ts b/src/investigators/__tests__/config-investigator.test.ts
+index d0f7e9b..31ce256 100644
+--- a/src/investigators/__tests__/config-investigator.test.ts
++++ b/src/investigators/__tests__/config-investigator.test.ts
+@@ -30,7 +30,6 @@ function makeProfile(): BundleProfile {
+       log: 0,
+       'kubernetes-resource': 0,
+       event: 0,
+-      config: 0,
+       'cluster-info': 0,
+       'helm-release': 0,
+       unknown: 0,
+diff --git a/src/investigators/__tests__/differential-diagnosis.test.ts b/src/investigators/__tests__/differential-diagnosis.test.ts
+index 0015b0b..3adf39a 100644
+--- a/src/investigators/__tests__/differential-diagnosis.test.ts
++++ b/src/investigators/__tests__/differential-diagnosis.test.ts
+@@ -56,7 +56,6 @@ function makeProfile(): BundleProfile {
+       log: 0,
+       'kubernetes-resource': 0,
+       event: 0,
+-      config: 0,
+       'cluster-info': 0,
+       'helm-release': 0,
+       unknown: 0,
+diff --git a/src/investigators/__tests__/hypothesis-converter.test.ts b/src/investigators/__tests__/hypothesis-converter.test.ts
+index d605838..a3d0b8f 100644
+--- a/src/investigators/__tests__/hypothesis-converter.test.ts
++++ b/src/investigators/__tests__/hypothesis-converter.test.ts
+@@ -36,7 +36,6 @@ function makeProfile(): BundleProfile {
+       log: 0,
+       'kubernetes-resource': 0,
+       event: 0,
+-      config: 0,
+       'cluster-info': 0,
+       'helm-release': 0,
+       unknown: 0,
+@@ -220,10 +219,10 @@ describe('convertHypothesisToFinding — high-confidence hypothesis produces cor
+     expect(finding.id).toBe('finding:hypothesis:missing-secret:1');
+   });
+ 
+-  it('title includes the root cause and symptom', () => {
+-    expect(finding.title).toContain('[Hypothesis]');
+-    expect(finding.title).toContain(hypothesis.rootCause);
+-    expect(finding.title).toContain(hypothesis.symptom);
++  it('title is the hypothesis rootCause without machine prefixes/suffixes', () => {
++    expect(finding.title).toBe(hypothesis.rootCause);
++    expect(finding.title).not.toContain('[Hypothesis]');
++    expect(finding.title).not.toContain('(symptom:');
+   });
+ 
+   it('confidence matches the hypothesis confidence', () => {
+diff --git a/src/investigators/__tests__/hypothesis-evidence-collector.test.ts b/src/investigators/__tests__/hypothesis-evidence-collector.test.ts
+index 8f2b37c..050a8d1 100644
+--- a/src/investigators/__tests__/hypothesis-evidence-collector.test.ts
++++ b/src/investigators/__tests__/hypothesis-evidence-collector.test.ts
+@@ -30,7 +30,6 @@ function makeProfile(): BundleProfile {
+       log: 0,
+       'kubernetes-resource': 0,
+       event: 0,
+-      config: 0,
+       'cluster-info': 0,
+       'helm-release': 0,
+       unknown: 0,
+diff --git a/src/investigators/__tests__/hypothesis-generator.test.ts b/src/investigators/__tests__/hypothesis-generator.test.ts
+index 1162377..b4ac87d 100644
+--- a/src/investigators/__tests__/hypothesis-generator.test.ts
++++ b/src/investigators/__tests__/hypothesis-generator.test.ts
+@@ -34,7 +34,6 @@ function makeProfile(): BundleProfile {
+       log: 0,
+       'kubernetes-resource': 0,
+       event: 0,
+-      config: 0,
+       'cluster-info': 0,
+       'helm-release': 0,
+       unknown: 0,
+diff --git a/src/investigators/__tests__/hypothesis-ranking-integration.test.ts b/src/investigators/__tests__/hypothesis-ranking-integration.test.ts
+index 894c164..857acec 100644
+--- a/src/investigators/__tests__/hypothesis-ranking-integration.test.ts
++++ b/src/investigators/__tests__/hypothesis-ranking-integration.test.ts
+@@ -54,7 +54,6 @@ function makeProfile(): BundleProfile {
+       log: 0,
+       'kubernetes-resource': 0,
+       event: 0,
+-      config: 0,
+       'cluster-info': 0,
+       'helm-release': 0,
+       unknown: 0,
+diff --git a/src/investigators/__tests__/kubernetes-investigator.test.ts b/src/investigators/__tests__/kubernetes-investigator.test.ts
+index eb4c76c..32e5fa3 100644
+--- a/src/investigators/__tests__/kubernetes-investigator.test.ts
++++ b/src/investigators/__tests__/kubernetes-investigator.test.ts
+@@ -31,7 +31,6 @@ function makeProfile(): BundleProfile {
+       log: 0,
+       'kubernetes-resource': 0,
+       event: 0,
+-      config: 0,
+       'cluster-info': 0,
+       'helm-release': 0,
+       unknown: 0,
+@@ -795,3 +794,296 @@ describe('investigateKubernetes — namespace-scoped pod event correlation', ()
+     expect(finding.missingEvidence.some((m) => m.includes("namespace 'prod'"))).toBe(true);
+   });
+ });
++
++// ---------------------------------------------------------------------------
++// Scenario 12 — Pending Pod with FailedMount and ProvisioningFailed events
++// ---------------------------------------------------------------------------
++
++/** A Pending Pod stuck in ContainerCreating (mirrors pvc-pending fixture). */
++const pendingPvcPod: K8sResource = {
++  apiVersion: 'v1',
++  kind: 'Pod',
++  metadata: { name: 'db-pod', namespace: 'default' },
++  spec: {
++    containers: [{ name: 'postgres', image: 'postgres:15' }],
++    volumes: [
++      {
++        name: 'data-volume',
++        persistentVolumeClaim: { claimName: 'data-pvc' },
++      },
++    ],
++  },
++  status: {
++    phase: 'Pending',
++    conditions: [
++      { type: 'Ready', status: 'False', reason: 'ContainersNotReady' },
++      { type: 'PodScheduled', status: 'True' },
++    ],
++    containerStatuses: [
++      {
++        name: 'postgres',
++        ready: false,
++        restartCount: 0,
++        state: {
++          waiting: {
++            reason: 'ContainerCreating',
++            message: "waiting for volume 'data-volume' to be created",
++          },
++        },
++      },
++    ],
++  },
++};
++
++/** A Pending PVC referencing a non-existent StorageClass. */
++const pendingPvc: K8sResource = {
++  apiVersion: 'v1',
++  kind: 'PersistentVolumeClaim',
++  metadata: { name: 'data-pvc', namespace: 'default' },
++  spec: {
++    accessModes: ['ReadWriteOnce'],
++    storageClassName: 'fast-ssd',
++    resources: { requests: { storage: '10Gi' } },
++  },
++  status: { phase: 'Pending' },
++};
++
++/** StorageClass that exists (but is NOT 'fast-ssd'). */
++const standardStorageClass: K8sResource = {
++  apiVersion: 'storage.k8s.io/v1',
++  kind: 'StorageClass',
++  metadata: { name: 'standard' },
++  spec: {},
++  status: {},
++};
++
++/** Events for the pvc-pending scenario. */
++const pendingPvcEvents: K8sEvent[] = [
++  {
++    type: 'Warning',
++    reason: 'ProvisioningFailed',
++    message: 'storageclass.storage.k8s.io "fast-ssd" not found',
++    involvedObject: { kind: 'PersistentVolumeClaim', name: 'data-pvc', namespace: 'default' },
++    count: 8,
++    firstTimestamp: '2024-01-15T10:00:00Z',
++    lastTimestamp: '2024-01-15T10:05:00Z',
++  },
++  {
++    type: 'Warning',
++    reason: 'FailedScheduling',
++    message: 'persistentvolumeclaim "data-pvc" not found or is not bound',
++    involvedObject: { kind: 'Pod', name: 'db-pod', namespace: 'default' },
++    count: 4,
++    firstTimestamp: '2024-01-15T10:00:05Z',
++    lastTimestamp: '2024-01-15T10:05:00Z',
++  },
++  {
++    type: 'Warning',
++    reason: 'FailedMount',
++    message: 'Unable to attach or mount volumes: unmounted volumes=[data-volume], unattached volumes=[data-volume]',
++    involvedObject: { kind: 'Pod', name: 'db-pod', namespace: 'default' },
++    count: 6,
++    firstTimestamp: '2024-01-15T10:00:10Z',
++    lastTimestamp: '2024-01-15T10:06:00Z',
++  },
++];
++
++describe('investigateKubernetes — Pending Pod with FailedMount and ProvisioningFailed', () => {
++  const context = makeContext({
++    resources: [pendingPvcPod, pendingPvc, standardStorageClass],
++    events: pendingPvcEvents,
++  });
++  const result = investigateKubernetes(context, noSeeds);
++
++  it('produces exactly one finding (the pending pod)', () => {
++    expect(result.findings).toHaveLength(1);
++  });
++
++  it('finding has severity critical', () => {
++    expect(result.findings[0]!.severity).toBe('critical');
++  });
++
++  it('finding title mentions pod name and volume issue', () => {
++    const title = result.findings[0]!.title.toLowerCase();
++    expect(title).toContain('db-pod');
++    expect(
++      title.includes('pvc') || title.includes('volume') || title.includes('provision'),
++    ).toBe(true);
++  });
++
++  it('finding title mentions the missing StorageClass f
+...[diff truncated at 120000 chars to control duet artifact size]

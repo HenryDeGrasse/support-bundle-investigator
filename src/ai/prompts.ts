@@ -246,8 +246,112 @@ function formatChunk(chunk: IndexedChunk, index: number): string {
 }
 
 // ---------------------------------------------------------------------------
+// SEED_CLUSTERING_SYSTEM_PROMPT
+// ---------------------------------------------------------------------------
+
+/**
+ * System prompt for the pre-investigation seed-clustering LLM call.
+ *
+ * Role: senior Kubernetes SRE performing initial triage.
+ * Task: group provided investigation seeds by likely shared root cause so that
+ *       downstream investigators receive one representative lead per problem
+ *       area rather than redundant overlapping leads.
+ *
+ * Grounding constraint: every grouping decision must cite seed IDs from the
+ * provided list.  Do not invent symptom descriptions or resource names.
+ */
+export const SEED_CLUSTERING_SYSTEM_PROMPT = `You are a senior Kubernetes site-reliability engineer performing initial triage on a Kubernetes support bundle.
+
+Your task is to group the provided investigation seeds by their most likely shared root cause.
+
+## Grounding Rules (MANDATORY)
+
+1. Every cluster you produce MUST reference seed IDs that appear in the provided seed list. Do not invent seed IDs, resource names, or symptom descriptions.
+2. Every seed ID in the input MUST appear in exactly one cluster in your output. Do not drop or duplicate seeds.
+3. Singletons are allowed — if a seed has no natural grouping partner, place it in its own single-member cluster.
+4. Group by likely shared ROOT CAUSE, not just by similar category or namespace. Two CrashLoopBackOff events in different namespaces caused by different issues should be separate clusters.
+5. The \`representativeSeedId\` MUST be the ID of the highest-priority member seed (highest numeric priority value).
+6. Your \`reasoning\` field must explain specifically why the grouped seeds share a root cause, citing the seed IDs and their hypotheses.
+7. Return only valid JSON matching the required output schema. Do not add commentary outside the JSON.
+
+## Output Schema
+
+Return a JSON object with a "clusters" array. Each cluster must have all required fields as described in the user message.`;
+
+// ---------------------------------------------------------------------------
+// Seed clustering JSON output schema
+// ---------------------------------------------------------------------------
+
+const CLUSTERING_JSON_SCHEMA = `{
+  "clusters": [
+    {
+      "label": "Human-readable shared root-cause label (e.g. 'CrashLoopBackOff caused by missing Secret db-credentials')",
+      "reasoning": "Explanation of why these seeds share a root cause, citing their IDs and hypothesis text",
+      "seedIds": ["seed:pod:0", "seed:event:3"],
+      "representativeSeedId": "seed:pod:0"
+    }
+  ]
+}`;
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+
+/**
+ * Builds the system and user prompts for the pre-investigation seed-clustering
+ * LLM call.
+ *
+ * **System prompt** = {@link SEED_CLUSTERING_SYSTEM_PROMPT} (static grounding
+ * rules, no seed data).
+ *
+ * **User prompt** contains:
+ * 1. The serialised seed list — each seed rendered as
+ *    `{ id, hypothesis, source, category, priority }`.
+ * 2. The required JSON output schema for the clustering response.
+ * 3. Explicit rules summarising the grounding and partitioning constraints.
+ *
+ * @param seeds - Raw deterministic seeds from `generateSeeds()`.
+ * @returns `{ system, user }` prompts ready for a single LLM call.
+ */
+export function buildSeedClusteringPrompt(seeds: InvestigationSeed[]): {
+  system: string;
+  user: string;
+} {
+  const serialisedSeeds = seeds.map((s) => ({
+    id: s.id,
+    hypothesis: s.hypothesis,
+    source: s.source,
+    category: s.category,
+    priority: s.priority,
+  }));
+
+  const user = [
+    '## Investigation Seeds to Cluster',
+    '',
+    `The following ${seeds.length} seed(s) were generated from deterministic analysis of a Kubernetes support bundle.`,
+    'Group them by likely shared root cause.',
+    '',
+    '```json',
+    JSON.stringify(serialisedSeeds, null, 2),
+    '```',
+    '',
+    '## Required JSON Output Schema',
+    '',
+    'Return a JSON object matching this schema exactly:',
+    CLUSTERING_JSON_SCHEMA,
+    '',
+    '## Rules',
+    '',
+    `- Every seed ID listed above MUST appear in exactly one cluster's seedIds array.`,
+    '- Seeds with no natural grouping partner MUST form a singleton cluster (seedIds with one element).',
+    '- representativeSeedId MUST be the ID of the member with the highest priority value.',
+    '- Group by likely shared root cause, not merely by category or namespace similarity.',
+    '- Do not invent seed IDs, resource names, or symptom descriptions not present in the seed list above.',
+    '- Return only valid JSON. Do not add prose outside the JSON object.',
+  ].join('\n');
+
+  return { system: SEED_CLUSTERING_SYSTEM_PROMPT, user };
+}
 
 /**
  * Builds the system and user prompts for a single AI investigation call.

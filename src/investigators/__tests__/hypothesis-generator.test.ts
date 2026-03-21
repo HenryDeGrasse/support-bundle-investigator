@@ -294,6 +294,13 @@ describe('generateHypothesesForSymptom — CrashLoopBackOff', () => {
     }
   });
 
+  it('all hypotheses carry template evidenceRules through to the Hypothesis object', () => {
+    for (const h of hypotheses) {
+      expect(Array.isArray(h.evidenceRules)).toBe(true);
+      expect(h.evidenceRules!.length).toBeGreaterThan(0);
+    }
+  });
+
   it('all hypotheses have empty evidence assessments', () => {
     for (const h of hypotheses) {
       expect(h.evidenceAssessment.supporting).toHaveLength(0);

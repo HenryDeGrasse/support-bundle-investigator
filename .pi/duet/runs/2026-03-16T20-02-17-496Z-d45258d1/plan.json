@@ -1,0 +1,139 @@
+{
+  "goal": "Implement Day 3 (Investigation Pipeline) and Day 4 (Reporting & Differentiation) of the Support Bundle Investigator PRD. Day 3 adds seed generation, targeted investigators (Kubernetes, Log, Configuration), a verifier for contradiction/confidence checks, and an orchestrator. Day 4 adds Markdown/HTML/JSON report generation, spec-gap recommendations, and CLI integration. All work follows TDD, uses existing project patterns (functional utilities, co-located __tests__ dirs, barrel index.ts exports, .js import extensions), and keeps data cleanly separated from presentation for future TUI adoption.",
+  "steps": [
+    {
+      "id": "step-1",
+      "title": "Investigation types and seed generator",
+      "description": "Create `src/investigators/types.ts` defining InvestigationSeed (hypothesis to investigate with source, category, priority), InvestigatorContext (PipelineResult data needed by investigators), and InvestigatorResult (findings + graph edges produced by an investigator). Create `src/investigators/seed-generator.ts` with `generateSeeds(context: InvestigatorContext): InvestigationSeed[]` that creates investigation leads from: (1) analyzer results with error/warn severity, (2) heuristic rules checking pod health (CrashLoopBackOff, ImagePullBackOff, not-ready), (3) high-importance log files, and (4) warning events. Write tests first in `src/investigators/__tests__/seed-generator.test.ts` covering all 3 fixture scenarios: wrong-db-endpoint should produce DB connectivity seeds, missing-secret-crashloop should produce CrashLoopBackOff + missing-secret seeds, bad-image-tag should produce ImagePullBackOff seeds. Tests should verify seed count, categories, and priority ordering. Create `src/investigators/index.ts` barrel export.",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit"
+      ]
+    },
+    {
+      "id": "step-2",
+      "title": "Kubernetes investigator",
+      "description": "Create `src/investigators/kubernetes-investigator.ts` implementing a `investigateKubernetes(context: InvestigatorContext, seeds: InvestigationSeed[]): InvestigatorResult` function. It should produce Finding objects (using the existing Finding type from `src/types/finding.ts`) for: (1) CrashLoopBackOff pods — correlating pod status, events (BackOff, FailedMount), restart count, and container errors via existing k8s-helpers, (2) ImagePullBackOff pods — correlating pod waiting state, ErrImagePull/Failed events, and image tag from spec, (3) Not-ready pods with running phase — correlating readiness probe failures and Unhealthy events, (4) Unhealthy workloads via isWorkloadReady(). Each finding must include evidence[] with file paths and notes, contradictionsChecked[], and recommended actions. The investigator also adds graph edges (supports, correlates) linking evidence nodes to finding nodes. Write tests first in `src/investigators/__tests__/kubernetes-investigator.test.ts` using mock InvestigatorContext objects built from fixture data patterns. Verify findings are produced for each scenario pattern, evidence paths are populated, and confidence scores are in [0,1].",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit"
+      ]
+    },
+    {
+      "id": "step-3",
+      "title": "Log investigator",
+      "description": "Create `src/investigators/log-investigator.ts` implementing `investigateLog(context: InvestigatorContext, seeds: InvestigationSeed[]): InvestigatorResult`. It should produce findings for: (1) DNS resolution failures — detecting 'no such host', 'lookup failed' patterns in error lines and correlating with configured hostnames from pod env vars, (2) Connection timeout patterns — detecting 'connection refused', 'context deadline exceeded', 'timeout' in logs, (3) Missing resource/secret errors — detecting 'not found', 'secret.*not found' patterns and correlating with K8s resource data, (4) Image pull failures in logs — detecting 'ErrImagePull', 'ImagePullBackOff' patterns. Uses extractErrorWindows() and classifyLogs() from existing parsers. Each finding includes evidence with log file path, line numbers, and matched error content. Write tests first in `src/investigators/__tests__/log-investigator.test.ts` with mock log data matching each scenario. Update `src/investigators/index.ts` barrel.",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit"
+      ]
+    },
+    {
+      "id": "step-4",
+      "title": "Configuration investigator",
+      "description": "Create `src/investigators/config-investigator.ts` implementing `investigateConfig(context: InvestigatorContext, seeds: InvestigationSeed[]): InvestigatorResult`. It should produce findings for: (1) Environment variable references to non-existent services — cross-referencing pod env vars (like DB_HOST) with available Service resources, (2) Secret references that don't exist — checking secretRef/envFrom in pod specs against available Secret resources, (3) Image tag mismatches — comparing deployment spec image tags with pod status image info. Each finding includes evidence from both the referencing resource and the missing target. Write tests in `src/investigators/__tests__/config-investigator.test.ts` with mock contexts. Update barrel export.",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit"
+      ]
+    },
+    {
+      "id": "step-5",
+      "title": "Verifier — contradiction checks and confidence adjustment",
+      "description": "Create `src/investigators/verifier.ts` implementing `verifyFindings(findings: Finding[], context: InvestigatorContext): Finding[]`. The verifier: (1) Checks contradictions — for each finding, looks for evidence that weakens the hypothesis (e.g., if a pod is reported unhealthy but actually has Ready=True, or if a DNS error finding exists but successful connections are also logged), and populates contradictionsChecked[], (2) Adjusts confidence — boosts confidence when multiple independent evidence sources agree, reduces when contradictions exist or evidence is thin, (3) Detects missing evidence — populates missingEvidence[] when expected supporting data is absent (e.g., no log files for a crashing pod, no events for an unhealthy pod), (4) Deduplicates findings — merges findings about the same root issue from different investigators, keeping the highest-confidence version and combining evidence. Write tests in `src/investigators/__tests__/verifier.test.ts` covering contradiction detection, confidence adjustment, missing evidence detection, and deduplication scenarios.",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit"
+      ]
+    },
+    {
+      "id": "step-6",
+      "title": "Investigation orchestrator and pipeline integration",
+      "description": "Create `src/investigators/orchestrator.ts` implementing `runInvestigation(context: InvestigatorContext): InvestigationResult` that: (1) generates seeds, (2) runs all three investigators in parallel, (3) merges results, (4) runs verifier, (5) sorts findings by severity then confidence, (6) adds finding nodes and edges to the investigation graph, (7) records trace steps. Define InvestigationResult type containing findings[], graph updates, and investigation metadata. Update `src/pipeline/analyze.ts` to call runInvestigation() after parsing, adding findings to PipelineResult. Update PipelineResult type to include `findings: Finding[]`. Update `src/investigators/index.ts` barrel. Write tests in `src/investigators/__tests__/orchestrator.test.ts` verifying the full orchestration flow with mock data. Ensure all existing tests still pass — the pipeline now returns findings alongside existing data.",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit",
+        "build"
+      ]
+    },
+    {
+      "id": "step-7",
+      "title": "Report types and spec-gap recommender",
+      "description": "Create `src/reporters/types.ts` defining InvestigationReport (executive summary, ranked findings, root cause, evidence references, contradictions, next steps, missing evidence, spec recommendations), SpecRecommendation (type: 'collector'|'analyzer'|'redaction', description, rationale), and ReportOptions (format, outputDir, includeTrace). Create `src/reporters/spec-recommender.ts` implementing `generateSpecRecommendations(findings: Finding[], profile: BundleProfile): SpecRecommendation[]` that: (1) suggests missing collectors when evidence gaps exist (e.g., no logs → suggest log collector), (2) suggests missing analyzers when heuristic findings could be deterministic (e.g., suggest a secret-existence analyzer), (3) suggests coverage improvements based on profile.coverageGaps. Write tests in `src/reporters/__tests__/spec-recommender.test.ts`. Create `src/reporters/index.ts` barrel.",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit"
+      ]
+    },
+    {
+      "id": "step-8",
+      "title": "JSON reporter",
+      "description": "Create `src/reporters/json-reporter.ts` implementing `generateJsonReport(report: InvestigationReport): string` that produces a well-structured JSON string of the full investigation report including all findings with evidence, contradictions, spec recommendations, and metadata. Also implement `writeJsonReport(report: InvestigationReport, outputDir: string): Promise<string>` that writes findings.json to disk. The JSON output follows the data model from PRD section 16. Write tests in `src/reporters/__tests__/json-reporter.test.ts` verifying JSON structure, field presence, and that the output round-trips through JSON.parse. Update barrel export.",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit"
+      ]
+    },
+    {
+      "id": "step-9",
+      "title": "Markdown reporter",
+      "description": "Create `src/reporters/markdown-reporter.ts` implementing `generateMarkdownReport(report: InvestigationReport): string` that produces a Markdown document with: (1) Executive summary section with bundle info and top-level diagnosis, (2) Ranked findings section — each finding as a subsection with severity badge, confidence score, affected components, reasoning, evidence table (path + note), contradictions checked list, and recommended action, (3) Missing evidence section, (4) Spec improvement recommendations section, (5) Investigation metadata footer. Also implement `writeMarkdownReport(report: InvestigationReport, outputDir: string): Promise<string>`. Write tests in `src/reporters/__tests__/markdown-reporter.test.ts` verifying section headers, finding count, evidence references, and that severity/confidence are rendered. Update barrel export.",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit"
+      ]
+    },
+    {
+      "id": "step-10",
+      "title": "HTML reporter",
+      "description": "Create `src/reporters/html-reporter.ts` implementing `generateHtmlReport(report: InvestigationReport): string` that wraps the Markdown content in a self-contained HTML document with embedded CSS for professional styling: severity color-coding (critical=red, high=orange, medium=yellow, low=blue, info=gray), evidence tables, collapsible sections for contradictions and trace data, and a clean print-friendly layout. Use a template-literal approach (no external dependencies). Also implement `writeHtmlReport(report: InvestigationReport, outputDir: string): Promise<string>`. Write tests in `src/reporters/__tests__/html-reporter.test.ts` verifying valid HTML structure, CSS presence, finding rendering, and severity classes. Update barrel export.",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit"
+      ]
+    },
+    {
+      "id": "step-11",
+      "title": "Report builder and full pipeline + CLI integration",
+      "description": "Create `src/reporters/report-builder.ts` implementing `buildReport(result: PipelineResult): InvestigationReport` that assembles the full report from pipeline results: generates executive summary, ranks findings, identifies root cause, collects spec recommendations, and adds metadata. Update `src/pipeline/analyze.ts` to return a complete PipelineResult with findings. Update `src/cli/output.ts` to use reporters: (1) 'json' format now writes findings.json via json-reporter, (2) 'text' format prints markdown to stdout, (3) Add '--format markdown' and '--format html' options. Update `src/cli/cli.ts` to accept 'markdown' and 'html' as format values. When --output-dir is set, write all three report files (report.md, report.html, findings.json). Update `src/cli/runner.ts` to pass findings through. Write integration test in `src/reporters/__tests__/report-builder.test.ts` verifying report assembly. Ensure all existing CLI tests still pass.",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit",
+        "build"
+      ]
+    },
+    {
+      "id": "step-12",
+      "title": "E2E tests for full investigation + reporting pipeline",
+      "description": "Update `test/e2e/__tests__/scenarios.test.ts` to add new test sections verifying: (1) Each scenario produces relevant findings — wrong-db-endpoint finds DB connectivity issue as top finding, missing-secret-crashloop finds missing secret, bad-image-tag finds image pull issue, (2) Findings have populated evidence[], contradictionsChecked[], and recommendedAction, (3) Confidence scores are reasonable (top finding >= 0.7), (4) Report generation works — markdown report contains expected sections, JSON report parses correctly, HTML report is valid, (5) Spec recommendations are generated when evidence gaps exist, (6) Pipeline trace includes investigation steps. Update `test/integration/__tests__/pipeline.test.ts` to verify findings are present in pipeline output and report files are written when outputDir is provided. Ensure all 428+ existing tests still pass alongside new ones.",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit",
+        "build"
+      ]
+    },
+    {
+      "id": "step-13",
+      "title": "Update documentation and architecture diagrams",
+      "description": "Update all project documentation to reflect the Day 3 + Day 4 additions:\n\n**README.md updates:**\n- Change status line to 'Day 1–4 complete' and summarize investigation + reporting capabilities.\n- Update the test count table to include new test files: `src/investigators/__tests__/` (seed-generator, kubernetes-investigator, log-investigator, config-investigator, verifier, orchestrator) and `src/reporters/__tests__/` (spec-recommender, json-reporter, markdown-reporter, html-reporter, report-builder).\n- Update the total test count to reflect all new tests.\n- Add 'Investigators' and 'Reporters' rows to the Architecture section's mermaid diagram (inline in README).\n- Update the 'Pipeline Data Flow' ASCII diagram to show steps 8 (runInvestigation) and 9 (buildReport / writeReports).\n- Update PipelineResult description to include `findings: Finding[]`.\n- Update Project Structure tree to include `src/investigators/` and `src/reporters/` directories with all new files.\n- Add new Domain Types rows for InvestigationSeed, InvestigatorContext, InvestigatorResult, InvestigationReport, SpecRecommendation.\n- Update CLI Reference to document `--format markdown` and `--format html` options.\n- Update 'What to expect from each scenario' table to describe investigation findings and report output.\n- Update Roadmap table: mark Day 3 and Day 4 as ✅ Complete with summaries.\n- Add a 'Report Output' section showing example CLI usage for generating markdown/html/json reports and what each contains.\n\n**docs/architecture.mmd updates:**\n- Add a new 'Investigators' subgraph containing: Seed Generator, Kubernetes Investigator, Log Investigator, Config Investigator, Verifier, and Orchestrator nodes.\n- Add a new 'Reporters' subgraph containing: Report Builder, Spec Recommender, JSON Reporter, Markdown Reporter, and HTML Reporter nodes.\n- Add edges from Pipeline step 7 (buildGraph) → Investigators → Reporters → CLI Output.\n- Add edges from Investigators to Parsers/Graph (showing data dependencies).\n- Update the CLI subgraph Output Formatters node to show 'json | text | markdown | html'.\n\n**docs/architecture.svg:** Regenerate if tooling is available (mermaid-cli), otherwise note in a comment that the .mmd is the source of truth and .svg should be regenerated.\n\n**Design Decisions section in README:** Add entries for: (1) Why separate investigators? — each focuses on one evidence domain for extensibility and future TUI drill-down, (2) Why a Verifier pass? — contradiction checking and confidence adjustment are core to trustworthy output per PRD principles 10.2 and 10.4, (3) Why data-first reporters? — InvestigationReport is a pure data structure; renderers (Markdown, HTML, JSON) consume it, keeping the door open for a future TUI renderer without changing any investigation logic.",
+      "requiredChecks": [
+        "lint",
+        "typecheck",
+        "unit",
+        "build"
+      ]
+    }
+  ]
+}

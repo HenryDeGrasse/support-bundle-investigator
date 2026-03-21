@@ -169,6 +169,13 @@ export interface AIInvestigatorDeps {
    */
   vectorStore?: VectorStore;
   /**
+   * Maximum tokens of chunk context sent to the LLM per seed investigation.
+   *
+   * Defaults to {@link DEFAULT_TOKEN_BUDGET} (~100K). Reduce for local models
+   * with smaller context windows (e.g. 20,000 for 32K context models).
+   */
+  tokenBudget?: number;
+  /**
    * When `true`, log per-seed retrieval statistics to stdout.
    *
    * Output format:
@@ -252,6 +259,100 @@ function nextFindingId(category: string, counter: Counter): string {
 
 function nextEdgeId(counter: Counter): string {
   return `edge:ai:${counter.value++}`;
+}
+
+// ---------------------------------------------------------------------------
+// affectedComponents normalization (7.3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Kind aliases used when normalizing LLM-generated component strings.
+ *
+ * Maps every lowercase variant the LLM might produce to the canonical
+ * PascalCase Kubernetes Kind name.
+ */
+const KIND_ALIASES: Record<string, string> = {
+  pod: 'Pod',
+  deployment: 'Deployment',
+  statefulset: 'StatefulSet',
+  daemonset: 'DaemonSet',
+  replicaset: 'ReplicaSet',
+  service: 'Service',
+  secret: 'Secret',
+  configmap: 'ConfigMap',
+  persistentvolumeclaim: 'PersistentVolumeClaim',
+  pvc: 'PersistentVolumeClaim',
+  job: 'Job',
+  cronjob: 'CronJob',
+  ingress: 'Ingress',
+  namespace: 'Namespace',
+  node: 'Node',
+};
+
+/**
+ * Normalizes a single `affectedComponents` entry from an LLM-generated AI
+ * finding to the canonical `Kind/namespace/name` format used throughout the
+ * pipeline.
+ *
+ * Handles the common LLM variant: lowercase kind prefix (e.g.
+ * `pod/default/app-pod` → `Pod/default/app-pod`).  Already-correct entries
+ * (`Pod/default/app-pod`) are returned unchanged.
+ */
+function normalizeAffectedComponent(component: string): string {
+  const trimmed = component.trim();
+  const slashIdx = trimmed.indexOf('/');
+  if (slashIdx === -1) return trimmed; // no slash → can't infer Kind, leave as-is
+
+  const rawKind = trimmed.slice(0, slashIdx).toLowerCase();
+  const rest    = trimmed.slice(slashIdx + 1);
+
+  const canonical = KIND_ALIASES[rawKind];
+  if (canonical === undefined) return trimmed; // unknown kind, leave as-is
+
+  return `${canonical}/${rest}`;
+}
+
+// ---------------------------------------------------------------------------
+// Grounding score (7.1 + 7.2)
+// ---------------------------------------------------------------------------
+
+/** Confidence penalty applied per ungrounded evidence citation. */
+export const UNGROUNDED_PENALTY = 0.10;
+
+/**
+ * Applies a grounding penalty to a finding's confidence based on how many of
+ * its evidence items cite paths that were actually retrieved.
+ *
+ * Rules:
+ * - When `retrievedCount === 0` (nothing was retrieved for this seed) no
+ *   grounding check is meaningful — return the confidence unchanged.
+ * - When `retrievedCount > 0` and `groundedCount === 0` (the LLM cited ONLY
+ *   paths not in the retrieved set), the finding is hallucinatory — return
+ *   `null` to signal that the caller should drop it.
+ * - Otherwise apply `-UNGROUNDED_PENALTY` per ungrounded citation and clamp
+ *   the result to `[0, 1]`.
+ *
+ * @param confidence     - Raw confidence from the LLM (`[0, 1]`).
+ * @param groundedCount  - Number of evidence items that matched a retrieved chunk.
+ * @param ungroundedCount- Number of evidence items that did NOT match.
+ * @param retrievedCount - Total number of chunks retrieved for this seed.
+ * @returns Adjusted confidence, or `null` if the finding should be dropped.
+ */
+export function applyGroundingPenalty(
+  confidence: number,
+  groundedCount: number,
+  ungroundedCount: number,
+  retrievedCount: number,
+): number | null {
+  // No retrieved chunks → cannot assess grounding, pass through unchanged
+  if (retrievedCount === 0) return confidence;
+
+  // All citations ungrounded → hallucinatory finding, drop it
+  if (groundedCount === 0) return null;
+
+  // Apply penalty and clamp
+  const adjusted = confidence - ungroundedCount * UNGROUNDED_PENALTY;
+  return Math.min(1.0, Math.max(0.0, adjusted));
 }
 
 // ---------------------------------------------------------------------------
@@ -618,9 +719,17 @@ function convertAIFindings(
   for (const aiF of aiFindings) {
     const findingId = nextFindingId(seed.category, counter);
 
-    // Convert AI evidence items to the canonical Evidence type
+    // Convert AI evidence items, tracking grounded vs ungrounded citations.
+    let groundedCount = 0;
+    let ungroundedCount = 0;
+
     const evidence: Evidence[] = aiF.evidence.map((aiEv) => {
       const matchedChunk = matchChunkForEvidence(aiEv, chunksByPath);
+      if (matchedChunk !== undefined) {
+        groundedCount++;
+      } else {
+        ungroundedCount++;
+      }
       const ev: Evidence = {
         path: aiEv.path,
         note: aiEv.note,
@@ -634,12 +743,31 @@ function convertAIFindings(
       return ev;
     });
 
+    // ── 7.1 + 7.2: Grounding verification & confidence scoring ─────────────
+    // When chunks were retrieved for this seed, every citation must trace back
+    // to an actually-retrieved chunk.  Fully-ungrounded findings are dropped;
+    // partially-ungrounded findings receive a -0.10 per-citation penalty.
+    const adjustedConfidence = applyGroundingPenalty(
+      aiF.confidence,
+      groundedCount,
+      ungroundedCount,
+      chunkIndex.length,
+    );
+    if (adjustedConfidence === null) {
+      // All citations are hallucinated paths — skip this finding entirely.
+      // counter was already incremented by nextFindingId above; no extra step.
+      continue;
+    }
+
+    // ── 7.3: Normalize affectedComponents to canonical Kind/ns/name format ──
+    const normalizedComponents = aiF.affectedComponents.map(normalizeAffectedComponent);
+
     const finding: Finding = {
       id: findingId,
       title: aiF.title,
       severity: aiF.severity,
-      confidence: aiF.confidence,
-      affectedComponents: aiF.affectedComponents,
+      confidence: adjustedConfidence,
+      affectedComponents: normalizedComponents,
       reasoningSummary: aiF.reasoningSummary,
       evidence,
       contradictionsChecked: aiF.contradictionsChecked,
@@ -656,7 +784,7 @@ function convertAIFindings(
         source: `evidence:${ev.path}`,
         target: findingId,
         type: 'supports',
-        weight: aiF.confidence,
+        weight: adjustedConfidence,
       });
     }
   }
@@ -700,7 +828,8 @@ export async function investigateWithAI(
   deps: AIInvestigatorDeps,
   maxSeeds = DEFAULT_MAX_SEEDS,
 ): Promise<InvestigatorResult> {
-  const { llmClient, chunkIndex, resourceGraph, diagnosticGraph, lexicalIndex, embeddingClient, vectorStore, verbose = false, onSeedProgress } = deps;
+  const { llmClient, chunkIndex, resourceGraph, diagnosticGraph, lexicalIndex, embeddingClient, vectorStore, tokenBudget: depsTokenBudget, verbose = false, onSeedProgress } = deps;
+  const effectiveTokenBudget = depsTokenBudget ?? DEFAULT_TOKEN_BUDGET;
 
   // Sort seeds by priority descending and cap at maxSeeds
   const prioritisedSeeds = [...seeds]
@@ -810,7 +939,7 @@ export async function investigateWithAI(
         { chunks: lexicalChunks, scores: lexicalScores },
         { chunks: semanticChunks, scores: semanticScores },
       ];
-      const mergedChunks = mergeChunks(retrievalLists);
+      const mergedChunks = mergeChunks(retrievalLists, effectiveTokenBudget);
 
       // ── Verbose retrieval stats ───────────────────────────────────────────
       if (verbose) {

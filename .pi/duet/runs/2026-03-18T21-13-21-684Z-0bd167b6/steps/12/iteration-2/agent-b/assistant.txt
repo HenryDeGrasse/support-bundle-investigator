@@ -1,0 +1,37 @@
+All checks pass:
+- **52 lexical-search tests**: all green
+- **Full test suite**: 2581 passed, 6 skipped (pre-existing)
+- **TypeScript**: no errors
+- **ESLint**: clean
+
+## Review
+
+### Implementation quality
+The BM25 implementation is solid:
+
+1. **`build()`** properly computes BM25 corpus statistics — N, avgdl, per-term df, per-chunk doc lengths — by tokenizing content once and reusing tokens for both length tracking and indexing. Efficient.
+
+2. **`bm25Score()`** correctly implements the standard BM25 formula: `IDF(t) × (tf × (k1+1)) / (tf + k1 × (1 - b + b × dl/avgdl))` with the Robertson IDF variant `ln((N - df + 0.5) / (df + 0.5) + 1)`. The fallback to `WEIGHT_CONTENT_FALLBACK * tf` for substring-expansion terms (not in the df map) is a reasonable design choice.
+
+3. **Identifier (3.0) and namespace (1.5) weights remain unchanged** — BM25 only replaced the `WEIGHT_CONTENT * count` content scoring path, exactly as specified.
+
+4. **Constants** (`BM25_K1 = 1.2`, `BM25_B = 0.75`) are standard BM25 defaults from the literature.
+
+### Test quality
+The three BM25 tests are well-designed:
+- **Saturation test**: 20 background chunks inflate df('default'), making 50 repetitions of 'default' score below 2 occurrences of the rare 'app-credentials'. 
+- **IDF test**: Uses `topK=50` (larger than corpus) to avoid false passes from truncation.
+- **Length normalization**: 2-token vs 101-token chunks with identical tf=1 — clean demonstration of BM25's length penalty.
+
+The two relaxed existing assertions (exact 3x ratio → `>`, exact score equality → ordering) are appropriate since BM25 produces variable content scores.
+
+### Assessment
+The step requirements are fully met:
+- ✅ BM25 replaces raw TF scoring in content path
+- ✅ IDF, saturation, and length normalization tests added
+- ✅ Identifier/namespace weights unchanged
+- ✅ All 4 required checks pass (lint, typecheck, unit, build)
+
+No changes needed.
+
+Verdict: approve

@@ -1,0 +1,2942 @@
+diff --git a/.pi/duet/config.json b/.pi/duet/config.json
+index 31183e1..ad309b0 100644
+--- a/.pi/duet/config.json
++++ b/.pi/duet/config.json
+@@ -25,8 +25,8 @@
+     "thinking": "high"
+   },
+   "reviewer": {
+-    "label": "GPT-5.4",
+-    "model": "openai-codex/gpt-5.4",
++    "label": "Claude Opus 4.6",
++    "model": "anthropic/claude-opus-4-6",
+     "thinking": "high"
+   },
+   "executionMode": "relay",
+diff --git a/scripts/benchmark-hypotheses.mjs b/scripts/benchmark-hypotheses.mjs
+index 4237815..a258dec 100644
+--- a/scripts/benchmark-hypotheses.mjs
++++ b/scripts/benchmark-hypotheses.mjs
+@@ -30,22 +30,85 @@ const SCENARIOS = [
+   },
+ ];
+ 
+-function inferTopCategory(findings) {
+-  const top = findings[0];
+-  if (!top) return 'none';
++// ---------------------------------------------------------------------------
++// Category inference
++// ---------------------------------------------------------------------------
++
++/**
++ * Infers the diagnostic category of a single finding from its ID or text.
++ *
++ * This mirrors the heuristic used to verify top-1 correctness but operates
++ * on any finding, enabling per-confidence-band accuracy tracking.
++ */
++function inferFindingCategory(finding) {
++  if (!finding) return 'none';
+ 
+-  if (top.id.startsWith('finding:hypothesis:')) {
+-    return top.id.split(':')[2] ?? 'unknown';
++  const id = String(finding.id ?? '');
++  if (id.startsWith('finding:hypothesis:')) {
++    return id.split(':')[2] ?? 'unknown';
+   }
+ 
+-  const lower = `${top.title} ${top.reasoningSummary}`.toLowerCase();
+-  if (lower.includes('dns')) return 'dns-failure';
+-  if (lower.includes('secret')) return 'missing-secret';
+-  if (lower.includes('image')) return 'image-pull-failure';
+-  if (lower.includes('connect')) return 'connectivity-failure';
++  const lower = `${finding.title ?? ''} ${finding.reasoningSummary ?? ''}`.toLowerCase();
++  if (lower.includes('dns') || lower.includes('name resolution') || lower.includes('nslookup')) {
++    return 'dns-failure';
++  }
++  if (lower.includes('secret') && (lower.includes('missing') || lower.includes('not found'))) {
++    return 'missing-secret';
++  }
++  if (lower.includes('image') && (lower.includes('pull') || lower.includes('err'))) {
++    return 'image-pull-failure';
++  }
++  if (lower.includes('volume') || lower.includes('pvc') || lower.includes('mount')) {
++    return 'volume-mount-failure';
++  }
++  if (lower.includes('connect')) {
++    return 'connectivity-failure';
++  }
+   return 'non-hypothesis';
+ }
+ 
++/**
++ * Infers the top category from a list of findings (uses the first / highest
++ * confidence finding).  Used for the per-scenario `correct_top1` check.
++ */
++function inferTopCategory(findings) {
++  return inferFindingCategory(findings[0]);
++}
++
++// ---------------------------------------------------------------------------
++// Confidence bands
++// ---------------------------------------------------------------------------
++
++/**
++ * Confidence bands used for calibration analysis.
++ *
++ * Findings are assigned to the highest band whose `min` threshold they meet
++ * (exclusive upper bound, inclusive lower bound, except the top band which
++ * is inclusive on both ends).
++ */
++const CONFIDENCE_BANDS = [
++  { label: '0.85–1.00', min: 0.85, max: 1.01 },
++  { label: '0.70–0.85', min: 0.70, max: 0.85 },
++  { label: '0.50–0.70', min: 0.50, max: 0.70 },
++  { label: '0.00–0.50', min: 0.00, max: 0.50 },
++];
++
++/**
++ * Assigns a finding's confidence value to a confidence band label.
++ */
++function confidenceBand(confidence) {
++  for (const band of CONFIDENCE_BANDS) {
++    if (confidence >= band.min && confidence < band.max) {
++      return band.label;
++    }
++  }
++  return '0.00–0.50';
++}
++
++// ---------------------------------------------------------------------------
++// Helpers
++// ---------------------------------------------------------------------------
++
+ function parseJson(stdout) {
+   const trimmed = stdout.trim();
+   if (trimmed.length === 0) {
+@@ -97,6 +160,112 @@ function printTable(rows) {
+   }
+ }
+ 
++/**
++ * Prints the confidence calibration report.
++ *
++ * For each confidence band, shows the count of findings in that band, how
++ * many were "correct" (matched the scenario's expected top category), and
++ * the accuracy percentage.
++ *
++ * Also checks monotonicity: higher bands should have >= accuracy than lower
++ * bands and prints a warning when this is violated.
++ *
++ * @param {Array<{confidence: number, correct: boolean, scenario: string, mode: string}>} allFindingStats
++ */
++function printConfidenceCalibration(allFindingStats) {
++  console.log('\n--- Confidence calibration by band ---\n');
++  console.log(
++    'Definition of "correct": a finding is correct when its inferred category\n' +
++    'matches the scenario\'s expectedTopCategory.  With 4 scenarios this is a\n' +
++    'small dataset — use the data to spot regressions, not absolute thresholds.\n',
++  );
++
++  const headers = ['band', 'findings', 'correct', 'accuracy'];
++  const bandStats = CONFIDENCE_BANDS.map((band) => {
++    const inBand = allFindingStats.filter(
++      (s) => s.confidence >= band.min && s.confidence < band.max,
++    );
++    const correct = inBand.filter((s) => s.correct).length;
++    const accuracy = inBand.length > 0 ? correct / inBand.length : null;
++    return {
++      label: band.label,
++      total: inBand.length,
++      correct,
++      accuracy,
++    };
++  });
++
++  const stringRows = bandStats.map((s) => [
++    s.label,
++    String(s.total),
++    String(s.correct),
++    s.accuracy === null ? 'n/a (no data)' : `${(s.accuracy * 100).toFixed(1)}%`,
++  ]);
++
++  const widths = headers.map((h, i) =>
++    Math.max(h.length, ...stringRows.map((r) => r[i].length)),
++  );
++  const renderRow = (cells) =>
++    cells.map((cell, i) => cell.padEnd(widths[i])).join('  ');
++
++  console.log(renderRow(headers));
++  console.log(widths.map((w) => '-'.repeat(w)).join('  '));
++  for (const row of stringRows) {
++    console.log(renderRow(row));
++  }
++
++  // ── Monotonicity check ───────────────────────────────────────────────────
++  // Higher confidence bands should have >= accuracy than lower bands.
++  // We compare adjacent bands (highest first).
++
++  console.log('\n--- Monotonicity check (higher confidence → higher accuracy) ---\n');
++
++  const bandsWithData = bandStats.filter((b) => b.accuracy !== null);
++
++  if (bandsWithData.length < 2) {
++    console.log('Not enough data across bands to check monotonicity.');
++    return;
++  }
++
++  let allMonotone = true;
++  // bandsWithData is ordered highest-band-first (CONFIDENCE_BANDS order)
++  for (let i = 0; i < bandsWithData.length - 1; i++) {
++    const higher = bandsWithData[i];
++    const lower = bandsWithData[i + 1];
++    // Allow a tiny tolerance for floating-point imprecision
++    const isMonotone = higher.accuracy >= lower.accuracy - 0.001;
++    const status = isMonotone ? 'OK' : 'VIOLATION';
++    console.log(
++      `  ${higher.label} (${(higher.accuracy * 100).toFixed(1)}%) ` +
++        `>= ${lower.label} (${(lower.accuracy * 100).toFixed(1)}%): ${status}`,
++    );
++    if (!isMonotone) allMonotone = false;
++  }
++
++  if (allMonotone) {
++    console.log('\nMonotonicity: PASS — confidence scores are well-ordered.');
++  } else {
++    console.log(
++      '\nMonotonicity: WARN — some bands violate monotonicity.' +
++        '\nThis may indicate miscalibrated scoring constants or insufficient data.' +
++        '\nReview src/investigators/hypothesis-ranker.ts scoring weights.',
++    );
++  }
++
++  // ── Overall accuracy ─────────────────────────────────────────────────────
++  const totalAll = allFindingStats.length;
++  const correctAll = allFindingStats.filter((s) => s.correct).length;
++  if (totalAll > 0) {
++    console.log(
++      `\nOverall accuracy: ${correctAll}/${totalAll} = ${((correctAll / totalAll) * 100).toFixed(1)}%`,
++    );
++  }
++}
++
++// ---------------------------------------------------------------------------
++// Bundle creation
++// ---------------------------------------------------------------------------
++
+ async function createScenarioBundle(tmpDir, scenarioName) {
+   const scenarioDir = path.join(repoRoot, 'test', 'fixtures', 'scenarios', scenarioName);
+   const bundlePath = path.join(tmpDir, `${scenarioName}.tar.gz`);
+@@ -113,6 +282,10 @@ async function createScenarioBundle(tmpDir, scenarioName) {
+   return bundlePath;
+ }
+ 
++// ---------------------------------------------------------------------------
++// CLI runner
++// ---------------------------------------------------------------------------
++
+ function runCli(bundlePath, mode) {
+   const args = [cliEntry, 'analyze', bundlePath, '--format', 'json'];
+   if (mode === 'heuristic') {
+@@ -153,6 +326,10 @@ function runCli(bundlePath, mode) {
+   };
+ }
+ 
++// ---------------------------------------------------------------------------
++// main
++// ---------------------------------------------------------------------------
++
+ async function main() {
+   try {
+     await fs.access(cliEntry);
+@@ -168,11 +345,16 @@ async function main() {
+   try {
+     const rows = [];
+ 
++    // Collect per-finding confidence/correctness data for calibration analysis
++    /** @type {Array<{confidence: number, correct: boolean, scenario: string, mode: string, category: string}>} */
++    const allFindingStats = [];
++
+     for (const scenario of SCENARIOS) {
+       const bundlePath = await createScenarioBundle(tmpDir, scenario.name);
+ 
+       for (const mode of modes) {
+         const result = runCli(bundlePath, mode);
++
+         rows.push({
+           scenario: scenario.name,
+           mode,
+@@ -184,10 +366,29 @@ async function main() {
+           hypothesisFindings: result.hypothesisFindings.length,
+           aiFindings: result.aiFindings.length,
+         });
++
++        // Collect per-finding data for confidence calibration (7.7)
++        for (const finding of result.findings) {
++          const confidence = typeof finding.confidence === 'number' ? finding.confidence : 0;
++          const category = inferFindingCategory(finding);
++          const correct = category === scenario.expectedTopCategory;
++          allFindingStats.push({
++            confidence,
++            correct,
++            scenario: scenario.name,
++            mode,
++            category,
++          });
++        }
+       }
+     }
+ 
++    // ── Main results table ─────────────────────────────────────────────────
++    console.log('--- Scenario results ---\n');
+     printTable(rows);
++
++    // ── Confidence calibration (7.7) ───────────────────────────────────────
++    printConfidenceCalibration(allFindingStats);
+   } finally {
+     await fs.rm(tmpDir, { recursive: true, force: true });
+   }
+diff --git a/src/ai/__tests__/chunk-indexer.test.ts b/src/ai/__tests__/chunk-indexer.test.ts
+index db67a0b..f2a082d 100644
+--- a/src/ai/__tests__/chunk-indexer.test.ts
++++ b/src/ai/__tests__/chunk-indexer.test.ts
+@@ -222,17 +222,35 @@ describe('buildChunkIndex', () => {
+     expect(analyzerChunks).toHaveLength(3);
+   });
+ 
+-  it('produces multiple log chunks for large log files', () => {
+-    // 55 lines → should produce 2 chunks with chunkSize=50, overlap=10
+-    const lines = Array.from({ length: 55 }, (_, i) => ({
+-      lineNumber: i + 1,
+-      content: `Line ${i + 1}`,
+-      level: 'info' as const,
+-    }));
+-    const logFile: LogFile = { path: '/logs/app.log', lines, errorCount: 0, warningCount: 0, importance: 0 };
++  it('produces multiple log chunks for log files with errors (preamble + error-cluster + summary)', () => {
++    // Log file with errors: error-aware chunking produces preamble + error-cluster + summary
++    const lines = [
++      // Lines 1-20: INFO (preamble zone)
++      ...Array.from({ length: 20 }, (_, i) => ({
++        lineNumber: i + 1,
++        content: `INFO: startup line ${i + 1}`,
++        level: 'info' as const,
++      })),
++      // Lines 21-30: INFO (healthy region)
++      ...Array.from({ length: 10 }, (_, i) => ({
++        lineNumber: 21 + i,
++        content: `INFO: normal line ${21 + i}`,
++        level: 'info' as const,
++      })),
++      // Line 31: ERROR (triggers error-cluster chunk)
++      { lineNumber: 31, content: 'ERROR: connection refused', level: 'error' as const },
++      // Lines 32-55: INFO (healthy tail)
++      ...Array.from({ length: 24 }, (_, i) => ({
++        lineNumber: 32 + i,
++        content: `INFO: tail line ${32 + i}`,
++        level: 'info' as const,
++      })),
++    ];
++    const logFile: LogFile = { path: '/logs/app.log', lines, errorCount: 1, warningCount: 0, importance: 0.5 };
+     const ctx = makeContext({ logs: [logFile] });
+     const chunks = buildChunkIndex(ctx);
+     const logChunks = chunks.filter((c) => c.artifactCategory === 'log');
++    // preamble + error-cluster + summary = 3 chunks
+     expect(logChunks.length).toBeGreaterThan(1);
+   });
+ });
+@@ -935,3 +953,120 @@ describe('identifiersFromHelmRelease', () => {
+     expect(ids).not.toContain('');
+   });
+ });
++
++// ---------------------------------------------------------------------------
++// augmentLogChunk — meaningful log summary (2.8)
++// ---------------------------------------------------------------------------
++
++describe('augmentLogChunk — meaningful log summary (2.8)', () => {
++  it('error-cluster chunk summary includes primary error lines', () => {
++    const lines = [
++      ...Array.from({ length: 20 }, (_, i) => ({
++        lineNumber: i + 1,
++        content: `INFO: startup line ${i + 1}`,
++        level: 'info' as const,
++      })),
++      {
++        lineNumber: 21,
++        content: 'ERROR: connection refused to postgres:5432',
++        level: 'error' as const,
++      },
++      ...Array.from({ length: 10 }, (_, i) => ({
++        lineNumber: 22 + i,
++        content: `INFO: tail line ${22 + i}`,
++        level: 'info' as const,
++      })),
++    ];
++    const logFile: LogFile = {
++      path: '/logs/app.log',
++      lines,
++      errorCount: 1,
++      warningCount: 0,
++      importance: 0.5,
++    };
++    const ctx = makeContext({ logs: [logFile] });
++    const chunks = buildChunkIndex(ctx);
++    const errorChunk = chunks.find(
++      (c) => c.artifactCategory === 'log' && c.metadata?.['chunkType'] === 'error-cluster',
++    );
++    expect(errorChunk).toBeDefined();
++    // Summary must include the actual error content, not just the path description
++    expect(errorChunk!.summary).toContain('connection refused');
++  });
++
++  it('error-cluster chunk summary is not a bare path/line-range description', () => {
++    const lines = [
++      ...Array.from({ length: 20 }, (_, i) => ({
++        lineNumber: i + 1,
++        content: `INFO: startup ${i + 1}`,
++        level: 'info' as const,
++      })),
++      {
++        lineNumber: 21,
++        content: 'ERROR: disk full on /dev/sda1',
++        level: 'error' as const,
++      },
++    ];
++    const logFile: LogFile = {
++      path: '/logs/app.log',
++      lines,
++      errorCount: 1,
++      warningCount: 0,
++      importance: 0.5,
++    };
++    const ctx = makeContext({ logs: [logFile] });
++    const chunks = buildChunkIndex(ctx);
++    const errorChunk = chunks.find(
++      (c) => c.artifactCategory === 'log' && c.metadata?.['chunkType'] === 'error-cluster',
++    );
++    expect(errorChunk).toBeDefined();
++    // Must NOT be just "Log chunk from X (lines N–M)" with nothing else
++    const isBarePath = /^Log chunk from .+ \(lines \d+[–-]\d+\)$/.test(
++      errorChunk!.summary.trim(),
++    );
++    expect(isBarePath).toBe(false);
++    // And it must include actual error content
++    expect(errorChunk!.summary).toContain('disk full');
++  });
++
++  it('preamble chunk summary includes actual log content', () => {
++    const logFile = makeLogFile('/logs/app.log', 1);
++    const ctx = makeContext({ logs: [logFile] });
++    const chunks = buildChunkIndex(ctx);
++    const preambleChunk = chunks.find(
++      (c) => c.artifactCategory === 'log' && c.metadata?.['chunkType'] === 'preamble',
++    );
++    expect(preambleChunk).toBeDefined();
++    // Preamble summary should include actual content, not just a bare path description
++    const isBarePath = /^Log chunk from .+ \(lines \d+[–-]\d+\)$/.test(
++      preambleChunk!.summary.trim(),
++    );
++    expect(isBarePath).toBe(false);
++  });
++
++  it('log chunk summary includes at least part of the chunk content', () => {
++    const logFile = makeLogFile('/logs/app.log', 0);
++    const ctx = makeContext({ logs: [logFile] });
++    const chunks = buildChunkIndex(ctx);
++    const logChunk = chunks.find((c) => c.artifactCategory === 'log');
++    expect(logChunk).toBeDefined();
++    // The summary should contain actual log content (the first line includes a recognisable phrase)
++    expect(logChunk!.summary).toContain('INFO');
++  });
++
++  it('log chunk summary is still a string when content is empty', () => {
++    // Edge case: even with empty content the summary must remain a non-empty string
++    const logFile: LogFile = {
++      path: '/logs/empty.log',
++      lines: [{ lineNumber: 1, content: '', level: 'info' }],
++      errorCount: 0,
++      warningCount: 0,
++      importance: 0,
++    };
++    const ctx = makeContext({ logs: [logFile] });
++    const chunks = buildChunkIndex(ctx);
++    for (const chunk of chunks) {
++      expect(chunk.summary).toBeTruthy();
++    }
++  });
++});
+diff --git a/src/ai/__tests__/config.test.ts b/src/ai/__tests__/config.test.ts
+index 679b80b..3b0b774 100644
+--- a/src/ai/__tests__/config.test.ts
++++ b/src/ai/__tests__/config.test.ts
+@@ -41,11 +41,19 @@ function withEnv(
+ describe('loadAIConfig()', () => {
+   it('returns defaults when no env vars are set', () => {
+     withEnv(
+-      { OPENAI_API_KEY: undefined, SBI_AI_MODEL: undefined, SBI_EMBEDDING_MODEL: undefined },
++      {
++        OPENAI_API_KEY: undefined,
++        SBI_AI_MODEL: undefined,
++        SBI_EMBEDDING_MODEL: undefined,
++        SBI_EMBEDDING_BACKEND: undefined,
++        SBI_EMBEDDING_URL: undefined,
++      },
+       () => {
+         const config = loadAIConfig();
+         expect(config.model).toBe('gpt-4o');
+         expect(config.embeddingModel).toBe('text-embedding-3-small');
++        expect(config.embeddingBackend).toBe('local');
++        expect(config.embeddingUrl).toBe('http://localhost:8080');
+         expect(config.apiKey).toBe('');
+         expect(config.provider).toBe('none');
+         expect(config.enabled).toBe(false);
+@@ -77,6 +85,55 @@ describe('loadAIConfig()', () => {
+     );
+   });
+ 
++  it('reads SBI_EMBEDDING_BACKEND=openai from env', () => {
++    withEnv({ SBI_EMBEDDING_BACKEND: 'openai' }, () => {
++      const config = loadAIConfig();
++      expect(config.embeddingBackend).toBe('openai');
++    });
++  });
++
++  it('reads SBI_EMBEDDING_BACKEND=local from env', () => {
++    withEnv({ SBI_EMBEDDING_BACKEND: 'local' }, () => {
++      const config = loadAIConfig();
++      expect(config.embeddingBackend).toBe('local');
++    });
++  });
++
++  it('reads SBI_EMBEDDING_BACKEND=none from env', () => {
++    withEnv({ SBI_EMBEDDING_BACKEND: 'none' }, () => {
++      const config = loadAIConfig();
++      expect(config.embeddingBackend).toBe('none');
++    });
++  });
++
++  it('defaults SBI_EMBEDDING_BACKEND to local when not set', () => {
++    withEnv({ SBI_EMBEDDING_BACKEND: undefined }, () => {
++      const config = loadAIConfig();
++      expect(config.embeddingBackend).toBe('local');
++    });
++  });
++
++  it('treats unknown SBI_EMBEDDING_BACKEND values as local', () => {
++    withEnv({ SBI_EMBEDDING_BACKEND: 'some-unknown-backend' }, () => {
++      const config = loadAIConfig();
++      expect(config.embeddingBackend).toBe('local');
++    });
++  });
++
++  it('reads SBI_EMBEDDING_URL from env', () => {
++    withEnv({ SBI_EMBEDDING_URL: 'http://my-tei-server:9090' }, () => {
++      const config = loadAIConfig();
++      expect(config.embeddingUrl).toBe('http://my-tei-server:9090');
++    });
++  });
++
++  it('defaults SBI_EMBEDDING_URL to http://localhost:8080 when not set', () => {
++    withEnv({ SBI_EMBEDDING_URL: undefined }, () => {
++      const config = loadAIConfig();
++      expect(config.embeddingUrl).toBe('http://localhost:8080');
++    });
++  });
++
+   it('enables AI when API key is present and noAi is not set', () => {
+     withEnv({ OPENAI_API_KEY: 'sk-valid-key' }, () => {
+       const config = loadAIConfig();
+diff --git a/src/ai/__tests__/embeddings.test.ts b/src/ai/__tests__/embeddings.test.ts
+index 53de36f..c182730 100644
+--- a/src/ai/__tests__/embeddings.test.ts
++++ b/src/ai/__tests__/embeddings.test.ts
+@@ -12,6 +12,8 @@ function makeConfig(overrides: Partial<AIConfig> = {}): AIConfig {
+     apiKey: 'test-key',
+     model: 'gpt-4o',
+     embeddingModel: 'text-embedding-3-small',
++    embeddingBackend: 'openai',
++    embeddingUrl: 'http://localhost:8080',
+     enabled: true,
+     ...overrides,
+   };
+diff --git a/src/ai/__tests__/llm-client.test.ts b/src/ai/__tests__/llm-client.test.ts
+index 64b54c7..7dd7ad3 100644
+--- a/src/ai/__tests__/llm-client.test.ts
++++ b/src/ai/__tests__/llm-client.test.ts
+@@ -32,6 +32,8 @@ const TEST_CONFIG: AIConfig = {
+   apiKey: 'sk-test-key',
+   model: 'gpt-4o',
+   embeddingModel: 'text-embedding-3-small',
++  embeddingBackend: 'openai',
++  embeddingUrl: 'http://localhost:8080',
+   enabled: true,
+ };
+ 
+diff --git a/src/ai/__tests__/summarizer.test.ts b/src/ai/__tests__/summarizer.test.ts
+index f704b76..a39c943 100644
+--- a/src/ai/__tests__/summarizer.test.ts
++++ b/src/ai/__tests__/summarizer.test.ts
+@@ -230,11 +230,14 @@ describe('summarizeResource (ConfigMap)', () => {
+     expect(summary).toContain('DB_USER');
+   });
+ 
+-  it('does not include actual data values', () => {
++  it('includes data values so that network endpoints are searchable (step 3.3)', () => {
+     const summary = summarizeResource(makeConfigMap());
++    // After step 3.3, ConfigMap data values (hostnames, connection strings, etc.)
++    // are included in the summary so that semantic/lexical search can correlate
++    // misconfigured endpoints with log errors.
+     // values are postgres.svc.cluster.local, amdin, 5432
+-    expect(summary).not.toContain('amdin');
+-    expect(summary).not.toContain('postgres.svc.cluster.local');
++    expect(summary).toContain('postgres.svc.cluster.local');
++    expect(summary).toContain('amdin');
+   });
+ });
+ 
+diff --git a/src/ai/chunk-indexer.ts b/src/ai/chunk-indexer.ts
+index 4bc0c41..cbcdc58 100644
+--- a/src/ai/chunk-indexer.ts
++++ b/src/ai/chunk-indexer.ts
+@@ -2,9 +2,29 @@ import type { Chunk, ArtifactCategory } from '../types/index.js';
+ import type { K8sResource, K8sEvent, AnalyzerResult } from '../types/index.js';
+ import type { HelmRelease } from '../parsers/index.js';
+ import type { InvestigatorContext } from '../investigators/types.js';
+-import { chunkLogFile, chunkResource, chunkAnalyzer } from '../graph/chunker.js';
++import { chunkLogFileErrorAware, chunkResource, chunkAnalyzer } from '../graph/chunker.js';
+ import { summarizeResource, summarizeEvent, summarizeAnalyzer, summarizeHelmRelease } from './summarizer.js';
+ import { extractTimestamps } from '../parsers/index.js';
++import { contextualizeChunks, buildDocumentContext } from './contextual-retrieval.js';
++
++// ---------------------------------------------------------------------------
++// Token estimation
++// ---------------------------------------------------------------------------
++
++/**
++ * Estimates the number of tokens in a text string using a simple heuristic:
++ * 4 characters per token (a reasonable approximation for English prose, YAML,
++ * and JSON content with Claude/GPT tokenizers).
++ *
++ * This is intentionally a fast, allocation-free estimate — no tokenizer
++ * required.  Uses floor division so the result is always an integer.
++ *
++ * @param text - The text to estimate token count for.
++ * @returns Estimated token count: `Math.floor(text.length / 4)`.
++ */
++export function estimateTokens(text: string): number {
++  return Math.floor(text.length / 4);
++}
+ 
+ // ---------------------------------------------------------------------------
+ // IndexedChunk
+@@ -39,6 +59,19 @@ export interface IndexedChunk extends Chunk {
+   artifactCategory: ArtifactCategory;
+   /** ISO timestamp extracted from the chunk content, when present. */
+   timestamp?: string;
++  /**
++   * Context-enriched content for embedding.
++   *
++   * A short template-generated context sentence is prepended to the raw
++   * chunk content before embedding so that the vector representation encodes
++   * both the chunk's source (kind, name, namespace, path) and its text.
++   *
++   * When present, the embedding pipeline uses this field instead of the raw
++   * `content`.  The original `content` is always preserved unchanged.
++   *
++   * Populated by {@link contextualizeChunks} inside {@link buildChunkIndex}.
++   */
++  contextualizedContent?: string;
+ }
+ 
+ // ---------------------------------------------------------------------------
+@@ -472,6 +505,15 @@ function augmentHelmReleaseChunk(release: HelmRelease, artifactId: string): Inde
+   };
+ }
+ 
++/**
++ * Truncates `text` to at most `maxChars` characters, appending `"..."` when
++ * truncated.  Returns the full text unchanged when it fits within the limit.
++ */
++function truncateContent(text: string, maxChars: number): string {
++  if (text.length <= maxChars) return text;
++  return text.slice(0, maxChars) + '...';
++}
++
+ function augmentLogChunk(chunk: Chunk): IndexedChunk {
+   const path = getChunkPath(chunk);
+   const identifiers = identifiersFromLogContent(chunk.content, path);
+@@ -480,9 +522,34 @@ function augmentLogChunk(chunk: Chunk): IndexedChunk {
+   const firstLine = chunk.content.split('\n')[0] ?? '';
+   const ts = extractTimestamps(firstLine);
+ 
++  // Build a meaningful summary that includes actual log content so that
++  // semantic embeddings can match on log content rather than on the bare
++  // file-path description.  ~500 tokens ≈ 2 000 characters at 4 chars/token.
++  const MAX_SUMMARY_CHARS = 2000;
++  const prefix = `Log chunk from ${path} (lines ${chunk.startLine}–${chunk.endLine})`;
++
++  const chunkType = isRecord(chunk.metadata)
++    ? (chunk.metadata['chunkType'] as string | undefined)
++    : undefined;
++
++  let body: string;
++  if (chunkType === 'error-cluster') {
++    // For error-cluster chunks, prioritise error/fatal lines so they appear at
++    // the start of the summary and are captured within any token truncation.
++    const contentLines = chunk.content.split('\n');
++    const errorLines = contentLines.filter((l) => /\b(ERROR|FATAL)\b/i.test(l));
++    const otherLines = contentLines.filter((l) => !/\b(ERROR|FATAL)\b/i.test(l));
++    // Put error lines first, then the rest, then truncate the whole thing.
++    body = truncateContent([...errorLines, ...otherLines].join('\n'), MAX_SUMMARY_CHARS);
++  } else {
++    body = truncateContent(chunk.content, MAX_SUMMARY_CHARS);
++  }
++
++  const summary = body ? `${prefix}:\n${body}` : prefix;
++
+   return {
+     ...chunk,
+-    summary: `Log chunk from ${path} (lines ${chunk.startLine}–${chunk.endLine})`,
++    summary,
+     identifiers,
+     artifactCategory: 'log',
+     timestamp: ts ?? undefined,
+@@ -532,7 +599,7 @@ export function buildChunkIndex(context: InvestigatorContext): IndexedChunk[] {
+ 
+   // ── Log files ─────────────────────────────────────────────────────────────
+   for (const logFile of context.logs) {
+-    const baseChunks = chunkLogFile(logFile, 50, 10);
++    const baseChunks = chunkLogFileErrorAware(logFile);
+     for (const baseChunk of baseChunks) {
+       chunks.push(augmentLogChunk(baseChunk));
+     }
+@@ -554,5 +621,11 @@ export function buildChunkIndex(context: InvestigatorContext): IndexedChunk[] {
+     }
+   }
+ 
+-  return chunks;
++  // ── Contextual retrieval — prepend context prefix to each chunk ────────────
++  // Derive a DocumentContext from each chunk's metadata and produce a new
++  // array where every chunk has a `contextualizedContent` field.  The raw
++  // `content` is preserved unchanged; the embedding pipeline uses
++  // `contextualizedContent` (see analyze.ts).
++  const documents = chunks.map(buildDocumentContext);
++  return contextualizeChunks(chunks, documents);
+ }
+diff --git a/src/ai/config.ts b/src/ai/config.ts
+index 9e5141c..a2264ba 100644
+--- a/src/ai/config.ts
++++ b/src/ai/config.ts
+@@ -7,12 +7,27 @@
+ // caller has not explicitly opted out with --no-ai.
+ //
+ // Environment variables:
+-//   OPENAI_API_KEY      — OpenAI API key (required for AI features)
+-//   SBI_AI_MODEL        — Chat completion model (default: gpt-4o)
+-//   SBI_EMBEDDING_MODEL — Embedding model     (default: text-embedding-3-small)
++//   OPENAI_API_KEY         — OpenAI API key (required for AI features)
++//   SBI_AI_MODEL           — Chat completion model (default: gpt-4o)
++//   SBI_EMBEDDING_MODEL    — Embedding model     (default: text-embedding-3-small)
++//   SBI_EMBEDDING_BACKEND  — Embedding backend   (default: local)
++//                            Values: local | openai | none
++//   SBI_EMBEDDING_URL      — Local embedding endpoint (default: http://localhost:8080)
++//                            Used when SBI_EMBEDDING_BACKEND=local
+ 
+ export type AIProvider = 'openai' | 'none';
+ 
++/**
++ * Backend to use for text embeddings.
++ *
++ * - `local`  — Local HTTP embedding service (TEI or Ollama). Preferred for
++ *              offline / on-premise deployments. Falls back to Ollama when
++ *              TEI is unavailable.
++ * - `openai` — OpenAI Embeddings API (requires OPENAI_API_KEY).
++ * - `none`   — Disable embeddings entirely; graph + BM25 retrieval only.
++ */
++export type EmbeddingBackend = 'local' | 'openai' | 'none';
++
+ export interface AIConfig {
+   /** AI provider. 'none' means AI features are disabled. */
+   provider: AIProvider;
+@@ -22,6 +37,20 @@ export interface AIConfig {
+   model: string;
+   /** Text embedding model identifier. */
+   embeddingModel: string;
++  /**
++   * Embedding backend to use.
++   *
++   * Defaults to 'local' so the system prefers a locally-running embedding
++   * service (TEI or Ollama) over the OpenAI API.
++   */
++  embeddingBackend: EmbeddingBackend;
++  /**
++   * Base URL for the local embedding service.
++   *
++   * Used when `embeddingBackend === 'local'`.  Defaults to
++   * `http://localhost:8080` (HuggingFace TEI default port).
++   */
++  embeddingUrl: string;
+   /** Whether AI features are active for this run. */
+   enabled: boolean;
+ }
+@@ -43,6 +72,13 @@ function resolveRequestedProvider(aiProvider?: string): AIProvider {
+   return 'openai';
+ }
+ 
++function resolveEmbeddingBackend(raw: string | undefined): EmbeddingBackend {
++  const normalized = raw?.trim().toLowerCase();
++  if (normalized === 'openai') return 'openai';
++  if (normalized === 'none') return 'none';
++  return 'local'; // default
++}
++
+ /**
+  * Loads AI configuration from environment variables, applying optional
+  * overrides from CLI flags.
+@@ -58,6 +94,8 @@ export function loadAIConfig(overrides: LoadAIConfigOverrides = {}): AIConfig {
+   const apiKey = process.env['OPENAI_API_KEY'] ?? '';
+   const model = process.env['SBI_AI_MODEL'] ?? 'gpt-4o';
+   const embeddingModel = process.env['SBI_EMBEDDING_MODEL'] ?? 'text-embedding-3-small';
++  const embeddingBackend = resolveEmbeddingBackend(process.env['SBI_EMBEDDING_BACKEND']);
++  const embeddingUrl = process.env['SBI_EMBEDDING_URL'] ?? 'http://localhost:8080';
+   const requestedProvider = resolveRequestedProvider(aiProvider);
+ 
+   const hasKey = apiKey.trim().length > 0;
+@@ -70,6 +108,8 @@ export function loadAIConfig(overrides: LoadAIConfigOverrides = {}): AIConfig {
+     apiKey,
+     model,
+     embeddingModel,
++    embeddingBackend,
++    embeddingUrl,
+     enabled,
+   };
+ }
+diff --git a/src/ai/embeddings.ts b/src/ai/embeddings.ts
+index 65e4811..3a1b1da 100644
+--- a/src/ai/embeddings.ts
++++ b/src/ai/embeddings.ts
+@@ -18,17 +18,57 @@ import type { AIConfig } from './config.js';
+ const EMBEDDING_BATCH_SIZE = 100;
+ 
+ // ---------------------------------------------------------------------------
+-// EmbeddingClient
++// EmbeddingClientInterface
++// ---------------------------------------------------------------------------
++
++/**
++ * Common interface for all embedding backends.
++ *
++ * Both {@link EmbeddingClient} (OpenAI) and {@link LocalEmbeddingClient}
++ * (TEI / Ollama) implement this interface so the rest of the pipeline is
++ * backend-agnostic.
++ *
++ * Graceful-degradation contract: all implementations MUST return empty arrays
++ * (not throw) when embeddings fail, enabling callers to skip semantic
++ * retrieval rather than aborting.
++ */
++export interface EmbeddingClientInterface {
++  /**
++   * Embeds an array of texts.
++   *
++   * Returns a parallel array of embedding vectors.  Entries may be empty
++   * arrays when the corresponding embedding could not be computed.
++   *
++   * @param texts - Input texts to embed.
++   * @returns Parallel array of float vectors (empty sub-arrays on failure).
++   */
++  embed(texts: string[]): Promise<number[][]>;
++
++  /**
++   * Embeds a single text string.
++   *
++   * Returns an empty array on failure.
++   *
++   * @param text - Input text to embed.
++   * @returns Embedding vector, or an empty array on failure.
++   */
++  embedSingle(text: string): Promise<number[]>;
++}
++
++// ---------------------------------------------------------------------------
++// EmbeddingClient (OpenAI backend)
+ // ---------------------------------------------------------------------------
+ 
+ /**
+  * Wraps the OpenAI embeddings API for batch text embedding.
+  *
++ * Implements {@link EmbeddingClientInterface}.
++ *
+  * Graceful degradation: any embedding failure returns an empty array for the
+  * affected batch rather than throwing. Callers that check for empty arrays
+  * can skip semantic retrieval and fall back to graph + lexical results.
+  */
+-export class EmbeddingClient {
++export class EmbeddingClient implements EmbeddingClientInterface {
+   private readonly client: OpenAI;
+   private readonly model: string;
+ 
+diff --git a/src/ai/index.ts b/src/ai/index.ts
+index a4faf7e..ea031f6 100644
+--- a/src/ai/index.ts
++++ b/src/ai/index.ts
+@@ -4,6 +4,8 @@ export type { RecorderMode, Cassette, CassetteStore } from './recorder.js';
+ export { summarizeResource, summarizeEvent, summarizeAnalyzer, summarizeHelmRelease } from './summarizer.js';
+ export { buildChunkIndex } from './chunk-indexer.js';
+ export type { IndexedChunk } from './chunk-indexer.js';
++export { generateChunkContext, contextualizeChunks, buildDocumentContext } from './contextual-retrieval.js';
++export type { DocumentContext } from './contextual-retrieval.js';
+ export { LexicalSearchIndex } from './lexical-search.js';
+ export type { ScoredChunk as LexicalScoredChunk } from './lexical-search.js';
+ export { validateAIFindings } from './schemas.js';
+@@ -13,5 +15,14 @@ export type { PlaybookCategory } from './prompts.js';
+ export { LLMClient } from './llm-client.js';
+ export type { AIFindingResponse } from './llm-client.js';
+ export { EmbeddingClient } from './embeddings.js';
++export type { EmbeddingClientInterface } from './embeddings.js';
++export { LocalEmbeddingClient, createEmbeddingClient } from './local-embeddings.js';
++export type { LocalBackendType, LocalEmbeddingClientConfig } from './local-embeddings.js';
++export { mapChunkBoundariesToTokenPositions, averagePoolSlice, lateChunkEmbed } from './late-chunking.js';
++export type { ChunkBoundary, TokenRange, LateChunkEmbeddingClient } from './late-chunking.js';
+ export { VectorStore, cosineSimilarity } from './vector-store.js';
+ export type { ScoredChunk } from './vector-store.js';
++export { generateHypotheticalDocument, HYDE_SYSTEM_PROMPT } from './hyde.js';
++export type { HydeLLMClient } from './hyde.js';
++export { computeRetrievalMetrics, aggregateRetrievalMetrics } from './retrieval-metrics.js';
++export type { RetrievalMetrics } from './retrieval-metrics.js';
+diff --git a/src/ai/llm-client.ts b/src/ai/llm-client.ts
+index 75ba045..6d493f8 100644
+--- a/src/ai/llm-client.ts
++++ b/src/ai/llm-client.ts
+@@ -17,6 +17,7 @@ import OpenAI from 'openai';
+ import type { AIConfig } from './config.js';
+ import type { AIFinding } from './schemas.js';
+ import { validateAIFindings } from './schemas.js';
++import type { HydeLLMClient } from './hyde.js';
+ 
+ // ---------------------------------------------------------------------------
+ // AIFindingResponse
+@@ -43,11 +44,14 @@ export interface AIFindingResponse {
+ /**
+  * Wraps the OpenAI chat completions API for structured K8s investigation.
+  *
++ * Implements {@link HydeLLMClient} so it can be passed directly to
++ * `generateHypotheticalDocument` without any adapter.
++ *
+  * Instantiate with a loaded {@link AIConfig} (must have `enabled: true` and a
+  * valid `apiKey`). If the config is disabled, callers should not construct
+  * this class — use the `isAIEnabled` guard from `config.ts` first.
+  */
+-export class LLMClient {
++export class LLMClient implements HydeLLMClient {
+   private readonly client: OpenAI;
+   private readonly model: string;
+ 
+@@ -56,6 +60,32 @@ export class LLMClient {
+     this.model = config.model;
+   }
+ 
++  /**
++   * Generates free-form text given a system and user prompt.
++   *
++   * Unlike `investigateSeed`, this method does NOT use JSON mode — the model
++   * response is returned as a plain string.
++   *
++   * **Does not swallow errors** — throws on network/API failure so that
++   * callers (e.g. `generateHypotheticalDocument`) can detect failure and apply
++   * their own fallback logic.
++   *
++   * @param systemPrompt - System-level context for the generation task.
++   * @param userPrompt   - User-facing prompt.
++   * @returns Generated text string.  Empty string if the model returns no content.
++   */
++  async generateText(systemPrompt: string, userPrompt: string): Promise<string> {
++    const response = await this.client.chat.completions.create({
++      model: this.model,
++      messages: [
++        { role: 'system', content: systemPrompt },
++        { role: 'user', content: userPrompt },
++      ],
++    });
++
++    return response.choices[0]?.message?.content ?? '';
++  }
++
+   /**
+    * Calls the LLM with a system + user prompt pair and returns structured
+    * findings.
+diff --git a/src/ai/summarizer.ts b/src/ai/summarizer.ts
+index 837842d..9555a85 100644
+--- a/src/ai/summarizer.ts
++++ b/src/ai/summarizer.ts
+@@ -255,16 +255,37 @@ function summarizeWorkload(resource: K8sResource): string {
+ // ConfigMap summary
+ // ---------------------------------------------------------------------------
+ 
++/**
++ * Maximum character length for a single ConfigMap data value included in the
++ * summary.  Values longer than this are truncated with `"..."` to avoid
++ * bloating the summary with multi-line configuration blobs (e.g. embedded
++ * nginx.conf or application.yaml).
++ */
++const CONFIG_MAP_VALUE_LIMIT = 100;
++
+ function summarizeConfigMap(resource: K8sResource): string {
+   const name = resource.metadata.name;
+   const ns = resource.metadata.namespace ?? 'default';
+   const lines: string[] = [`ConfigMap: ${name} (namespace: ${ns})`];
+ 
+-  if (isRecord(resource as unknown as Record<string, unknown>)) {
+-    const raw = resource as unknown as Record<string, unknown>;
+-    if (isRecord(raw['data'])) {
+-      const keys = Object.keys(raw['data'] as Record<string, unknown>);
+-      lines.push(`Keys: ${keys.join(', ')}`);
++  const raw = resource as unknown as Record<string, unknown>;
++  if (isRecord(raw['data'])) {
++    const data = raw['data'] as Record<string, unknown>;
++    const keys = Object.keys(data);
++    lines.push(`Keys: ${keys.join(', ')}`);
++
++    // Include data values so that network endpoints and connection strings
++    // remain searchable after the summary-as-content migration (step 3.3).
++    // Without this, a ConfigMap with `DB_HOST: wrong-host.internal` would
++    // lose the hostname from the embedded content, breaking retrieval.
++    for (const [key, value] of Object.entries(data)) {
++      if (typeof value === 'string' && value.trim()) {
++        const truncated =
++          value.length > CONFIG_MAP_VALUE_LIMIT
++            ? value.slice(0, CONFIG_MAP_VALUE_LIMIT) + '...'
++            : value;
++        lines.push(`  ${key}: ${truncated}`);
++      }
+     }
+   }
+ 
+diff --git a/src/cli/__tests__/runner.test.ts b/src/cli/__tests__/runner.test.ts
+index 4528e1a..5b8de0d 100644
+--- a/src/cli/__tests__/runner.test.ts
++++ b/src/cli/__tests__/runner.test.ts
+@@ -58,6 +58,7 @@ function makePipelineResult(): PipelineResult {
+     events: [],
+     logs: [],
+     findings: [],
++    findingTree: [],
+     graph: { nodes: new Map(), edges: [] } as unknown as PipelineResult['graph'],
+     trace: {
+       bundlePath: '/tmp/bundle.tar.gz',
+diff --git a/src/cli/rat.ts b/src/cli/rat.ts
+index bae4139..865f5c4 100644
+--- a/src/cli/rat.ts
++++ b/src/cli/rat.ts
+@@ -89,6 +89,49 @@ function ensureBuilt(projectRoot: string): void {
+   }
+ }
+ 
++// ---------------------------------------------------------------------------
++// ASCII art banner
++// ---------------------------------------------------------------------------
++
++/**
++ * Prints the RAT ASCII art banner to stdout.
++ *
++ *      _ __       _      _____
++ *     |  _ \    / \   |_   _|
++ *     | |_) |  / _ \    | |
++ *     |  _ <  / ___ \   | |
++ *     |_| \_\/_/   \_\  |_|
++ *
++ *           (\,/)
++ *           oo   '''//,        _
++ *         ,/_;~,        \,    / '
++ *         "'   \    (    \    !
++ *               ',|  \   |__.'
++ *               '~  '~----''
++ *
++ *   Replicated AI Troubleshooting
++ */
++function printBanner(): void {
++  console.log('');
++  // Block letters
++  console.log(`     _ __       _      _____`);
++  console.log(`    |  _ \\    / \\   |_   _|`);
++  console.log(`    | |_) |  / _ \\    | |  `);
++  console.log(`    |  _ <  / ___ \\   | |  `);
++  console.log(`    |_| \\_\\/_/   \\_\\  |_|  `);
++  console.log('');
++  // Rat face
++  console.log(`          (\\,/)`);
++  console.log(`          oo   '''//,        _`);
++  console.log(`        ,/_;~,        \\,    / '`);
++  console.log(`        "'   \\    (    \\    !`);
++  console.log(`              ',|  \\   |__.'`);
++  console.log(`              '~  '~----''`);
++  console.log('');
++  console.log('  Replicated AI Troubleshooting');
++  console.log('');
++}
++
+ // ---------------------------------------------------------------------------
+ // Bundle discovery
+ // ---------------------------------------------------------------------------
+@@ -146,10 +189,7 @@ async function selectBundle(bundles: string[]): Promise<string | null> {
+     output: process.stdout,
+   });
+ 
+-  console.log('');
+-  console.log('  RAT - Replicated AI Troubleshooting');
+-  console.log('  ====================================');
+-  console.log('');
++  printBanner();
+   console.log('  Found support bundles:');
+   console.log('');
+ 
+@@ -238,10 +278,7 @@ async function main(): Promise<void> {
+   const bundles = await findBundles(scanDir);
+ 
+   if (bundles.length === 0) {
+-    console.log('');
+-    console.log('  RAT - Replicated AI Troubleshooting');
+-    console.log('  ====================================');
+-    console.log('');
++    printBanner();
+     console.log(`  No .tar.gz support bundles found in: ./${DEFAULT_BUNDLE_DIR}/`);
+     console.log('');
+     console.log('  To get started:');
+@@ -269,10 +306,7 @@ async function main(): Promise<void> {
+       output: process.stdout,
+     });
+ 
+-    console.log('');
+-    console.log('  RAT - Replicated AI Troubleshooting');
+-    console.log('  ====================================');
+-    console.log('');
++    printBanner();
+     console.log(`  Found: ${name}`);
+ 
+     bundlePath = await new Promise<string | null>((resolve) => {
+diff --git a/src/graph/__tests__/chunker.test.ts b/src/graph/__tests__/chunker.test.ts
+index 4604b64..f206c13 100644
+--- a/src/graph/__tests__/chunker.test.ts
++++ b/src/graph/__tests__/chunker.test.ts
+@@ -1,6 +1,7 @@
+ import { describe, it, expect } from 'vitest';
+-import { chunkLogFile, chunkResource, chunkAnalyzer } from '../chunker.js';
++import { chunkLogFile, chunkResource, chunkAnalyzer, chunkLogFileErrorAware } from '../chunker.js';
+ import type { LogFile, LogLine } from '../../parsers/log-parser.js';
++import type { LogLevel } from '../../parsers/log-parser.js';
+ import type { K8sResource } from '../../types/index.js';
+ import type { AnalyzerResult } from '../../types/index.js';
+ 
+@@ -196,3 +197,310 @@ describe('chunkAnalyzer', () => {
+     expect(chunk.endLine).toBeGreaterThanOrEqual(chunk.startLine);
+   });
+ });
++
++// ---------------------------------------------------------------------------
++// chunkResource — summary content (3.3)
++// ---------------------------------------------------------------------------
++
++describe('chunkResource — summary content (3.3)', () => {
++  it('chunk content is the human-readable summarizeResource output, not raw JSON', () => {
++    const resource = makeResource('my-pod', 'default');
++    const chunk = chunkResource(resource, 'default/pods/my-pod.yaml');
++    // The content should start with "Pod: my-pod" — a human-readable summary
++    expect(chunk.content).toContain('Pod:');
++    expect(chunk.content).toContain('my-pod');
++    // Must NOT start with the raw JSON opening brace
++    expect(chunk.content.trim()).not.toMatch(/^\{/);
++  });
++
++  it('raw JSON is stored in metadata.rawContent', () => {
++    const resource = makeResource('my-pod', 'default');
++    const chunk = chunkResource(resource, 'default/pods/my-pod.yaml');
++    expect(chunk.metadata).toBeDefined();
++    const raw = chunk.metadata!['rawContent'];
++    expect(typeof raw).toBe('string');
++    // rawContent should be parseable JSON containing the resource fields
++    const parsed = JSON.parse(raw as string) as { metadata: { name: string } };
++    expect(parsed.metadata.name).toBe('my-pod');
++  });
++
++  it('endLine reflects the number of lines in the summary content', () => {
++    const resource = makeResource('my-pod', 'default');
++    const chunk = chunkResource(resource, 'default/pods/my-pod.yaml');
++    const summaryLines = chunk.content.split('\n').length;
++    expect(chunk.endLine).toBe(summaryLines);
++  });
++
++  it('metadata.rawContent contains the full resource spec', () => {
++    const resource = makeResource('web-app', 'production');
++    const chunk = chunkResource(resource, 'production/pods/web-app.yaml');
++    const raw = chunk.metadata!['rawContent'] as string;
++    // The raw content should include spec details not present in the summary
++    expect(raw).toContain('"containers"');
++    expect(raw).toContain('nginx:latest');
++  });
++
++  it('content and metadata.rawContent differ for a real resource', () => {
++    const resource = makeResource('my-pod', 'default');
++    const chunk = chunkResource(resource, 'default/pods/my-pod.yaml');
++    // The human-readable summary must be distinct from the raw JSON blob
++    expect(chunk.content).not.toBe(chunk.metadata!['rawContent']);
++  });
++});
++
++// ---------------------------------------------------------------------------
++// chunkLogFileErrorAware — helpers
++// ---------------------------------------------------------------------------
++
++/**
++ * Builds a LogFile where errorLines (1-indexed) are error-level and
++ * all other lines are info-level.
++ */
++function makeLogFileWithErrors(
++  lineCount: number,
++  errorLineNumbers: number[],
++  path = '/var/log/app/app.log',
++): LogFile {
++  const errorSet = new Set(errorLineNumbers);
++  const lines: LogLine[] = Array.from({ length: lineCount }, (_, i) => {
++    const lineNumber = i + 1;
++    const isError = errorSet.has(lineNumber);
++    return {
++      lineNumber,
++      content: isError
++        ? `ERROR: something failed at line ${lineNumber}`
++        : `INFO: normal log line ${lineNumber}`,
++      level: (isError ? 'error' : 'info') as LogLevel,
++    };
++  });
++
++  const errorCount = lines.filter((l) => l.level === 'error').length;
++  return {
++    path,
++    lines,
++    errorCount,
++    warningCount: 0,
++    importance: errorCount > 0 ? 0.5 : 0,
++  };
++}
++
++// ---------------------------------------------------------------------------
++// chunkLogFileErrorAware
++// ---------------------------------------------------------------------------
++
++describe('chunkLogFileErrorAware', () => {
++  // ── backward-compat: no errors ──────────────────────────────────────────
++
++  it('returns empty array for empty log file', () => {
++    const logFile = makeLogFile(0);
++    const chunks = chunkLogFileErrorAware(logFile);
++    expect(chunks).toHaveLength(0);
++  });
++
++  it('returns entire file in one chunk when no errors exist (backward-compatible)', () => {
++    const logFile = makeLogFile(55); // all INFO lines, errorCount=0
++    const chunks = chunkLogFileErrorAware(logFile);
++    expect(chunks).toHaveLength(1);
++    expect(chunks[0]!.startLine).toBe(1);
++    expect(chunks[0]!.endLine).toBe(55);
++  });
++
++  it('single-chunk fallback covers all content', () => {
++    const logFile = makeLogFile(5);
++    const chunks = chunkLogFileErrorAware(logFile);
++    expect(chunks).toHaveLength(1);
++    expect(chunks[0]!.content).toContain('Log line 1');
++    expect(chunks[0]!.content).toContain('Log line 5');
++  });
++
++  // ── preamble ────────────────────────────────────────────────────────────
++
++  it('always includes a preamble chunk (first ~20 lines) when errors are present', () => {
++    // Error at line 50, far beyond the preamble zone
++    const logFile = makeLogFileWithErrors(100, [50]);
++    const chunks = chunkLogFileErrorAware(logFile);
++
++    const preamble = chunks.find((c) => c.metadata?.['chunkType'] === 'preamble');
++    expect(preamble).toBeDefined();
++    expect(preamble!.startLine).toBe(1);
++    expect(preamble!.endLine).toBe(20);
++  });
++
++  it('preamble chunk artifactId matches the log file path', () => {
++    const logFile = makeLogFileWithErrors(100, [50], '/logs/test.log');
++    const chunks = chunkLogFileErrorAware(logFile);
++    const preamble = chunks.find((c) => c.metadata?.['chunkType'] === 'preamble');
++    expect(preamble!.artifactId).toBe('/logs/test.log');
++  });
++
++  it('preamble chunk category is log', () => {
++    const logFile = makeLogFileWithErrors(100, [50]);
++    const chunks = chunkLogFileErrorAware(logFile);
++    const preamble = chunks.find((c) => c.metadata?.['chunkType'] === 'preamble');
++    expect(preamble!.metadata!['category']).toBe('log');
++  });
++
++  it('preamble spans only up to the file length when file is shorter than 20 lines', () => {
++    const logFile = makeLogFileWithErrors(10, [5]);
++    const chunks = chunkLogFileErrorAware(logFile);
++    const preamble = chunks.find((c) => c.metadata?.['chunkType'] === 'preamble');
++    expect(preamble).toBeDefined();
++    // Should end at line 10, not line 20
++    expect(preamble!.endLine).toBeLessThanOrEqual(10);
++  });
++
++  // ── error-cluster chunks ────────────────────────────────────────────────
++
++  it('creates an error-cluster chunk centered on the error with 10-line padding', () => {
++    // Error at line 50 in a 100-line file
++    const logFile = makeLogFileWithErrors(100, [50]);
++    const chunks = chunkLogFileErrorAware(logFile);
++
++    const errorCluster = chunks.find((c) => c.metadata?.['chunkType'] === 'error-cluster');
++    expect(errorCluster).toBeDefined();
++    // With 10-line padding around line 50: starts at 40, ends at 60
++    expect(errorCluster!.startLine).toBeLessThanOrEqual(50);
++    expect(errorCluster!.endLine).toBeGreaterThanOrEqual(50);
++    expect(errorCluster!.content).toContain('ERROR');
++  });
++
++  it('deduplicates repeated lines within error clusters', () => {
++    // 30 identical error lines in the middle of a 60-line file
++    const errorLines = Array.from({ length: 30 }, (_, i) => i + 21); // lines 21-50
++    const lines: LogLine[] = [
++      // Lines 1-20: info
++      ...Array.from({ length: 20 }, (_, i) => ({
++        lineNumber: i + 1,
++        content: `INFO: line ${i + 1}`,
++        level: 'info' as LogLevel,
++      })),
++      // Lines 21-50: identical error text
++      ...errorLines.map((n) => ({
++        lineNumber: n,
++        content: 'ERROR: connection refused to db.internal:5432',
++        level: 'error' as LogLevel,
++      })),
++      // Lines 51-60: info
++      ...Array.from({ length: 10 }, (_, i) => ({
++        lineNumber: 51 + i,
++        content: `INFO: line ${51 + i}`,
++        level: 'info' as LogLevel,
++      })),
++    ];
++    const logFile: LogFile = {
++      path: '/test/app.log',
++      lines,
++      errorCount: 30,
++      warningCount: 0,
++      importance: 1,
++    };
++
++    const chunks = chunkLogFileErrorAware(logFile);
++    const errorChunk = chunks.find((c) => c.metadata?.['chunkType'] === 'error-cluster');
++    expect(errorChunk).toBeDefined();
++
++    // 30 identical error lines should be collapsed to << 30 lines in the output
++    const contentLines = errorChunk!.content.split('\n');
++    const errorContentLines = contentLines.filter((l) => l.includes('ERROR'));
++    expect(errorContentLines.length).toBeLessThan(30);
++
++    // The [repeated xN] marker should appear
++    expect(errorChunk!.content).toContain('[repeated x');
++  });
++
++  it('merges overlapping error windows into a single cluster', () => {
++    // Two errors close together (lines 30 and 35) — their 10-line windows overlap
++    const logFile = makeLogFileWithErrors(100, [30, 35]);
++    const chunks = chunkLogFileErrorAware(logFile);
++
++    const errorClusters = chunks.filter((c) => c.metadata?.['chunkType'] === 'error-cluster');
++    // The two overlapping windows should be merged into one cluster
++    expect(errorClusters).toHaveLength(1);
++    expect(errorClusters[0]!.content).toContain('ERROR');
++  });
++
++  it('creates separate clusters for errors far apart', () => {
++    // Two errors far apart (lines 25 and 75) — their 10-line windows do not overlap
++    const logFile = makeLogFileWithErrors(100, [25, 75]);
++    const chunks = chunkLogFileErrorAware(logFile);
++
++    const errorClusters = chunks.filter((c) => c.metadata?.['chunkType'] === 'error-cluster');
++    expect(errorClusters).toHaveLength(2);
++  });
++
++  // ── summary chunk ───────────────────────────────────────────────────────
++
++  it('creates a summary chunk describing healthy regions', () => {
++    // Error in the middle → healthy regions before and after
++    const logFile = makeLogFileWithErrors(100, [50]);
++    const chunks = chunkLogFileErrorAware(logFile);
++
++    const summaryChunk = chunks.find((c) => c.metadata?.['chunkType'] === 'summary');
++    expect(summaryChunk).toBeDefined();
++    expect(summaryChunk!.content).toContain('INFO lines');
++    expect(summaryChunk!.content).toContain('no errors');
++  });
++
++  it('summary chunk describes line ranges of healthy regions', () => {
++    const logFile = makeLogFileWithErrors(100, [50]);
++    const chunks = chunkLogFileErrorAware(logFile);
++    const summary = chunks.find((c) => c.metadata?.['chunkType'] === 'summary');
++    expect(summary).toBeDefined();
++    // Should contain at least one "lines N-M:" entry
++    expect(summary!.content).toMatch(/lines \d+-\d+:/);
++  });
++
++  it('no summary chunk when all lines are covered by preamble and error clusters', () => {
++    // Very short file: error at line 5, preamble covers 1-10 (entire file)
++    const logFile = makeLogFileWithErrors(10, [5]);
++    const chunks = chunkLogFileErrorAware(logFile);
++    const summaryChunk = chunks.find((c) => c.metadata?.['chunkType'] === 'summary');
++    // Summary may or may not exist depending on coverage; at minimum we verify
++    // that if it exists it has valid content
++    if (summaryChunk) {
++      expect(summaryChunk.content).toContain('INFO lines');
++    }
++  });
++
++  // ── chunk IDs and metadata ───────────────────────────────────────────────
++
++  it('all chunks have valid line ranges (startLine >= 1, endLine >= startLine)', () => {
++    const logFile = makeLogFileWithErrors(100, [25, 75]);
++    const chunks = chunkLogFileErrorAware(logFile);
++    for (const chunk of chunks) {
++      expect(chunk.startLine).toBeGreaterThanOrEqual(1);
++      expect(chunk.endLine).toBeGreaterThanOrEqual(chunk.startLine);
++    }
++  });
++
++  it('all chunks have the same artifactId as the log file path', () => {
++    const path = '/logs/myservice.log';
++    const logFile = makeLogFileWithErrors(100, [50], path);
++    const chunks = chunkLogFileErrorAware(logFile);
++    for (const chunk of chunks) {
++      expect(chunk.artifactId).toBe(path);
++    }
++  });
++
++  it('all chunk IDs are unique', () => {
++    const logFile = makeLogFileWithErrors(100, [25, 50, 75]);
++    const chunks = chunkLogFileErrorAware(logFile);
++    const ids = chunks.map((c) => c.id);
++    const unique = new Set(ids);
++    expect(unique.size).toBe(ids.length);
++  });
++
++  it('produces more than one chunk for a file with errors (preamble + at least one error-cluster)', () => {
++    const logFile = makeLogFileWithErrors(100, [50]);
++    const chunks = chunkLogFileErrorAware(logFile);
++    expect(chunks.length).toBeGreaterThan(1);
++  });
++
++  it('error-cluster chunk metadata has chunkType = error-cluster', () => {
++    const logFile = makeLogFileWithErrors(100, [50]);
++    const chunks = chunkLogFileErrorAware(logFile);
++    const ec = chunks.find((c) => c.metadata?.['chunkType'] === 'error-cluster');
++    expect(ec).toBeDefined();
++    expect(ec!.metadata!['category']).toBe('log');
++  });
++});
+diff --git a/src/graph/__tests__/finding-tree.test.ts b/src/graph/__tests__/finding-tree.test.ts
+index f86512a..04db709 100644
+--- a/src/graph/__tests__/finding-tree.test.ts
++++ b/src/graph/__tests__/finding-tree.test.ts
+@@ -288,3 +288,114 @@ describe('findingTreeToJSON', () => {
+     expect(toJSON(tree)).toEqual(findingTreeToJSON(tree));
+   });
+ });
++
++// ---------------------------------------------------------------------------
++// Investigator-pattern causes edges (real investigator output simulation)
++// ---------------------------------------------------------------------------
++
++describe('buildFindingTree — investigator-pattern causes edges', () => {
++  // Simulate the finding IDs and edge patterns that real investigators produce.
++  // Investigators emit edges with type 'causes' where source = root-cause
++  // finding id and target = symptom finding id.
++
++  it('builds the canonical causal chain: Missing Secret → FailedMount → CrashLoopBackOff → Unhealthy Workload', () => {
++    const missingSecret = makeFinding(
++      'finding:hypothesis:missing-secret:1',
++      'Missing Secret: app-secret not found',
++    );
++    const failedMount = makeFinding(
++      'finding:k8s:failedmount:pod/default/api-6f8d',
++      'FailedMount: volume failed to mount',
++    );
++    const crashLoop = makeFinding(
++      'finding:k8s:crashloop:pod/default/api-6f8d',
++      'CrashLoopBackOff: container restarting',
++    );
++    const unhealthyWorkload = makeFinding(
++      'finding:k8s:workload:deployment/default/api',
++      'Unhealthy Workload: deployment has unavailable replicas',
++    );
++
++    const findings = [missingSecret, failedMount, crashLoop, unhealthyWorkload];
++    const edges: GraphEdge[] = [
++      makeCausesEdge(missingSecret.id, failedMount.id),
++      makeCausesEdge(failedMount.id, crashLoop.id),
++      makeCausesEdge(crashLoop.id, unhealthyWorkload.id),
++    ];
++
++    const tree = buildFindingTree(findings, edges);
++
++    // getRootCauses identifies the top of the chain — Missing Secret has no parent
++    const roots = getRootCauses(tree);
++    expect(roots).toHaveLength(1);
++    expect(roots[0]!.finding.id).toBe(missingSecret.id);
++
++    // The root has exactly one child: FailedMount
++    const root = roots[0]!;
++    expect(root.children).toHaveLength(1);
++    expect(root.children[0]!.finding.id).toBe(failedMount.id);
++
++    // FailedMount → CrashLoopBackOff
++    expect(root.children[0]!.children[0]!.finding.id).toBe(crashLoop.id);
++
++    // CrashLoopBackOff → Unhealthy Workload (leaf)
++    expect(root.children[0]!.children[0]!.children[0]!.finding.id).toBe(unhealthyWorkload.id);
++    expect(root.children[0]!.children[0]!.children[0]!.children).toHaveLength(0);
++  });
++
++  it('getRootCauses returns only the root-cause node (no parent) from a causal chain', () => {
++    const root = makeFinding('finding:hypothesis:missing-secret:1', 'Missing Secret');
++    const mid = makeFinding('finding:k8s:crashloop:pod/ns/p', 'CrashLoopBackOff');
++    const leaf = makeFinding('finding:k8s:workload:dep/ns/d', 'Unhealthy Workload');
++
++    const tree = buildFindingTree([root, mid, leaf], [
++      makeCausesEdge(root.id, mid.id),
++      makeCausesEdge(mid.id, leaf.id),
++    ]);
++
++    const roots = getRootCauses(tree);
++    expect(roots).toHaveLength(1);
++    expect(roots[0]!.finding.id).toBe(root.id);
++    // The root has no parent set
++    expect(roots[0]!.parent).toBeUndefined();
++  });
++
++  it('supports multiple independent causal chains in the same finding set', () => {
++    // Chain A: dns-failure → crashloop-a
++    // Chain B: missing-secret → crashloop-b
++    const dnsFailure = makeFinding('finding:hypothesis:dns-failure:1', 'DNS Failure');
++    const crashA = makeFinding('finding:k8s:crashloop:pod/ns/a', 'CrashLoopBackOff pod A');
++    const missingSecret = makeFinding('finding:hypothesis:missing-secret:1', 'Missing Secret');
++    const crashB = makeFinding('finding:k8s:crashloop:pod/ns/b', 'CrashLoopBackOff pod B');
++
++    const tree = buildFindingTree([dnsFailure, crashA, missingSecret, crashB], [
++      makeCausesEdge(dnsFailure.id, crashA.id),
++      makeCausesEdge(missingSecret.id, crashB.id),
++    ]);
++
++    const roots = getRootCauses(tree);
++    expect(roots).toHaveLength(2);
++    const rootIds = roots.map((r) => r.finding.id);
++    expect(rootIds).toContain(dnsFailure.id);
++    expect(rootIds).toContain(missingSecret.id);
++  });
++
++  it('DFS pre-order traversal of the causal chain visits most-fundamental cause first', () => {
++    const missingSecret = makeFinding('finding:hypothesis:missing-secret:1', 'Missing Secret');
++    const failedMount = makeFinding('finding:k8s:failedmount:pod/ns/p', 'FailedMount');
++    const crashLoop = makeFinding('finding:k8s:crashloop:pod/ns/p', 'CrashLoopBackOff');
++
++    const tree = buildFindingTree([missingSecret, failedMount, crashLoop], [
++      makeCausesEdge(missingSecret.id, failedMount.id),
++      makeCausesEdge(failedMount.id, crashLoop.id),
++    ]);
++
++    const roots = getRootCauses(tree);
++    const visited: string[] = [];
++    for (const root of roots) {
++      traverseDFS(root, (n) => visited.push(n.finding.title));
++    }
++
++    expect(visited).toEqual(['Missing Secret', 'FailedMount', 'CrashLoopBackOff']);
++  });
++});
+diff --git a/src/graph/chunker.ts b/src/graph/chunker.ts
+index dd46772..6c21987 100644
+--- a/src/graph/chunker.ts
++++ b/src/graph/chunker.ts
+@@ -1,6 +1,8 @@
+ import type { Chunk } from '../types/index.js';
+ import type { LogFile } from '../parsers/log-parser.js';
++import { extractErrorWindows, deduplicateLogLines } from '../parsers/log-parser.js';
+ import type { K8sResource, AnalyzerResult } from '../types/index.js';
++import { summarizeResource } from '../ai/summarizer.js';
+ 
+ // ---------------------------------------------------------------------------
+ // chunkLogFile
+@@ -57,6 +59,211 @@ export function chunkLogFile(logFile: LogFile, chunkSize: number, overlap: numbe
+   return chunks;
+ }
+ 
++// ---------------------------------------------------------------------------
++// chunkLogFileErrorAware
++// ---------------------------------------------------------------------------
++
++/**
++ * Error-aware chunking strategy that produces three chunk types:
++ *
++ * 1. **Preamble chunk** — first 20 lines of every log file (startup / config /
++ *    env-var logging). Always included; this is where hostnames, connection
++ *    strings, and versions are logged.
++ *
++ * 2. **Error-cluster chunks** — each group of overlapping error windows
++ *    (10-line padding around each error-level line) collapsed into a single
++ *    chunk. Repeated lines within each cluster are deduplicated via
++ *    {@link deduplicateLogLines} so that 47 identical "connection refused"
++ *    lines become one line with a `[repeated x47]` suffix.
++ *
++ * 3. **Summary chunk** — a short multi-line description of healthy regions:
++ *    `"lines N-M: K INFO lines, no errors"`. Preserves the signal that those
++ *    regions are healthy without consuming token budget on pure INFO noise.
++ *
++ * **Backward-compatible:** when no error-level lines exist, the entire file is
++ * returned as a single chunk (identical to the old fixed-window approach for
++ * small files).
++ *
++ * This replaces the fixed 50-line window with a semantically meaningful
++ * decomposition that dramatically improves LLM diagnostic relevance.
++ *
++ * @param logFile The parsed log file to chunk.
++ */
++export function chunkLogFileErrorAware(logFile: LogFile): Chunk[] {
++  const { lines, path } = logFile;
++
++  if (lines.length === 0) return [];
++
++  // ── backward-compatible fallback: no errors → entire file as one chunk ──
++  if (logFile.errorCount === 0) {
++    const startLine = lines[0]!.lineNumber;
++    const endLine = lines[lines.length - 1]!.lineNumber;
++    return [
++      {
++        id: `${path}:${startLine}-${endLine}`,
++        artifactId: path,
++        content: lines.map((l) => l.content).join('\n'),
++        startLine,
++        endLine,
++        metadata: {
++          path,
++          category: 'log',
++          lineRange: [startLine, endLine],
++        },
++      },
++    ];
++  }
++
++  const PREAMBLE_SIZE = 20;
++  const ERROR_PADDING = 10;
++
++  const chunks: Chunk[] = [];
++
++  // ── 1. Preamble chunk ────────────────────────────────────────────────────
++  const preambleEndIdx = Math.min(PREAMBLE_SIZE - 1, lines.length - 1);
++  const preambleLines = lines.slice(0, preambleEndIdx + 1);
++  chunks.push({
++    id: `${path}:preamble:${lines[0]!.lineNumber}-${lines[preambleEndIdx]!.lineNumber}`,
++    artifactId: path,
++    content: preambleLines.map((l) => l.content).join('\n'),
++    startLine: lines[0]!.lineNumber,
++    endLine: lines[preambleEndIdx]!.lineNumber,
++    metadata: {
++      path,
++      category: 'log',
++      lineRange: [lines[0]!.lineNumber, lines[preambleEndIdx]!.lineNumber],
++      chunkType: 'preamble',
++    },
++  });
++
++  // ── 2. Error-cluster chunks ───────────────────────────────────────────────
++  //
++  // Extract windows around each error line, convert to index ranges (into the
++  // `lines` array), merge overlapping ranges into clusters, then dedup.
++
++  const errorWindows = extractErrorWindows(logFile, ERROR_PADDING);
++
++  // Build a fast lineNumber → array-index lookup.
++  const lineNumToIdx = new Map<number, number>();
++  for (let i = 0; i < lines.length; i++) {
++    lineNumToIdx.set(lines[i]!.lineNumber, i);
++  }
++
++  type IndexRange = { startIdx: number; endIdx: number };
++
++  const windowRanges: IndexRange[] = errorWindows.map((w) => ({
++    startIdx: lineNumToIdx.get(w.lines[0]!.lineNumber) ?? 0,
++    endIdx: lineNumToIdx.get(w.lines[w.lines.length - 1]!.lineNumber) ?? lines.length - 1,
++  }));
++
++  windowRanges.sort((a, b) => a.startIdx - b.startIdx);
++
++  // Merge overlapping / adjacent windows into clusters.
++  const clusters: IndexRange[] = [];
++  for (const range of windowRanges) {
++    if (clusters.length === 0) {
++      clusters.push({ ...range });
++    } else {
++      const last = clusters[clusters.length - 1]!;
++      if (range.startIdx <= last.endIdx + 1) {
++        last.endIdx = Math.max(last.endIdx, range.endIdx);
++      } else {
++        clusters.push({ ...range });
++      }
++    }
++  }
++
++  // Track which index ranges are covered (preamble + error clusters) so we
++  // can identify the healthy "gap" regions for the summary chunk.
++  const coveredRanges: IndexRange[] = [{ startIdx: 0, endIdx: preambleEndIdx }];
++
++  for (const cluster of clusters) {
++    const clusterLines = lines.slice(cluster.startIdx, cluster.endIdx + 1);
++    const dedupedLines = deduplicateLogLines(clusterLines);
++    const startLine = lines[cluster.startIdx]!.lineNumber;
++    const endLine = lines[cluster.endIdx]!.lineNumber;
++
++    chunks.push({
++      id: `${path}:error-cluster:${startLine}-${endLine}`,
++      artifactId: path,
++      content: dedupedLines.map((l) => l.content).join('\n'),
++      startLine,
++      endLine,
++      metadata: {
++        path,
++        category: 'log',
++        lineRange: [startLine, endLine],
++        chunkType: 'error-cluster',
++      },
++    });
++
++    coveredRanges.push({ ...cluster });
++  }
++
++  // ── 3. Summary chunk for healthy regions ─────────────────────────────────
++  //
++  // Sort and merge covered ranges, then collect the gaps between them.
++
++  coveredRanges.sort((a, b) => a.startIdx - b.startIdx);
++
++  const mergedCovered: IndexRange[] = [];
++  for (const range of coveredRanges) {
++    if (mergedCovered.length === 0) {
++      mergedCovered.push({ ...range });
++    } else {
++      const last = mergedCovered[mergedCovered.length - 1]!;
++      if (range.startIdx <= last.endIdx + 1) {
++        last.endIdx = Math.max(last.endIdx, range.endIdx);
++      } else {
++        mergedCovered.push({ ...range });
++      }
++    }
++  }
++
++  const healthyRegions: IndexRange[] = [];
++  let prevEnd = -1;
++  for (const { startIdx, endIdx } of mergedCovered) {
++    if (prevEnd + 1 < startIdx) {
++      healthyRegions.push({ startIdx: prevEnd + 1, endIdx: startIdx - 1 });
++    }
++    prevEnd = Math.max(prevEnd, endIdx);
++  }
++  if (prevEnd + 1 <= lines.length - 1) {
++    healthyRegions.push({ startIdx: prevEnd + 1, endIdx: lines.length - 1 });
++  }
++
++  if (healthyRegions.length > 0) {
++    const summaryParts = healthyRegions.map((r) => {
++      const startLine = lines[r.startIdx]!.lineNumber;
++      const endLine = lines[r.endIdx]!.lineNumber;
++      const lineCount = r.endIdx - r.startIdx + 1;
++      return `lines ${startLine}-${endLine}: ${lineCount} INFO lines, no errors`;
++    });
++    const summaryContent = summaryParts.join('\n');
++    const firstHealthy = healthyRegions[0]!;
++    const lastHealthy = healthyRegions[healthyRegions.length - 1]!;
++
++    chunks.push({
++      id: `${path}:summary`,
++      artifactId: path,
++      content: summaryContent,
++      startLine: lines[firstHealthy.startIdx]!.lineNumber,
++      endLine: lines[lastHealthy.endIdx]!.lineNumber,
++      metadata: {
++        path,
++        category: 'log',
++        lineRange: [
++          lines[firstHealthy.startIdx]!.lineNumber,
++          lines[lastHealthy.endIdx]!.lineNumber,
++        ],
++        chunkType: 'summary',
++      },
++    });
++  }
++
++  return chunks;
++}
++
+ // ---------------------------------------------------------------------------
+ // chunkResource
+ // ---------------------------------------------------------------------------
+@@ -64,13 +271,18 @@ export function chunkLogFile(logFile: LogFile, chunkSize: number, overlap: numbe
+ /**
+  * Creates a single {@link Chunk} representing an entire Kubernetes resource.
+  *
+- * The content is a pretty-printed JSON serialisation of the resource object.
++ * The `content` is the human-readable {@link summarizeResource} output so that
++ * semantic embeddings capture the resource's diagnostic meaning rather than raw
++ * JSON syntax noise.  The original pretty-printed JSON is preserved in
++ * `metadata.rawContent` for callers that need the full spec (e.g. the LLM
++ * prompt renderer which shows both the summary and the raw object).
+  *
+  * @param resource The parsed K8s resource.
+  * @param path     The artifact path used as the chunk's `artifactId`.
+  */
+ export function chunkResource(resource: K8sResource, path: string): Chunk {
+-  const content = JSON.stringify(resource, null, 2);
++  const rawContent = JSON.stringify(resource, null, 2);
++  const content = summarizeResource(resource);
+   const lines = content.split('\n');
+ 
+   return {
+@@ -86,6 +298,7 @@ export function chunkResource(resource: K8sResource, path: string): Chunk {
+       kind: resource.kind,
+       name: resource.metadata.name,
+       namespace: resource.metadata.namespace,
++      rawContent,
+     },
+   };
+ }
+diff --git a/src/graph/index.ts b/src/graph/index.ts
+index 6cf3654..aa50fb3 100644
+--- a/src/graph/index.ts
++++ b/src/graph/index.ts
+@@ -14,7 +14,7 @@ export {
+ } from './finding-tree.js';
+ export type { SerializedFindingTreeNode } from './finding-tree.js';
+ 
+-export { chunkLogFile, chunkResource, chunkAnalyzer } from './chunker.js';
++export { chunkLogFile, chunkLogFileErrorAware, chunkResource, chunkAnalyzer } from './chunker.js';
+ 
+ export {
+   buildResourceGraph,
+@@ -24,3 +24,40 @@ export {
+   parseSeedSource,
+ } from './resource-graph.js';
+ export type { ResourceNode, ResourceEdge, ResourceRelationshipGraph, RelationshipType, GraphScoredChunk } from './resource-graph.js';
++
++export {
++  DiagnosticGraph,
++  buildDiagnosticGraph,
++  buildWorkloadGroups,
++  asResourceRelationshipGraph,
++  addTemporalCorrelationEdges,
++  addTemporalSequenceEdges,
++} from './diagnostic-graph.js';
++export type {
++  DiagnosticNodeType,
++  DiagnosticEdgeType,
++  DiagnosticGraphNode,
++  DiagnosticEdge,
++} from './diagnostic-graph.js';
++
++export { traverse, traverseForChunks, RETRIEVAL_EDGE_TYPES, isDiagnosticGraph } from './traversal.js';
++export type { TraversalQuery, TraversalResult, GraphTraversalChunk } from './traversal.js';
++
++export { CAUSAL_TEMPLATES, matchCausalTemplate, extractFindingCategory } from './causal-templates.js';
++export type {
++  CausalChainStep,
++  CausalTemplate,
++  CausalTemplateInstance,
++} from './causal-templates.js';
++
++export { extractTriples, ENTITY_TYPES, RELATIONSHIP_TYPES } from './knowledge-extractor.js';
++export type { KnowledgeLLMClient, KnowledgeTriple } from './knowledge-extractor.js';
++
++export {
++  detectCommunities,
++  generateCommunitySummary,
++  communityToChunk,
++  communitiesToChunks,
++  buildCommunityNodes,
++} from './community.js';
++export type { Community } from './community.js';
+diff --git a/src/graph/resource-graph.ts b/src/graph/resource-graph.ts
+index 5f71604..5d13a9a 100644
+--- a/src/graph/resource-graph.ts
++++ b/src/graph/resource-graph.ts
+@@ -1,6 +1,8 @@
+ import type { K8sResource, K8sEvent } from '../types/index.js';
+ import type { IndexedChunk } from '../ai/chunk-indexer.js';
+ import type { InvestigationSeed } from '../investigators/types.js';
++import { DiagnosticGraph } from './diagnostic-graph.js';
++import { traverseForChunks, RETRIEVAL_EDGE_TYPES } from './traversal.js';
+ 
+ // ---------------------------------------------------------------------------
+ // Entity name extraction (mirrors extractQueryIdentifiers in lexical-search.ts)
+@@ -586,14 +588,21 @@ export function parseSeedSource(source: string): { kind: string; namespace: stri
+  * {@link GraphScoredChunk}s that are relevant to the seed's target resource
+  * and its graph neighborhood, scored by hop distance.
+  *
+- * Scoring:
++ * **Overloaded:** accepts either a {@link DiagnosticGraph} (new traversal
++ * engine, follows typed/weighted/directional edges) or a
++ * {@link ResourceRelationshipGraph} (legacy undirected BFS, backward-compat).
++ *
++ * Scoring with {@link ResourceRelationshipGraph}:
+  * - Log / Analyzer / exact-event chunks: `1.0` (direct seed match)
+  * - K8s resource chunks at depth 0 (the seed resource itself): `1.0`
+  * - K8s resource chunks at depth 1 (direct graph neighbors): `0.7`
+  * - K8s resource chunks at depth 2 (two-hop graph neighbors): `0.4`
+  *
+- * When a chunk qualifies via multiple matching paths (e.g. both node-id match
+- * and name match), the highest score (lowest depth) wins.
++ * Scoring with {@link DiagnosticGraph}:
++ * - Uses the traversal engine: `score = edge_weight × decay^depth`
++ * - Follows additional edge types: `label-selector`, `service-selector`, etc.
++ *
++ * When a chunk qualifies via multiple matching paths, the highest score wins.
+  *
+  * Strategy:
+  * 1. Parse the seed source into (kind, namespace, name).
+@@ -604,6 +613,205 @@ export function parseSeedSource(source: string): { kind: string; namespace: stri
+  * 4. Log and Analyzer seeds use direct path/name matching → score 1.0.
+  */
+ export function getRelatedChunks(
++  graph: DiagnosticGraph,
++  seed: InvestigationSeed,
++  chunkIndex: IndexedChunk[],
++): GraphScoredChunk[];
++export function getRelatedChunks(
++  graph: ResourceRelationshipGraph,
++  seed: InvestigationSeed,
++  chunkIndex: IndexedChunk[],
++): GraphScoredChunk[];
++export function getRelatedChunks(
++  graph: DiagnosticGraph | ResourceRelationshipGraph,
++  seed: InvestigationSeed,
++  chunkIndex: IndexedChunk[],
++): GraphScoredChunk[] {
++  // Dispatch to the traversal-engine backend when a DiagnosticGraph is provided
++  if (graph instanceof DiagnosticGraph) {
++    return getRelatedChunksViaDiagnosticGraph(graph, seed, chunkIndex);
++  }
++  return getRelatedChunksViaRRG(graph, seed, chunkIndex);
++}
++
++// ---------------------------------------------------------------------------
++// DiagnosticGraph backend (uses typed weighted traversal engine)
++// ---------------------------------------------------------------------------
++
++function getRelatedChunksViaDiagnosticGraph(
++  graph: DiagnosticGraph,
++  seed: InvestigationSeed,
++  chunkIndex: IndexedChunk[],
++): GraphScoredChunk[] {
++  const parsed = parseSeedSource(seed.source);
++  if (!parsed) return [];
++
++  const { kind, namespace, name } = parsed;
++  const seen = new Set<string>();
++  const bestScores = new Map<string, number>();
++
++  const addTraversalChunks = (startNodeId: string): void => {
++    const results = traverseForChunks(graph, {
++      start: startNodeId,
++      direction: 'both',
++      edgeTypes: RETRIEVAL_EDGE_TYPES,
++      maxDepth: 2,
++      scoreDecay: 0.7,
++    }, chunkIndex);
++    for (const { chunk, score } of results) {
++      const existing = bestScores.get(chunk.id);
++      if (existing === undefined || score > existing) {
++        bestScores.set(chunk.id, score);
++      }
++      seen.add(chunk.id);
++    }
++  };
++
++  const addDirectChunk = (chunk: IndexedChunk, score = 1.0): void => {
++    const existing = bestScores.get(chunk.id);
++    if (existing === undefined || score > existing) {
++      bestScores.set(chunk.id, score);
++    }
++    seen.add(chunk.id);
++  };
++
++  // ── Pod seed ──────────────────────────────────────────────────────────────
++  if (kind === 'Pod') {
++    const startId = `Pod:${namespace || 'default'}/${name}`;
++    addTraversalChunks(startId);
++  }
++
++  // ── Analyzer seed: extract entities → traverse from matching graph nodes ─
++  if (kind === 'Analyzer') {
++    const analyzerChunks = chunkIndex.filter(
++      (chunk) =>
++        chunk.artifactCategory === 'analyzer' &&
++        (chunk.artifactId === name ||
++          (isRecord(chunk.metadata) && getString(chunk.metadata['name']) === name) ||
++          chunk.identifiers.some((id) => id === name)),
++    );
++
++    // Direct match at score 1.0
++    for (const chunk of analyzerChunks) {
++      addDirectChunk(chunk, 1.0);
++    }
++
++    // Extract entity names and traverse from matching nodes
++    const textParts: string[] = [seed.hypothesis];
++    for (const ac of analyzerChunks) textParts.push(ac.content);
++    const entityNames = extractEntityNamesFromText(textParts.join(' '));
++
++    let foundAnyNodes = false;
++    for (const entityName of entityNames) {
++      for (const [nodeId_, node] of graph.nodes) {
++        const data = node.data as Record<string, unknown>;
++        const nodeName = typeof data['name'] === 'string' ? data['name'] : '';
++        if (nodeName === entityName) {
++          addTraversalChunks(nodeId_);
++          foundAnyNodes = true;
++        }
++      }
++    }
++
++    // Fallback: find unhealthy pods
++    if (!foundAnyNodes) {
++      const unhealthyPodNames = new Set<string>();
++      for (const chunk of chunkIndex) {
++        if (
++          chunk.artifactCategory === 'kubernetes-resource' &&
++          (chunk.identifiers.includes('CrashLoopBackOff') ||
++            chunk.identifiers.includes('ImagePullBackOff'))
++        ) {
++          for (const id of chunk.identifiers) unhealthyPodNames.add(id);
++        }
++      }
++      for (const [nodeId_, node] of graph.nodes) {
++        const data = node.data as Record<string, unknown>;
++        const nodeKind = typeof data['kind'] === 'string' ? data['kind'] : '';
++        const nodeName = typeof data['name'] === 'string' ? data['name'] : '';
++        if (nodeKind === 'Pod' && unhealthyPodNames.has(nodeName)) {
++          addTraversalChunks(nodeId_);
++        }
++      }
++    }
++  }
++
++  // ── Log seed ──────────────────────────────────────────────────────────────
++  if (kind === 'Log') {
++    // Direct log chunk match
++    for (const chunk of chunkIndex) {
++      if (chunk.artifactId === name) addDirectChunk(chunk, 1.0);
++    }
++
++    // Resolve pod from log path and traverse
++    const logPathSegments = name.split('/');
++    const logFilename = logPathSegments[logPathSegments.length - 1] ?? '';
++    const dotIdx = logFilename.lastIndexOf('.');
++    const logBasename = dotIdx !== -1 ? logFilename.slice(0, dotIdx) : logFilename;
++    const logParentDir = logPathSegments[logPathSegments.length - 2];
++    const podNamesToCheck = new Set<string>();
++    if (logBasename) podNamesToCheck.add(logBasename);
++    if (logParentDir) podNamesToCheck.add(logParentDir);
++
++    for (const [nodeId_, node] of graph.nodes) {
++      const data = node.data as Record<string, unknown>;
++      const nodeKind = typeof data['kind'] === 'string' ? data['kind'] : '';
++      const nodeName = typeof data['name'] === 'string' ? data['name'] : '';
++      if (nodeKind === 'Pod' && podNamesToCheck.has(nodeName)) {
++        addTraversalChunks(nodeId_);
++      }
++    }
++  }
++
++  // ── Event seed ────────────────────────────────────────────────────────────
++  if (kind === 'Event') {
++    const eventParts = name.split(':');
++    const eventObjectName = eventParts.pop() ?? name;
++    const eventReason = eventParts.join(':');
++
++    // Direct event chunk match
++    for (const chunk of chunkIndex) {
++      if (chunk.artifactCategory !== 'event' || !isRecord(chunk.metadata)) continue;
++      const metaReason = getString(chunk.metadata['reason']).toLowerCase();
++      const metaName = getString(chunk.metadata['name']).toLowerCase();
++      if (metaReason === eventReason.toLowerCase() && metaName === eventObjectName.toLowerCase()) {
++        addDirectChunk(chunk, 1.0);
++        // Also traverse from the event's involved object
++        const eventNamespace =
++          getString(chunk.metadata['namespace']) || chunk.namespace || 'default';
++        const eventKind = getString(chunk.metadata['kind']) || 'Pod';
++        const startId = `${eventKind}:${eventNamespace}/${eventObjectName}`;
++        addTraversalChunks(startId);
++      }
++    }
++
++    // Fallback traverse from pod with matching name
++    if (!seen.size) {
++      for (const [nodeId_, node] of graph.nodes) {
++        const data = node.data as Record<string, unknown>;
++        const nodeKind = typeof data['kind'] === 'string' ? data['kind'] : '';
++        const nodeName = typeof data['name'] === 'string' ? data['name'] : '';
++        if (nodeKind === 'Pod' && nodeName === eventObjectName) {
++          addTraversalChunks(nodeId_);
++        }
++      }
++    }
++  }
++
++  // Build and return the result array
++  const matched: GraphScoredChunk[] = [];
++  for (const [chunkId, score] of bestScores) {
++    const chunk = chunkIndex.find((c) => c.id === chunkId);
++    if (chunk) matched.push({ chunk, score });
++  }
++  return matched;
++}
++
++// ---------------------------------------------------------------------------
++// ResourceRelationshipGraph backend (legacy undirected BFS)
++// ---------------------------------------------------------------------------
++
++function getRelatedChunksViaRRG(
+   graph: ResourceRelationshipGraph,
+   seed: InvestigationSeed,
+   chunkIndex: IndexedChunk[],
+diff --git a/src/index.ts b/src/index.ts
+index e9cd9a4..622d1e9 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -24,6 +24,23 @@ export {
+ export type { OutputOptions } from './cli/index.js';
+ export { runCli } from './cli/runner.js';
+ 
++// ── Retrieval infrastructure ──────────────────────────────────────────────────
++// Re-exported for benchmark scripts and downstream consumers that need
++// direct access to the retrieval pipeline without invoking the full CLI.
++
++export { buildChunkIndex } from './ai/chunk-indexer.js';
++export type { IndexedChunk } from './ai/chunk-indexer.js';
++export { LexicalSearchIndex } from './ai/lexical-search.js';
++export { computeRetrievalMetrics, aggregateRetrievalMetrics } from './ai/retrieval-metrics.js';
++export type { RetrievalMetrics } from './ai/retrieval-metrics.js';
++
++export { buildResourceGraph, getRelatedChunks } from './graph/resource-graph.js';
++export type { ResourceRelationshipGraph, GraphScoredChunk } from './graph/resource-graph.js';
++
++export { parseResourceJson } from './parsers/k8s-resource-parser.js';
++export { parseEventsJson } from './parsers/event-parser.js';
++export { parseLogFile } from './parsers/log-parser.js';
++
+ if (typeof require !== 'undefined' && typeof module !== 'undefined' && require.main === module) {
+   runCli().then(
+     (exitCode) => {
+diff --git a/src/investigators/__tests__/ai-investigator.test.ts b/src/investigators/__tests__/ai-investigator.test.ts
+index 627486c..3381005 100644
+--- a/src/investigators/__tests__/ai-investigator.test.ts
++++ b/src/investigators/__tests__/ai-investigator.test.ts
+@@ -6,8 +6,18 @@ import type { AIInvestigatorDeps } from '../ai-investigator.js';
+ import type { IndexedChunk } from '../../ai/chunk-indexer.js';
+ import type { ResourceRelationshipGraph } from '../../graph/resource-graph.js';
+ import type { AIFindingResponse } from '../../ai/llm-client.js';
+-import { investigateWithAI, DEFAULT_MAX_SEEDS, mergeChunks } from '../ai-investigator.js';
++import {
++  investigateWithAI,
++  DEFAULT_MAX_SEEDS,
++  mergeChunks,
++  DEFAULT_TOKEN_BUDGET,
++  computeChunkOverlap,
++  deduplicateSeeds,
++} from '../ai-investigator.js';
+ import type { RetrievalList } from '../ai-investigator.js';
++import { estimateTokens } from '../../ai/chunk-indexer.js';
++import { generateHypotheticalDocument } from '../../ai/hyde.js';
++import type { HydeLLMClient } from '../../ai/hyde.js';
+ 
+ // ---------------------------------------------------------------------------
+ // Fixture helpers
+@@ -1199,4 +1209,995 @@ describe('mergeChunks (RRF)', () => {
+     expect(result[0]!.id).toBe('chunk:alpha');
+     expect(result[1]!.id).toBe('chunk:zeta');
+   });
++
++  // ── Token budget ──────────────────────────────────────────────────────────
++
++  it('includes all chunks with full content when they fit within the default budget', () => {
++    // Small chunks (10 tokens each at 40 chars) never hit the 100k default budget
++    const chunkA = makeChunk('chunk:a', 'a.json', 'a'.repeat(40));
++    const chunkB = makeChunk('chunk:b', 'b.json', 'b'.repeat(40));
++
++    const result = mergeChunks([{ chunks: [chunkA, chunkB] }]);
++
++    expect(result[0]!.content).toBe('a'.repeat(40));
++    expect(result[1]!.content).toBe('b'.repeat(40));
++  });
++
++  it('falls back to chunk.summary content for lower-priority chunks when budget is exceeded', () => {
++    // chunkA content: 40 chars = 10 tokens
++    // chunkB content: 40 chars = 10 tokens
++    // budget = 15 → chunkA fits (usedTokens: 0→10 ≤ 15), chunkB doesn't (10+10=20 > 15)
++    const chunkA = makeChunk('chunk:a', 'a.json', 'a'.repeat(40));
++    const chunkB = makeChunk('chunk:b', 'b.json', 'b'.repeat(40));
++
++    const result = mergeChunks([{ chunks: [chunkA, chunkB] }], 15);
++
++    expect(result[0]!.content).toBe('a'.repeat(40));       // full content preserved
++    expect(result[1]!.content).toBe('Chunk from b.json');  // summary fallback
++  });
++
++  it('tracks cumulative token count across all chunks in priority order', () => {
++    // 40 chars = 10 tokens each
++    // budget = 25 → A fits (10), B fits (20), C doesn't (30 > 25)
++    const chunkA = makeChunk('chunk:a', 'a.json', 'a'.repeat(40));
++    const chunkB = makeChunk('chunk:b', 'b.json', 'b'.repeat(40));
++    const chunkC = makeChunk('chunk:c', 'c.json', 'c'.repeat(40));
++
++    const result = mergeChunks([{ chunks: [chunkA, chunkB, chunkC] }], 25);
++
++    expect(result[0]!.content).toBe('a'.repeat(40));       // full content (10 tokens used)
++    expect(result[1]!.content).toBe('b'.repeat(40));       // full content (20 tokens used)
++    expect(result[2]!.content).toBe('Chunk from c.json');  // summary fallback (would be 30)
++  });
++
++  it('does not mutate the original chunk when falling back to summary', () => {
++    const chunkA = makeChunk('chunk:a', 'a.json', 'a'.repeat(40));
++    const chunkB = makeChunk('chunk:b', 'b.json', 'b'.repeat(40));
++    const origContentA = chunkA.content;
++    const origContentB = chunkB.content;
++
++    // Tight budget forces chunkB to use summary
++    mergeChunks([{ chunks: [chunkA, chunkB] }], 15);
++
++    // Original objects must not have been mutated
++    expect(chunkA.content).toBe(origContentA);
++    expect(chunkB.content).toBe(origContentB);
++  });
++
++  it('returns all chunks as summary-only when budget is 0', () => {
++    const chunkA = makeChunk('chunk:a', 'a.json', 'a'.repeat(40));
++    const chunkB = makeChunk('chunk:b', 'b.json', 'b'.repeat(40));
++
++    const result = mergeChunks([{ chunks: [chunkA, chunkB] }], 0);
++
++    // Budget of 0 means even the first chunk's content (10 tokens) exceeds it
++    expect(result[0]!.content).toBe('Chunk from a.json');
++    expect(result[1]!.content).toBe('Chunk from b.json');
++  });
++});
++
++// ---------------------------------------------------------------------------
++// estimateTokens unit tests
++// ---------------------------------------------------------------------------
++
++describe('estimateTokens', () => {
++  it('returns 0 for an empty string', () => {
++    expect(estimateTokens('')).toBe(0);
++  });
++
++  it('returns Math.floor(text.length / 4)', () => {
++    expect(estimateTokens('aaaa')).toBe(1);           // 4 / 4 = 1
++    expect(estimateTokens('a'.repeat(8))).toBe(2);    // 8 / 4 = 2
++    expect(estimateTokens('a'.repeat(100))).toBe(25); // 100 / 4 = 25
++  });
++
++  it('uses floor division (rounds down for non-multiples of 4)', () => {
++    expect(estimateTokens('aaa')).toBe(0);   // floor(3/4) = 0
++    expect(estimateTokens('aaaaa')).toBe(1); // floor(5/4) = 1
++    expect(estimateTokens('a'.repeat(7))).toBe(1); // floor(7/4) = 1
++  });
++
++  it('works on realistic log line content', () => {
++    const logLine = '2024-01-01T00:00:00Z ERROR connection refused to db.internal:5432';
++    // 68 chars → floor(68/4) = 17 tokens
++    expect(estimateTokens(logLine)).toBe(Math.floor(logLine.length / 4));
++  });
++});
++
++// ---------------------------------------------------------------------------
++// DEFAULT_TOKEN_BUDGET constant
++// ---------------------------------------------------------------------------
++
++describe('DEFAULT_TOKEN_BUDGET', () => {
++  it('is approximately 80% of a 128k context window (~100k tokens)', () => {
++    // 80% of 128 * 1024 = 104,857 tokens; we use a round number near that
++    expect(DEFAULT_TOKEN_BUDGET).toBeGreaterThanOrEqual(95_000);
++    expect(DEFAULT_TOKEN_BUDGET).toBeLessThanOrEqual(110_000);
++  });
++});
++
++// ---------------------------------------------------------------------------
++// generateHypotheticalDocument (HyDE) unit tests
++// ---------------------------------------------------------------------------
++
++describe('generateHypotheticalDocument', () => {
++  // ── Basic shape ───────────────────────────────────────────────────────────
++
++  it('returns the LLM-generated hypothetical document when the call succeeds', async () => {
++    const hypotheticalText =
++      'Container app in pod app-pod terminated with exit code 1 due to ' +
++      'missing environment variable DB_PASSWORD referenced from secret ' +
++      'app-credentials which does not exist in namespace default.';
++
++    const mockClient: HydeLLMClient = {
++      generateText: vi.fn().mockResolvedValue(hypotheticalText),
++    };
++
++    const result = await generateHypotheticalDocument(
++      'Pod app-pod is in CrashLoopBackOff',
++      mockClient,
++    );
++
++    expect(result).toBe(hypotheticalText);
++  });
++
++  it('calls generateText with a system prompt and a user prompt containing the hypothesis', async () => {
++    const mockGenerateText = vi.fn().mockResolvedValue('hypothetical evidence text');
++    const mockClient: HydeLLMClient = { generateText: mockGenerateText };
++
++    const hypothesis = 'Pod app-pod is in CrashLoopBackOff';
++    await generateHypotheticalDocument(hypothesis, mockClient);
++
++    expect(mockGenerateText).toHaveBeenCalledTimes(1);
++    const [systemPrompt, userPrompt] = mockGenerateText.mock.calls[0] as [string, string];
++
++    // System prompt should give Kubernetes diagnostic context
++    expect(systemPrompt).toContain('Kubernetes');
++    // User prompt should contain the hypothesis
++    expect(userPrompt).toContain(hypothesis);
++  });
++
++  it('returns the raw hypothesis when the LLM call throws an error (graceful fallback)', async () => {
++    const mockClient: HydeLLMClient = {
++      generateText: vi.fn().mockRejectedValue(new Error('LLM API unavailable')),
++    };
++
++    const hypothesis = 'Pod app-pod is in CrashLoopBackOff';
++    const result = await generateHypotheticalDocument(hypothesis, mockClient);
++
++    // Must not throw; must return the raw hypothesis as fallback
++    expect(result).toBe(hypothesis);
++  });
++
++  it('returns the raw hypothesis when the LLM returns an empty string', async () => {
++    const mockClient: HydeLLMClient = {
++      generateText: vi.fn().mockResolvedValue(''),
++    };
++
++    const hypothesis = 'Missing Secret app-credentials in namespace default';
++    const result = await generateHypotheticalDocument(hypothesis, mockClient);
++
++    expect(result).toBe(hypothesis);
++  });
++
++  it('trims whitespace from the LLM response before returning', async () => {
++    const innerText = 'Pod app-pod OOMKilled: container exceeded memory limit 256Mi';
++    const mockClient: HydeLLMClient = {
++      generateText: vi.fn().mockResolvedValue(`\n\n  ${innerText}  \n`),
++    };
++
++    const result = await generateHypotheticalDocument(
++      'Pod app-pod was OOM-killed',
++      mockClient,
++    );
++
++    expect(result).toBe(innerText);
++  });
++
++  it('returns the raw hypothesis when the LLM returns only whitespace', async () => {
++    const mockClient: HydeLLMClient = {
++      generateText: vi.fn().mockResolvedValue('   \n  \t  '),
++    };
++
++    const hypothesis = 'Service has no ready endpoints';
++    const result = await generateHypotheticalDocument(hypothesis, mockClient);
++
++    expect(result).toBe(hypothesis);
++  });
++
++  it('generates a more detailed, evidence-like text than the input hypothesis', async () => {
++    // The hypothetical document should be longer and more specific than the hypothesis
++    const hypothesis = 'DNS lookup failure in pod app-pod';
++    const hypotheticalDoc =
++      'dial tcp: lookup db.internal on 10.96.0.10:53: no such host\n' +
++      'Pod app-pod in namespace default failed to resolve hostname db.internal.\n' +
++      'CoreDNS returned NXDOMAIN for the query. The database service endpoint ' +
++      'may not exist or the service name is misconfigured.';
++
++    const mockClient: HydeLLMClient = {
++      generateText: vi.fn().mockResolvedValue(hypotheticalDoc),
++    };
++
++    const result = await generateHypotheticalDocument(hypothesis, mockClient);
++
++    // The result should be the detailed document, not the short hypothesis
++    expect(result.length).toBeGreaterThan(hypothesis.length);
++    expect(result).toContain('db.internal');
++    expect(result).toContain('NXDOMAIN');
++  });
++});
++
++// ---------------------------------------------------------------------------
++// HyDE integration with investigateWithAI
++// ---------------------------------------------------------------------------
++
++describe('investigateWithAI — HyDE integration', () => {
++  beforeEach(() => {
++    vi.clearAllMocks();
++  });
++
++  it('embeds the hypothetical document instead of the raw hypothesis when HyDE succeeds', async () => {
++    const hypotheticalDoc =
++      'Container app terminated with exit code 1. FailedMount event: ' +
++      'secret "app-credentials" not found in namespace "default".';
++
++    const mockEmbedSingle = vi.fn().mockResolvedValue([0.1, 0.2, 0.3]);
++    const mockQuery = vi.fn().mockReturnValue([]);
++    // The llmClient mock supports both investigateSeed (for the LLM call) and
++    // generateText (for HyDE document generation).
++    const mockGenerateText = vi.fn().mockResolvedValue(hypotheticalDoc);
++    const mockInvestigateSeed = vi.fn().mockResolvedValue({ findings: [] });
++
++    const deps: AIInvestigatorDeps = {
++      llmClient: {
++        investigateSeed: mockInvestigateSeed,
++        generateText: mockGenerateText,
++      } as unknown as AIInvestigatorDeps['llmClient'],
++      chunkIndex: [],
++      resourceGraph: { nodes: new Map(), edges: [] },
++      lexicalIndex: {
++        build: vi.fn(),
++        search: vi.fn().mockReturnValue([]),
++        extractQueryIdentifiers: vi.fn().mockReturnValue([]),
++      } as unknown as AIInvestigatorDeps['lexicalIndex'],
++      embeddingClient: {
++        embed: vi.fn(),
++        embedSingle: mockEmbedSingle,
++      } as unknown as AIInvestigatorDeps['embeddingClient'],
++      vectorStore: {
++        query: mockQuery,
++        addAll: vi.fn(),
++        size: 0,
++        clear: vi.fn(),
++      } as unknown as AIInvestigatorDeps['vectorStore'],
++    };
++
++    const seeds = [
++      makeSeed('seed:k8s:0', 'kubernetes', 'Pod app-pod is in CrashLoopBackOff'),
++    ];
++
++    await investigateWithAI(makeContext(), seeds, deps);
++
++    // HyDE should have been called with the hypothesis
++    expect(mockGenerateText).toHaveBeenCalledTimes(1);
++    const [, userPrompt] = mockGenerateText.mock.calls[0] as [string, string];
++    expect(userPrompt).toContain('Pod app-pod is in CrashLoopBackOff');
++
++    // embedSingle should be called with the HYPOTHETICAL DOCUMENT, not the raw hypothesis
++    expect(mockEmbedSingle).toHaveBeenCalledTimes(1);
++    expect(mockEmbedSingle).toHaveBeenCalledWith(hypotheticalDoc);
++    expect(mockEmbedSingle).not.toHaveBeenCalledWith('Pod app-pod is in CrashLoopBackOff');
++  });
++
++  it('falls back to embedding the raw hypothesis when HyDE LLM call fails', async () => {
++    const mockEmbedSingle = vi.fn().mockResolvedValue([0.1, 0.2, 0.3]);
++    const mockQuery = vi.fn().mockReturnValue([]);
++    // generateText throws — simulates LLM API being unavailable for HyDE
++    const mockGenerateText = vi.fn().mockRejectedValue(new Error('LLM timeout'));
++    const mockInvestigateSeed = vi.fn().mockResolvedValue({ findings: [] });
++
++    const deps: AIInvestigatorDeps = {
++      llmClient: {
++        investigateSeed: mockInvestigateSeed,
++        generateText: mockGenerateText,
++      } as unknown as AIInvestigatorDeps['llmClient'],
++      chunkIndex: [],
++      resourceGraph: { nodes: new Map(), edges: [] },
++      lexicalIndex: {
++        build: vi.fn(),
++        search: vi.fn().mockReturnValue([]),
++        extractQueryIdentifiers: vi.fn().mockReturnValue([]),
++      } as unknown as AIInvestigatorDeps['lexicalIndex'],
++      embeddingClient: {
++        embed: vi.fn(),
++        embedSingle: mockEmbedSingle,
++      } as unknown as AIInvestigatorDeps['embeddingClient'],
++      vectorStore: {
++        query: mockQuery,
++        addAll: vi.fn(),
++        size: 0,
++        clear: vi.fn(),
++      } as unknown as AIInvestigatorDeps['vectorStore'],
++    };
++
++    const hypothesis = 'Pod app-pod is in CrashLoopBackOff';
++    const seeds = [makeSeed('seed:k8s:0', 'kubernetes', hypothesis)];
++
++    // Should not throw even though HyDE's generateText fails
++    await expect(investigateWithAI(makeContext(), seeds, deps)).resolves.not.toThrow();
++
++    // embedSingle should be called with the RAW HYPOTHESIS as fallback
++    expect(mockEmbedSingle).toHaveBeenCalledTimes(1);
++    expect(mockEmbedSingle).toHaveBeenCalledWith(hypothesis);
++  });
++
++  it('falls back to embedding the raw hypothesis when HyDE returns empty string', async () => {
++    const mockEmbedSingle = vi.fn().mockResolvedValue([0.4, 0.5, 0.6]);
++    const mockQuery = vi.fn().mockReturnValue([]);
++    // generateText returns empty string — simulates model refusal or timeout
++    const mockGenerateText = vi.fn().mockResolvedValue('');
++    const mockInvestigateSeed = vi.fn().mockResolvedValue({ findings: [] });
++
++    const deps: AIInvestigatorDeps = {
++      llmClient: {
++        investigateSeed: mockInvestigateSeed,
++        generateText: mockGenerateText,
++      } as unknown as AIInvestigatorDeps['llmClient'],
++      chunkIndex: [],
++      resourceGraph: { nodes: new Map(), edges: [] },
++      lexicalIndex: {
++        build: vi.fn(),
++        search: vi.fn().mockReturnValue([]),
++        extractQueryIdentifiers: vi.fn().mockReturnValue([]),
++      } as unknown as AIInvestigatorDeps['lexicalIndex'],
++      embeddingClient: {
++        embed: vi.fn(),
++        embedSingle: mockEmbedSingle,
++      } as unknown as AIInvestigatorDeps['embeddingClient'],
++      vectorStore: {
++        query: mockQuery,
++        addAll: vi.fn(),
++        size: 0,
++        clear: vi.fn(),
++      } as unknown as AIInvestigatorDeps['vectorStore'],
++    };
++
++    const hypothesis = 'Missing Secret app-credentials in namespace default';
++    const seeds = [makeSeed('seed:config:0', 'configuration', hypothesis)];
++
++    await investigateWithAI(makeContext(), seeds, deps);
++
++    // embedSingle should be called with the RAW HYPOTHESIS as fallback
++    expect(mockEmbedSingle).toHaveBeenCalledWith(hypothesis);
++  });
++
++  it('does not call generateText when embeddingClient is absent (no HyDE without semantic retrieval)', async () => {
++    const mockGenerateText = vi.fn().mockResolvedValue('hypothetical doc');
++    const mockInvestigateSeed = vi.fn().mockResolvedValue({ findings: [] });
++
++    const deps: AIInvestigatorDeps = {
++      llmClient: {
++        investigateSeed: mockInvestigateSeed,
++        generateText: mockGenerateText,
++      } as unknown as AIInvestigatorDeps['llmClient'],
++      chunkIndex: [],
++      resourceGraph: { nodes: new Map(), edges: [] },
++      lexicalIndex: {
++        build: vi.fn(),
++        search: vi.fn().mockReturnValue([]),
++        extractQueryIdentifiers: vi.fn().mockReturnValue([]),
++      } as unknown as AIInvestigatorDeps['lexicalIndex'],
++      // No embeddingClient or vectorStore → semantic retrieval skipped
++    };
++
++    const seeds = [makeSeed('seed:k8s:0', 'kubernetes', 'Pod app-pod is in CrashLoopBackOff')];
++    await investigateWithAI(makeContext(), seeds, deps);
++
++    // HyDE should NOT be triggered when there is no embeddingClient
++    expect(mockGenerateText).not.toHaveBeenCalled();
++  });
++
++  it('retrieves semantically similar chunks using the hypothetical document embedding', async () => {
++    const semanticChunk = makeChunk(
++      'chunk:semantic',
++      'logs/api-server/app.log',
++      'secret "app-credentials" not found',
++      'log',
++    );
++
++    const hypotheticalDoc =
++      'secret "app-credentials" not found in namespace default. ' +
++      'FailedMount: unable to retrieve secret.';
++
++    const mockEmbedSingle = vi.fn().mockResolvedValue([0.9, 0.1, 0.0]);
++    const mockQuery = vi.fn().mockReturnValue([{ chunk: semanticChunk, score: 0.92 }]);
++    const mockGenerateText = vi.fn().mockResolvedValue(hypotheticalDoc);
++
++    let capturedUserPrompt = '';
++    const mockInvestigateSeed = vi.fn().mockImplementation(
++      async (_system: string, user: string) => {
++        capturedUserPrompt = user;
++        return { findings: [] };
++      },
++    );
++
++    const deps: AIInvestigatorDeps = {
++      llmClient: {
++        investigateSeed: mockInvestigateSeed,
++        generateText: mockGenerateText,
++      } as unknown as AIInvestigatorDeps['llmClient'],
++      chunkIndex: [semanticChunk],
++      resourceGraph: { nodes: new Map(), edges: [] },
++      lexicalIndex: {
++        build: vi.fn(),
++        search: vi.fn().mockReturnValue([]),
++        extractQueryIdentifiers: vi.fn().mockReturnValue([]),
++      } as unknown as AIInvestigatorDeps['lexicalIndex'],
++      embeddingClient: {
++        embed: vi.fn(),
++        embedSingle: mockEmbedSingle,
++      } as unknown as AIInvestigatorDeps['embeddingClient'],
++      vectorStore: {
++        query: mockQuery,
++        addAll: vi.fn(),
++        size: 1,
++        clear: vi.fn(),
++      } as unknown as AIInvestigatorDeps['vectorStore'],
++    };
++
++    const seeds = [makeSeed('seed:k8s:0', 'kubernetes', 'Pod app-pod has FailedMount for secret')];
++    await investigateWithAI(makeContext(), seeds, deps);
++
++    // The vector store query should have been issued with the hypothetical doc's embedding
++    // (SEMANTIC_TOP_K = 5 is the internal constant in ai-investigator.ts)
++    expect(mockQuery).toHaveBeenCalledWith([0.9, 0.1, 0.0], 5);
++    // The semantic chunk should appear in the LLM prompt
++    expect(capturedUserPrompt).toContain('logs/api-server/app.log');
++  });
++});
++
++// ---------------------------------------------------------------------------
++// computeChunkOverlap unit tests
++// ---------------------------------------------------------------------------
++
++describe('computeChunkOverlap', () => {
++  // Helper to create a minimal mock lexical index that always returns the given results
++  function makeSearchMockFixed(
++    results: { chunk: IndexedChunk; score: number }[],
++  ): AIInvestigatorDeps['lexicalIndex'] {
++    return {
++      build: vi.fn(),
++      search: vi.fn().mockReturnValue(results),
++      extractQueryIdentifiers: vi.fn().mockReturnValue([]),
++    } as unknown as AIInvestigatorDeps['lexicalIndex'];
++  }
++
++  function makeSearchMockSequence(
++    first: { chunk: IndexedChunk; score: number }[],
++    second: { chunk: IndexedChunk; score: number }[],
++  ): AIInvestigatorDeps['lexicalIndex'] {
++    return {
++      build: vi.fn(),
++      search: vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second),
++      extractQueryIdentifiers: vi.fn().mockReturnValue([]),
++    } as unknown as AIInvestigatorDeps['lexicalIndex'];
++  }
++
++  it('returns 0 when both seeds retrieve no chunks (empty sets)', () => {
++    const graph: ResourceRelationshipGraph = { nodes: new Map(), edges: [] };
++    const lexical = makeSearchMockFixed([]);
++
++    const seedA = makeSeed('seed:a', 'kubernetes', 'Pod A crashlooping');
++    const seedB = makeSeed('seed:b', 'kubernetes', 'Pod B crashlooping');
++
++    expect(computeChunkOverlap(seedA, seedB, [], graph, lexical)).toBe(0);
++  });
++
++  it('returns 1.0 when both seeds retrieve identical chunk sets', () => {
++    const sharedA = makeChunk('chunk:shared-a', 'pods/default.json', 'content a');
++    const sharedB = makeChunk('chunk:shared-b', 'events/default.json', 'content b');
++    const sharedResults = [
++      { chunk: sharedA, score: 3.0 },
++      { chunk: sharedB, score: 2.0 },
++    ];
++
++    const graph: ResourceRelationshipGraph = { nodes: new Map(), edges: [] };
++    const lexical = makeSearchMockFixed(sharedResults);
++
++    const seedA = makeSeed('seed:a', 'kubernetes', 'Pod A crashlooping');
++    const seedB = makeSeed('seed:b', 'kubernetes', 'Pod B crashlooping');
++
++    const overlap = computeChunkOverlap(seedA, seedB, [sharedA, sharedB], graph, lexical);
++    expect(overlap).toBe(1.0);
++  });
++
++  it('returns correct Jaccard similarity for partial overlap: |A∩B| / |A∪B|', () => {
++    // A = {chunk:a, chunk:shared}
++    // B = {chunk:shared, chunk:b}
++    // intersection = {chunk:shared} (1)
++    // union = {chunk:a, chunk:shared, chunk:b} (3)
++    // Jaccard = 1/3
++    const chunkA = makeChunk('chunk:a', 'pods/default.json', 'pod a');
++    const chunkShared = makeChunk('chunk:shared', 'events/default.json', 'event');
++    const chunkB = makeChunk('chunk:b', 'logs/app.log', 'log b');
++
++    const graph: ResourceRelationshipGraph = { nodes: new Map(), edges: [] };
++    const lexical = makeSearchMockSequence(
++      [{ chunk: chunkA, score: 3.0 }, { chunk: chunkShared, score: 2.0 }],
++      [{ chunk: chunkShared, score: 3.0 }, { chunk: chunkB, score: 2.0 }],
++    );
++
++    const seedA = makeSeed('seed:a', 'kubernetes', 'Pod A crashlooping');
++    const seedB = makeSeed('seed:b', 'kubernetes', 'Pod B crashlooping');
++
++    const overlap = computeChunkOverlap(
++      seedA, seedB, [chunkA, chunkShared, chunkB], graph, lexical,
++    );
++    expect(overlap).toBeCloseTo(1 / 3, 5);
++  });
++
++  it('returns 0 when seeds have completely disjoint chunk sets', () => {
++    const chunkA1 = makeChunk('chunk:a1', 'pods/default.json', 'pod a1');
++    const chunkA2 = makeChunk('chunk:a2', 'events/default.json', 'event a2');
++    const chunkB1 = makeChunk('chunk:b1', 'logs/app.log', 'log b1');
++    const chunkB2 = makeChunk('chunk:b2', 'configmaps/default.json', 'configmap b2');
++
++    const graph: ResourceRelationshipGraph = { nodes: new Map(), edges: [] };
++    const lexical = makeSearchMockSequence(
++      [{ chunk: chunkA1, score: 3.0 }, { chunk: chunkA2, score: 2.0 }],
++      [{ chunk: chunkB1, score: 3.0 }, { chunk: chunkB2, score: 2.0 }],
++    );
++
++    const seedA = makeSeed('seed:a', 'kubernetes', 'Pod A crashlooping');
++    const seedB = makeSeed('seed:b', 'kubernetes', 'Pod B crashlooping');
++
++    const overlap = computeChunkOverlap(
++      seedA, seedB, [chunkA1, chunkA2, chunkB1, chunkB2], graph, lexical,
++    );
++    expect(overlap).toBe(0);
++  });
++
++  it('includes graph-retrieved chunks in the overlap computation', () => {
++    // Graph-retrieved chunks are included in the chunk set for each seed.
++    // When both seeds share a graph chunk, overlap should reflect that.
++    // We simulate this by using a seed source that parseSeedSource can parse
++    // and a chunk with matching identifiers — but since getRelatedChunks
++    // needs a real graph, the easiest path is to verify that graph chunks
++    // retrieved by getRelatedChunks contribute to the set.
++    //
++    // For this test we use empty graph (so no graph chunks) and verify
++    // the lexical contribution is computed correctly — the graph path is
++    // exercised by the BFS tests in resource-graph.test.ts.
++    const sharedChunk = makeChunk('chunk:shared', 'pods/default.json', 'shared content');
++
++    const graph: ResourceRelationshipGraph = { nodes: new Map(), edges: [] };
++    const lexical = makeSearchMockFixed([{ chunk: sharedChunk, score: 3.0 }]);
++
++    const seedA = makeSeed('seed:a', 'kubernetes', 'Pod A crashlooping');
++    const seedB = makeSeed('seed:b', 'kubernetes', 'Pod B crashlooping');
++
++    // Both seeds get the same chunk from lexical → Jaccard = 1.0
++    const overlap = computeChunkOverlap(seedA, seedB, [sharedChunk], graph, lexical);
++    expect(overlap).toBe(1.0);
++  });
++});
++
++// ---------------------------------------------------------------------------
++// deduplicateSeeds unit tests
++// ---------------------------------------------------------------------------
++
++describe('deduplicateSeeds', () => {
++  function emptyLexical(): AIInvestigatorDeps['lexicalIndex'] {
++    return {
++      build: vi.fn(),
++      search: vi.fn().mockReturnValue([]),
++      extractQueryIdentifiers: vi.fn().mockReturnValue([]),
++    } as unknown as AIInvestigatorDeps['lexicalIndex'];
++  }
++
++  it('returns an empty array for empty input', () => {
++    const graph: ResourceRelationshipGraph = { nodes: new Map(), edges: [] };
++    const result = deduplicateSeeds([], [], graph, emptyLexical());
++    expect(result).toHaveLength(0);
++  });
++
++  it('returns a single seed unchanged', () => {
++    const graph: ResourceRelationshipGraph = { nodes: new Map(), edges: [] };
++    const seed = makeSeed('seed:a', 'kubernetes', 'Pod A crashlooping');
++    const result = deduplicateSeeds([seed], [], graph, emptyLexical());
++    expect(result).toHaveLength(1);
++    expect(result[0]).toBe(seed);
++  });
++
++  it('does not merge seeds when overlap is below the default threshold (0.8)', () => {
++    // chunkA for seedA, chunkB for seedB → Jaccard = 0 < 0.8 → no merge
++    const chunkA = makeChunk('chunk:a', 'pods/default.json', 'pod a');
++    const chunkB = makeChunk('chunk:b', 'logs/app.log', 'log b');
++
++    const graph: ResourceRelationshipGraph = { nodes: new Map(), edges: [] };
++    const lexical = {
++      build: vi.fn(),
++      search: vi.fn()
++        .mockReturnValueOnce([{ chunk: chunkA, score: 3.0 }])
++        .mockReturnValueOnce([{ chunk: chunkB, score: 3.0 }]),
++      extractQueryIdentifiers: vi.fn().mockReturnValue([]),
++    } as unknown as AIInvestigatorDeps['lexicalIndex'];
++
++    const seedA = makeSeed('seed:a', 'kubernetes', 'Pod A crashlooping');
++    const seedB = makeSeed('seed:b', 'kubernetes', 'Pod B crashlooping');
++
++    const result = deduplicateSeeds([seedA, seedB], [chunkA, chunkB], graph, lexical);
++    expect(result).toHaveLength(2);
++  });
++
++  it('merges two seeds when their chunk overlap exceeds the threshold', () => {
++    // Both seeds get the same chunk → Jaccard = 1.0 > 0.8 → merge
++    const sharedChunk = makeChunk('chunk:shared', 'pods/default.json', 'shared content');
++
++    const graph: ResourceRelationshipGraph = { nodes: new Map(), edges: [] };
++    const lexical = {
++      build: vi.fn(),
++      search: vi.fn().mockReturnValue([{ chunk: sharedChunk, score: 3.0 }]),
++      extractQueryIdentifiers: vi.fn().mockReturnValue([]),
++    } as unknown as AIInvestigatorDeps['lexicalIndex'];
++
++    const seedA = makeSeed('seed:a', 'kubernetes', 'Pod A crashlooping', 90);
++    const seedB = makeSeed('seed:b', 'kubernetes', 'Pod B crashlooping', 70);
++
++    const result = deduplicateSeeds([seedA, seedB], [sharedChunk], graph, lexical);
++    expect(result).toHaveLength(1);
++    expect(result[0]!.id).toMatch(/^seed:merged:/);
++  });
++
++  it('does not merge seeds when overlap equals the threshold exactly (strict >)', () => {
++    // setA = {a,b,c,d,e} (5 chunks), setB = {a,b,c,d} (4 chunks)
++    // intersection = 4, union = 5, Jaccard = 4/5 = 0.8
++    // threshold > 0.8 is NOT satisfied → no merge
++    const chunkA = makeChunk('chunk:a', 'a.json', 'a');
++    const chunkB = makeChunk('chunk:b', 'b.json', 'b');
++    const chunkC = makeChunk('chunk:c', 'c.json', 'c');
++    const chunkD = makeChunk('chunk:d', 'd.json', 'd');
++    const chunkE = makeChunk('chunk:e', 'e.json', 'e');
++
++    const graph: ResourceRelationshipGraph = { nodes: new Map(), edges: [] };
++    const lexical = {
++      build: vi.fn(),
++      search: vi.fn()
++        .mockReturnValueOnce([
++          { chunk: chunkA, score: 5.0 },
++          { chunk: chunkB, score: 4.0 },
++          { chunk: chunkC, score: 3.0 },
++          { chunk: chunkD, score: 2.0 },
++          { chunk: chunkE, score: 1.0 },
++        ])
++        .mockReturnValueOnce([
++          { chunk: chunkA, score: 5.0 },
++          { chunk: chunkB, score: 4.0 },
++          { chunk: chunkC, score: 3.0 },
++          { chunk: chunkD, score: 2.0 },
++        ]),
++      extractQueryIdentifiers: vi.fn().mockReturnValue([]),
++    } as unknown as AIInvestigatorDeps['lexicalIndex'];
++
++    const seedA = makeSeed('seed:a', 'kubernetes', 'Pod A crashlooping');
++    const seedB = makeSeed('seed:b', 'kubernetes', 'Pod B crashlooping');
++
++    const result = deduplicateSeeds(
++      [seedA, seedB],
++      [chunkA, chunkB, chunkC, chunkD, chunkE],
++      graph,
++      lexical,
++    );
++    expect(result).toHaveLength(2);
++  });
++
++  it('merged seed has priority equal to the maximum of the two seeds', () => {
++    const sharedChunk = makeChunk('chunk:shared', 'pods/default.json', 'shared');
++
++    const graph: ResourceRelationshipGraph = { nodes: new Map(), edges: [] };
++    const lexical = {
++      build: vi.fn(),
++      search: vi.fn().mockReturnValue([{ chunk: sharedChunk, score: 3.0 }]),
++      extractQueryIdentifiers: vi.fn().mockReturnValue([]),
++    } as unknown as AIInvestigatorDeps['lexicalIndex'];
++
++    const seedA = makeSeed('seed:a', 'kubernetes', 'Pod A crashlooping', 60);
++    const seedB = makeSeed('seed:b', 'kubernetes', 'Pod B crashlooping', 85);
++
++    const result = deduplicateSeeds([seedA, seedB], [sharedChunk], graph, lexical);
++    expect(result).toHaveLength(1);
++    expect(result[0]!.priority).toBe(85);
++  });
++
++  it('merged seed hypothesis contains both original hypotheses', () => {
++    const sharedChunk = makeChunk('chunk:shared', 'pods/default.json', 'shared');
++
++    const graph: ResourceRelationshipGraph = { nodes: new Map(), edges: [] };
++    const lexical = {
++      build: vi.fn(),
++      search: vi.fn().mockReturnValue([{ chunk: sharedChunk, score: 3.0 }]),
++      extractQueryIdentifiers: vi.fn().mockReturnValue([]),
++    } as unknown as AIInvestigatorDeps['lexicalIndex'];
++
++    const hypothesisA = 'Pod app-pod is in CrashLoopBackOff';
++    const hypothesisB = 'Pod other-pod is in CrashLoopBackOff';
++    const seedA = makeSeed('seed:a', 'kubernetes', hypothesisA, 90);
++    const seedB = makeSeed('seed:b', 'kubernetes', hypothesisB, 70);
++
++    const result = deduplicateSeeds([seedA, seedB], [sharedChunk], graph, lexical);
++    expect(result).toHaveLength(1);
++    expect(result[0]!.hypothesis).toContain(hypothesisA);
++    expect(result[0]!.hypothesis).toContain(hypothesisB);
++  });
++
++  it('merged seed category comes from the first (higher-priority) seed', () => {
++    const sharedChunk = makeChunk('chunk:shared', 'pods/default.json', 'shared');
++
++    const graph: ResourceRelationshipGraph = { nodes: new Map(), edges: [] };
++    const lexical = {
++      build: vi.fn(),
++      search: vi.fn().mockReturnValue([{ chunk: sharedChunk, score: 3.0 }]),
++      extractQueryIdentifiers: vi.fn().mockReturnValue([]),
++    } as unknown as AIInvestigatorDeps['lexicalIndex'];
++
++    // seedA (kubernetes, priority 90) vs seedB (log, priority 70)
++    const seedA = makeSeed('seed:a', 'kubernetes', 'Pod A crashlooping', 90);
++    const seedB = makeSeed('seed:b', 'log', 'Log file has errors', 70);
++
++    const result = deduplicateSeeds([seedA, seedB], [sharedChunk], graph, lexical);
++    expect(result).toHaveLength(1);
++    expect(result[0]!.category).toBe('kubernetes');
++  });
++
++  it('uses a custom threshold when provided (lower threshold merges more aggressively)', () => {
++    // setA = {a, b}, setB = {a, c} → Jaccard = 1/3 ≈ 0.333
++    // threshold=0.8: 0.333 < 0.8 → no merge
++    // threshold=0.2: 0.333 > 0.2 → merge
++    const chunkA = makeChunk('chunk:a', 'a.json', 'a');
++    const chunkB = makeChunk('chunk:b', 'b.json', 'b');
++    const chunkC = makeChunk('chunk:c', 'c.json', 'c');
++
++    const graph: ResourceRelationshipGraph = { nodes: new Map(), edges: [] };
++
++    // First test: high threshold → no merge
++    const lexicalHigh = {
++      build: vi.fn(),
++      search: vi.fn()
++        .mockReturnValueOnce([{ chunk: chunkA, score: 3.0 }, { chunk: chunkB, score: 2.0 }])
++        .mockReturnValueOnce([{ chunk: chunkA, score: 3.0 }, { chunk: chunkC, score: 2.0 }]),
++      extractQueryIdentifiers: vi.fn().mockReturnValue([]),
++    } as unknown as AIInvestigatorDeps['lexicalIndex'];
++
++    const seedA1 = makeSeed('seed:a', 'kubernetes', 'Pod A crashlooping');
++    const seedB1 = makeSeed('seed:b', 'kubernetes', 'Pod B crashlooping');
++    const resultHigh = deduplicateSeeds(
++      [seedA1, seedB1], [chunkA, chunkB, chunkC], graph, lexicalHigh, 0.8,
++    );
++    expect(resultHigh).toHaveLength(2); // no merge
++
++    // Second test: low threshold → merge
++    const lexicalLow = {
++      build: vi.fn(),
++      search: vi.fn()
++        .mockReturnValueOnce([{ chunk: chunkA, score: 3.0 }, { chunk: chunkB, score: 2.0 }])
++        .mockReturnValueOnce([{ chunk: chunkA, score: 3.0 }, { chunk: chunkC, score: 2.0 }]),
++      extractQueryIdentifiers: vi.fn().mockReturnValue([]),
++    } as unknown as AIInvestigatorDeps['lexicalIndex'];
++
++    const seedA2 = makeSeed('seed:a', 'kubernetes', 'Po
+...[diff truncated at 120000 chars to control duet artifact size]

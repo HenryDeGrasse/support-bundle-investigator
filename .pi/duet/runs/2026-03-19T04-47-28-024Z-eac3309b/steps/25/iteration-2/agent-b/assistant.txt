@@ -1,0 +1,20 @@
+The implementation is solid. Let me check a few specific things:
+
+1. The label propagation algorithm is deterministic ✓ (sorted iteration order + lexicographic tie-breaking)
+2. Handles edge cases (empty graph, isolated nodes) ✓
+3. Community summaries are human-readable ✓
+4. Communities are convertible to IndexedChunks ✓
+5. `buildCommunityNodes` wires into the diagnostic graph as the top hierarchy layer ✓
+6. Exports are properly set up ✓
+7. Test coverage is comprehensive (35 tests) ✓
+8. Type compatibility with the rest of the graph module ✓
+
+The implementation is clean and complete. The algorithm, interfaces, exports, and tests all align with the step requirements:
+- ✅ `detectCommunities(graph)` returns clusters using label propagation
+- ✅ Clusters correspond to application components (verified with multi-namespace fixture)
+- ✅ `generateCommunitySummary(community, nodes)` produces human-readable summary
+- ✅ Community summaries stored as retrievable chunks via `communityToChunk`/`communitiesToChunks`
+- ✅ Wired into diagnostic graph as top hierarchy layer via `buildCommunityNodes`
+- ✅ All required checks pass (lint, typecheck, unit)
+
+Verdict: approve

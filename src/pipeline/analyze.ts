@@ -71,6 +71,15 @@ export interface PipelineOptions {
   onProgress?: (event: PipelineProgressEvent) => void;
 }
 
+/**
+ * AI mode label describing how the AI layer was configured for this run.
+ *
+ * - `'cloud'` — LLM calls go to OpenAI (or another cloud provider).
+ * - `'local'` — LLM calls go to a local server (Ollama, llama.cpp, etc.).
+ * - `'off'`   — AI features disabled (heuristic-only mode).
+ */
+export type AIMode = 'cloud' | 'local' | 'off';
+
 export interface PipelineResult {
   profile: BundleProfile;
   analyzerResults: AnalyzerResult[];
@@ -83,6 +92,8 @@ export interface PipelineResult {
   findingTree: FindingTreeNode[];
   graph: InvestigationGraphImpl;
   trace: InvestigationTrace;
+  /** How the AI layer was configured: 'cloud', 'local', or 'off'. */
+  aiMode: AIMode;
 }
 
 // ---------------------------------------------------------------------------
@@ -455,6 +466,7 @@ export async function analyzeBundlePipeline(
         diagnosticGraph,
         lexicalIndex,
         llmClient,
+        tokenBudget: aiConfig.tokenBudget,
         verbose,
         ...(embeddingClient !== undefined && vectorStore !== undefined
           ? { embeddingClient, vectorStore }
@@ -613,6 +625,13 @@ export async function analyzeBundlePipeline(
   // ── 10. Complete trace ────────────────────────────────────────────────────
   completeTrace(trace, profile);
 
+  // Derive AI mode label for TUI / reports
+  const aiMode: AIMode = !aiConfig.enabled
+    ? 'off'
+    : aiConfig.llmBackend === 'local'
+      ? 'local'
+      : 'cloud';
+
   return {
     profile,
     analyzerResults,
@@ -623,6 +642,7 @@ export async function analyzeBundlePipeline(
     findingTree: investigationResult.findingTree,
     graph,
     trace,
+    aiMode,
   };
 }
 

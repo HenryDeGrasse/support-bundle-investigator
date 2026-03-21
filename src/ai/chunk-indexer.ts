@@ -582,9 +582,11 @@ export function buildChunkIndex(context: InvestigatorContext): IndexedChunk[] {
   for (const resource of context.resources) {
     const ns = resource.metadata.namespace ?? 'default';
     // Use the actual source file path when available (populated by the pipeline
-    // from the bundle manifest). Fall back to a constructed path for tests /
-    // contexts that do not supply source-file tracking.
-    const fallbackPath = `cluster-resources/${resource.kind.toLowerCase()}/${ns}/${resource.metadata.name}.json`;
+    // from the bundle manifest). Fall back to a flat namespace JSON path that
+    // mirrors real Troubleshoot bundle layout (e.g. cluster-resources/pod/default.json)
+    // so that grounding checks and evidence paths stay consistent even when
+    // resourceSourceFiles is not provided (tests, minimal contexts).
+    const fallbackPath = `cluster-resources/${resource.kind.toLowerCase()}/${ns}.json`;
     const resourcePath = context.resourceSourceFiles?.get(resource) ?? fallbackPath;
     const baseChunk = chunkResource(resource, resourcePath);
     chunks.push(augmentResourceChunk(baseChunk, resource));

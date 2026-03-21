@@ -1,0 +1,515 @@
+diff --git a/src/cli/rat.ts b/src/cli/rat.ts
+index e770689..b7dcf64 100644
+--- a/src/cli/rat.ts
++++ b/src/cli/rat.ts
+@@ -229,8 +229,9 @@ async function promptEmbeddingSetup(
+   const options: Array<{ label: string; value: string }> = [];
+ 
+   if (dockerAvail) {
++    const armNote = process.arch === 'arm64' ? ' [x86 emulation on ARM]' : '';
+     options.push({
+-      label: `TEI (Docker)  -- gte-Qwen2-1.5B (recommended, ~3 GB first run) or bge-small (~560 MB)`,
++      label: `TEI (Docker)  -- gte-Qwen2-1.5B (recommended, ~3 GB first run) or bge-small (~560 MB)${armNote}`,
+       value: 'tei',
+     });
+   } else {
+@@ -328,19 +329,28 @@ async function startTEI(projectRoot: string, rl: readline.Interface): Promise<bo
+     // Ignore -- no existing container
+   }
+ 
+-  const result = spawnSync(
+-    'docker',
+-    [
+-      'run', '-d',
+-      '--name', 'sbi-tei',
+-      '-p', `${TEI_PORT}:80`,
+-      '--pull', 'always',
+-      TEI_DOCKER_IMAGE,
+-      '--model-id', model,
+-      '--max-client-batch-size', '64',
+-    ],
+-    { encoding: 'utf-8', timeout: 30_000 },
+-  );
++  // TEI only publishes linux/amd64 images. On ARM (Apple Silicon) we need
++  // Rosetta / QEMU emulation via --platform linux/amd64.
++  const isArm = process.arch === 'arm64';
++  if (isArm) {
++    console.log('  [!] ARM architecture detected (Apple Silicon).');
++    console.log('      TEI image is x86-only — running under Rosetta emulation.');
++    console.log('      Performance will be slower. Consider using Ollama instead.');
++    console.log('');
++  }
++
++  const dockerArgs = [
++    'run', '-d',
++    '--name', 'sbi-tei',
++    '-p', `${TEI_PORT}:80`,
++    ...(isArm ? ['--platform', 'linux/amd64'] : []),
++    '--pull', 'always',
++    TEI_DOCKER_IMAGE,
++    '--model-id', model,
++    '--max-client-batch-size', '64',
++  ];
++
++  const result = spawnSync('docker', dockerArgs, { encoding: 'utf-8', timeout: 30_000 });
+ 
+   if (result.status !== 0) {
+     console.log('  [!] Failed to start TEI container:');
+@@ -348,8 +358,12 @@ async function startTEI(projectRoot: string, rl: readline.Interface): Promise<bo
+     console.log('');
+     console.log('  Troubleshooting:');
+     console.log('    - Make sure Docker Desktop is running');
++    if (isArm) {
++      console.log('    - On Apple Silicon, ensure Rosetta is enabled in Docker Desktop settings');
++      console.log('    - Consider using Ollama instead (native ARM support)');
++    }
+     console.log('    - Try manually: docker run -d --name sbi-tei -p 8080:80 \\');
+-    console.log(`      ${TEI_DOCKER_IMAGE} --model-id ${model}`);
++    console.log(`      ${isArm ? '--platform linux/amd64 ' : ''}${TEI_DOCKER_IMAGE} --model-id ${model}`);
+     return false;
+   }
+ 
+diff --git a/src/investigators/__tests__/hypothesis-evidence-collector.test.ts b/src/investigators/__tests__/hypothesis-evidence-collector.test.ts
+index c926306..6fd1d70 100644
+--- a/src/investigators/__tests__/hypothesis-evidence-collector.test.ts
++++ b/src/investigators/__tests__/hypothesis-evidence-collector.test.ts
+@@ -1081,3 +1081,273 @@ describe('collectEvidenceForHypothesis — wiring of collectFalsifyingEvidence i
+     expect(combined).toMatch(/myregistry\.io/);
+   });
+ });
++
++// ===========================================================================
++// Two-part Kubernetes short-form hostname parsing  (service.namespace)
++// ===========================================================================
++
++describe('extractInClusterServiceRef — two-part hostname: api-service.staging via env URL', () => {
++  // Pod in 'default' references http://api-service.staging:8080.
++  // The service EXISTS in 'staging' → contradicting evidence expected.
++  const ctx = makeContext({
++    resources: [
++      {
++        apiVersion: 'v1',
++        kind: 'Pod',
++        metadata: { name: 'app-pod', namespace: 'default' },
++        spec: {
++          containers: [
++            {
++              name: 'app',
++              env: [{ name: 'BACKEND_URL', value: 'http://api-service.staging:8080' }],
++            },
++          ],
++        },
++      },
++      makeResource('Service', 'api-service', 'staging'),
++    ],
++  });
++  const hypothesis = makeHypothesis({ category: 'dns-failure' });
++  const assessment = collectEvidenceForHypothesis(hypothesis, ctx);
++
++  it('generates pod service-reference evidence mentioning api-service in staging', () => {
++    const notes = assessment.supporting.map((e) => e.note).join(' ');
++    expect(notes).toMatch(/api-service/);
++    expect(notes).toMatch(/staging/);
++  });
++
++  it('finds contradicting evidence because api-service exists in namespace staging', () => {
++    const contNotes = assessment.contradicting.map((e) => e.note).join(' ');
++    expect(contNotes).toMatch(/api-service/);
++    expect(contNotes).toMatch(/staging/);
++  });
++});
++
++describe('extractInClusterServiceRef — two-part hostname: api-service.staging missing service', () => {
++  // Pod references api-service.staging but the service does NOT exist.
++  const ctx = makeContext({
++    resources: [
++      {
++        apiVersion: 'v1',
++        kind: 'Pod',
++        metadata: { name: 'app-pod', namespace: 'default' },
++        spec: {
++          containers: [
++            {
++              name: 'app',
++              env: [{ name: 'BACKEND_URL', value: 'http://api-service.staging:8080' }],
++            },
++          ],
++        },
++      },
++      // intentionally no Service 'api-service' in 'staging'
++    ],
++  });
++  const hypothesis = makeHypothesis({ category: 'dns-failure' });
++  const assessment = collectEvidenceForHypothesis(hypothesis, ctx);
++
++  it('generates supporting evidence for the missing service with correct namespace', () => {
++    const notes = assessment.supporting.map((e) => e.note).join(' ');
++    expect(notes).toMatch(/api-service/);
++    expect(notes).toMatch(/staging/);
++  });
++
++  it('includes pod evidence path for the pod referencing the cross-namespace service', () => {
++    // The pod path (cluster-resources/pods/default/app-pod.yaml) is where the
++    // env-var reference lives; the service-existence check emits the service
++    // path only when at least one Service already exists in the target namespace.
++    const paths = assessment.supporting.map((e) => e.path);
++    expect(paths.some((p) => p.includes('app-pod'))).toBe(true);
++  });
++});
++
++describe('extractInClusterServiceRef — TLD blocklist: redis.io is not treated as in-cluster service', () => {
++  // 'io' is a common TLD — redis.io must NOT be treated as Service 'redis' in
++  // namespace 'io'.
++  const ctx = makeContext({
++    resources: [
++      {
++        apiVersion: 'v1',
++        kind: 'Pod',
++        metadata: { name: 'app-pod', namespace: 'default' },
++        spec: {
++          containers: [
++            {
++              name: 'app',
++              env: [{ name: 'REDIS_URL', value: 'http://redis.io:6379' }],
++            },
++          ],
++        },
++      },
++    ],
++  });
++  const hypothesis = makeHypothesis({ category: 'dns-failure' });
++  const assessment = collectEvidenceForHypothesis(hypothesis, ctx);
++
++  it('does not generate service-reference evidence for redis in namespace io', () => {
++    const combined = [...assessment.supporting, ...assessment.contradicting]
++      .map((e) => `${e.path} ${e.note}`)
++      .join(' ');
++
++    // Must not create a path like cluster-resources/services/io/redis.yaml
++    expect(combined).not.toContain('cluster-resources/services/io/redis.yaml');
++    // Must not have a note claiming redis.io resolves to Service 'redis' in 'io'
++    expect(combined).not.toMatch(/service 'redis'.*namespace 'io'/i);
++  });
++});
++
++describe('extractInClusterServiceRef — two-part hostname: my-svc.kube-system', () => {
++  // 'kube-system' is a valid Kubernetes namespace, not a TLD.
++  // A pod in 'default' referencing http://my-svc.kube-system:8080 should
++  // extract a service reference to 'my-svc' in namespace 'kube-system'.
++  const ctx = makeContext({
++    resources: [
++      {
++        apiVersion: 'v1',
++        kind: 'Pod',
++        metadata: { name: 'app-pod', namespace: 'default' },
++        spec: {
++          containers: [
++            {
++              name: 'app',
++              env: [{ name: 'HEALTH_ENDPOINT', value: 'http://my-svc.kube-system:8080' }],
++            },
++          ],
++        },
++      },
++      // Service does NOT exist → supporting (missing service) evidence expected
++    ],
++  });
++  const hypothesis = makeHypothesis({ category: 'dns-failure' });
++  const assessment = collectEvidenceForHypothesis(hypothesis, ctx);
++
++  it('generates supporting evidence referencing my-svc in namespace kube-system', () => {
++    const notes = assessment.supporting.map((e) => e.note).join(' ');
++    expect(notes).toMatch(/my-svc/);
++    expect(notes).toMatch(/kube-system/);
++  });
++
++  it('evidence path references the pod resource that declares the cross-namespace env var', () => {
++    // Pod evidence path is cluster-resources/pods/default/app-pod.yaml;
++    // the service path for kube-system/my-svc would only appear if a Service
++    // already exists in kube-system (absent from this minimal context).
++    const paths = assessment.supporting.map((e) => e.path);
++    expect(paths.some((p) => p.includes('app-pod'))).toBe(true);
++  });
++});
++
++describe('extractInClusterServiceRef — backward compat: single-part hostname still works', () => {
++  // api-service (no dot) → Service 'api-service' in the pod's own namespace
++  const ctx = makeContext({
++    resources: [
++      {
++        apiVersion: 'v1',
++        kind: 'Pod',
++        metadata: { name: 'app-pod', namespace: 'default' },
++        spec: {
++          containers: [
++            {
++              name: 'app',
++              env: [{ name: 'SVC_HOST', value: 'api-service' }],
++            },
++          ],
++        },
++      },
++    ],
++  });
++  const hypothesis = makeHypothesis({ category: 'dns-failure' });
++  const assessment = collectEvidenceForHypothesis(hypothesis, ctx);
++
++  it('generates pod service-reference evidence for single-part hostname api-service', () => {
++    const notes = assessment.supporting.map((e) => e.note).join(' ');
++    expect(notes).toMatch(/api-service/);
++  });
++
++  it('service lookup uses the pod own namespace (default)', () => {
++    const paths = assessment.supporting.map((e) => e.path);
++    expect(paths.some((p) => p.includes('default'))).toBe(true);
++  });
++});
++
++describe('extractInClusterServiceRef — backward compat: FQDN hostname still works', () => {
++  // api-service.default.svc.cluster.local → Service 'api-service' in 'default'
++  const ctx = makeContext({
++    resources: [
++      {
++        apiVersion: 'v1',
++        kind: 'Pod',
++        metadata: { name: 'app-pod', namespace: 'default' },
++        spec: {
++          containers: [
++            {
++              name: 'app',
++              env: [
++                {
++                  name: 'DATABASE_URL',
++                  value: 'http://api-service.default.svc.cluster.local:5432/db',
++                },
++              ],
++            },
++          ],
++        },
++      },
++    ],
++  });
++  const hypothesis = makeHypothesis({ category: 'dns-failure' });
++  const assessment = collectEvidenceForHypothesis(hypothesis, ctx);
++
++  it('generates pod service-reference evidence for FQDN hostname', () => {
++    const notes = assessment.supporting.map((e) => e.note).join(' ');
++    expect(notes).toMatch(/api-service/);
++  });
++
++  it('pod evidence path references the pod resource in the default namespace', () => {
++    // The pod-reference evidence path is cluster-resources/pods/default/app-pod.yaml.
++    // The dedicated service path (cluster-resources/services/default/api-service.yaml)
++    // is only emitted when the target namespace already has ≥1 Service in the bundle.
++    const paths = assessment.supporting.map((e) => e.path);
++    expect(paths.some((p) => p.includes('default') && p.includes('app-pod'))).toBe(true);
++  });
++});
++
++describe('extractInClusterServiceRef — dns-failure hypothesis with two-part env var URL', () => {
++  // End-to-end: dns-failure hypothesis + pod env var http://api-service.staging:8080
++  // confirms the service reference is extracted with namespace 'staging'.
++  it('confirms service reference with namespace staging from env var URL', () => {
++    const ctx = makeContext({
++      resources: [
++        {
++          apiVersion: 'v1',
++          kind: 'Pod',
++          metadata: { name: 'worker-pod', namespace: 'production' },
++          spec: {
++            containers: [
++              {
++                name: 'worker',
++                env: [{ name: 'API_URL', value: 'http://api-service.staging:8080' }],
++              },
++            ],
++          },
++        },
++      ],
++      logs: [
++        makeLogFile('logs/production/worker-pod/worker/current.log', [
++          'ERROR dial tcp: lookup api-service.staging: no such host',
++        ]),
++      ],
++    });
++    const hypothesis = makeHypothesis({ category: 'dns-failure' });
++    const assessment = collectEvidenceForHypothesis(hypothesis, ctx);
++
++    // Should surface evidence for 'api-service' in namespace 'staging'
++    const allNotes = [...assessment.supporting, ...assessment.contradicting]
++      .map((e) => e.note)
++      .join(' ');
++    expect(allNotes).toMatch(/api-service/);
++    expect(allNotes).toMatch(/staging/);
++
++    // All evidence notes should surface 'api-service' + 'staging' so the
++    // caller can identify the cross-namespace service dependency.
++    // (Paths reference the pod/log files, not the service namespace directly.)
++  });
++});
+diff --git a/src/investigators/config-investigator.ts b/src/investigators/config-investigator.ts
+index bbacd97..834192e 100644
+--- a/src/investigators/config-investigator.ts
++++ b/src/investigators/config-investigator.ts
+@@ -222,6 +222,11 @@ function findEnvServiceMismatches(
+     const podName = resource.metadata.name;
+     const namespace = resource.metadata.namespace ?? 'default';
+ 
++    // Skip kube-system pods — system components (kindnet, kube-proxy, etcd,
++    // etc.) use env vars like CONTROL_PLANE_ENDPOINT that reference hostnames,
++    // not K8s Service names. Checking them produces noisy false positives.
++    if (namespace === 'kube-system') continue;
++
+     const containers = resource.spec['containers'];
+     if (!Array.isArray(containers)) continue;
+ 
+@@ -618,15 +623,37 @@ const WORKLOAD_IMAGE_KINDS = new Set([
+ ]);
+ 
+ /**
+- * Strips a digest suffix from an image reference before comparison.
++ * Normalizes an image reference for comparison.
+  *
+- * e.g. `myapp:v1.2.3@sha256:abc123` → `myapp:v1.2.3`
++ * Handles:
++ * 1. Strips digest suffixes: `myapp:v1.2.3@sha256:abc123` → `myapp:v1.2.3`
++ * 2. Strips default Docker registry prefix: `docker.io/library/busybox` → `busybox`
++ *    and `docker.io/hashicorp/http-echo` → `hashicorp/http-echo`
++ * 3. Strips architecture suffixes that container runtimes append on multi-arch
++ *    images: `registry.k8s.io/kube-proxy-arm64:v1.35.0` → `registry.k8s.io/kube-proxy:v1.35.0`
+  *
+- * This avoids false-positive mismatches when the registry appends a digest
+- * to the tag recorded in pod status.
++ * This avoids false-positive mismatches when comparing spec images against
++ * the runtime-resolved images in pod status.
+  */
+ function normalizeImageRef(image: string): string {
+-  return image.split('@')[0]!.trim();
++  // 1. Strip digest suffix
++  let normalized = image.split('@')[0]!.trim();
++
++  // 2. Strip default Docker Hub registry prefixes
++  // docker.io/library/busybox:tag → busybox:tag
++  normalized = normalized.replace(/^docker\.io\/library\//, '');
++  // docker.io/org/image:tag → org/image:tag
++  normalized = normalized.replace(/^docker\.io\//, '');
++
++  // 3. Strip architecture suffixes from image name (before the tag)
++  // registry.k8s.io/kube-proxy-arm64:v1.35.0 → registry.k8s.io/kube-proxy:v1.35.0
++  // This handles -arm64, -amd64, -s390x, -ppc64le suffixes
++  normalized = normalized.replace(
++    /-(arm64|amd64|s390x|ppc64le)(:|$)/,
++    '$2',
++  );
++
++  return normalized;
+ }
+ 
+ function extractStringMap(value: unknown): Record<string, string> | undefined {
+diff --git a/src/investigators/hypothesis-evidence-collector.ts b/src/investigators/hypothesis-evidence-collector.ts
+index 01a020f..fe66800 100644
+--- a/src/investigators/hypothesis-evidence-collector.ts
++++ b/src/investigators/hypothesis-evidence-collector.ts
+@@ -241,6 +241,11 @@ function collectPodServiceReferences(resources: K8sResource[]): PodServiceRefere
+ 
+     const podName = resource.metadata.name;
+     const namespace = resource.metadata.namespace ?? 'default';
++
++    // Skip kube-system pods — system components use env vars with hostnames
++    // that are not K8s Service names (e.g. CONTROL_PLANE_ENDPOINT).
++    if (namespace === 'kube-system') continue;
++
+     const containerGroups = [resource.spec['initContainers'], resource.spec['containers']];
+ 
+     for (const containers of containerGroups) {
+@@ -312,6 +317,36 @@ interface ServiceReference {
+   namespace?: string;
+ }
+ 
++/**
++ * Common short env var values that look like RFC-1123 names but are clearly
++ * NOT Kubernetes service names. Prevents `LOG_LEVEL=info`, `DEBUG=true`,
++ * `NODE_ENV=production` etc. from being treated as service references.
++ */
++const ENV_VALUE_STOP_WORDS: ReadonlySet<string> = new Set([
++  // Log levels
++  'info', 'debug', 'warn', 'warning', 'error', 'fatal', 'trace', 'verbose',
++  // Booleans
++  'true', 'false', 'yes', 'no', 'on', 'off', 'enabled', 'disabled',
++  // Environments
++  'production', 'development', 'staging', 'test', 'testing', 'local',
++  // Common generic values
++  'none', 'default', 'auto', 'always', 'never', 'json', 'text', 'yaml',
++  'http', 'https', 'tcp', 'udp', 'grpc',
++]);
++
++/**
++ * Common Internet TLDs that superficially match the two-part
++ * `<service>.<namespace>` DNS short-form pattern but are clearly external
++ * domain suffixes rather than Kubernetes namespace names.  When the second
++ * segment of a dot-separated two-part hostname matches one of these, the
++ * hostname is treated as an external domain and excluded from in-cluster
++ * Service resolution.
++ */
++const COMMON_TLDS: ReadonlySet<string> = new Set([
++  'com', 'org', 'net', 'io', 'co', 'edu', 'gov', 'dev', 'app', 'run',
++  'cloud', 'ai', 'me', 'uk', 'eu', 'info', 'biz', 'xyz',
++]);
++
+ function extractInClusterServiceRef(value: string): ServiceReference | undefined {
+   const host = extractHostCandidate(value);
+   if (!host || isIpv4Address(host)) {
+@@ -324,9 +359,31 @@ function extractInClusterServiceRef(value: string): ServiceReference | undefined
+   }
+ 
+   if (/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(host) && !host.includes('.')) {
++    // Filter out common config values that look like RFC-1123 names but
++    // are clearly not Kubernetes Service names.
++    if (ENV_VALUE_STOP_WORDS.has(host.toLowerCase())) {
++      return undefined;
++    }
+     return { serviceName: host.toLowerCase() };
+   }
+ 
++  // Two-part short-form: <service>.<namespace>  (e.g. api-service.staging)
++  // Kubernetes resolves these within the cluster by appending the remaining
++  // DNS search-domain suffix.  Reject any pair whose second segment is a
++  // well-known Internet TLD — those are external domains, not namespaces.
++  const twoPartMatch = host.match(
++    /^([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)\.([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)$/i,
++  );
++  if (twoPartMatch?.[1] && twoPartMatch[2]) {
++    const secondSegment = twoPartMatch[2].toLowerCase();
++    if (!COMMON_TLDS.has(secondSegment)) {
++      return {
++        serviceName: twoPartMatch[1].toLowerCase(),
++        namespace: secondSegment,
++      };
++    }
++  }
++
+   const fqdnMatch = host.match(
+     /^([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)\.([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)\.svc(?:\.cluster\.local)?$/i,
+   );
+diff --git a/src/investigators/hypothesis-generator.ts b/src/investigators/hypothesis-generator.ts
+index e8093d2..4b7bd5e 100644
+--- a/src/investigators/hypothesis-generator.ts
++++ b/src/investigators/hypothesis-generator.ts
+@@ -200,7 +200,17 @@ export function groupFindingsBySymptom(findings: Finding[]): Map<string, Finding
+   const groups = new Map<string, Finding[]>();
+ 
+   for (const finding of findings) {
++    // Skip findings whose primary component is a Service, Endpoints, or other
++    // non-workload resource.  Hypothesis templates (crashloop, not-ready,
++    // pending, imagepull) are all Pod-centric.  Allowing e.g. a
++    // "Service has 0 ready endpoints" finding to enter the hypothesis pipeline
++    // produces a false "pod-not-ready:default/web-app-service" symptom key
++    // because "0 ready endpoints" matches the "not ready" template.
+     const key = primaryComponentKey(finding);
++    if (/^(Service|Endpoints|EndpointSlice|ConfigMap|Secret)\//.test(key)) {
++      continue;
++    }
++
+     const group = groups.get(key) ?? [];
+     group.push(finding);
+     groups.set(key, group);

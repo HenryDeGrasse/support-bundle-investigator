@@ -1,0 +1,24 @@
+Reviewed
+- `src/pipeline/analyze.ts`
+- `src/investigators/orchestrator.ts`
+- `src/pipeline/__tests__/analyze-ai.test.ts`
+
+What I checked
+- `runInvestigation()` is async, accepts optional `aiDeps`, merges AI findings additively, and preserves heuristic-only fallback behavior.
+- `InvestigationResult.metadata` includes `aiEnabled` and `aiFindings`.
+- `analyzeBundlePipeline()` conditionally creates AI deps in an `ai-index` step, catches setup failures, records trace errors, and continues in heuristic-only mode.
+- Trace/doc comments are consistent with the new step ordering.
+- Tests cover the required scenarios.
+
+Checks run
+- `npm run lint` ✅
+- `npm run typecheck` ✅
+- `npm test` ✅ (1420 passing)
+- `npm run build` ✅
+
+Assessment
+- Step 6 looks complete and correct.
+- The implementation is additive, degrades gracefully, and the test coverage matches the requested behavior.
+- I did not make further changes this round.
+
+Verdict: approve

@@ -742,6 +742,33 @@ describe('resource chunk source file paths', () => {
     expect(chunk!.artifactId).toBeTruthy();
     expect(chunk!.id).toContain('app-pod');
   });
+
+  // 1.2 — fallback path must use flat namespace format matching real bundles
+  it('fallback path uses flat namespace JSON format (cluster-resources/{kind}/{ns}.json)', () => {
+    const pod = makePodResource('app-pod', 'production');
+    const ctx = makeContext({ resources: [pod] });
+    const chunks = buildChunkIndex(ctx);
+    const chunk = chunks.find((c) => c.artifactCategory === 'kubernetes-resource');
+    expect(chunk).toBeDefined();
+    // Must match real Troubleshoot bundle layout: cluster-resources/pod/production.json
+    // (kind is lowercased, namespace only — no per-resource name in path)
+    expect(chunk!.artifactId).toBe('cluster-resources/pod/production.json');
+    // Chunk id must still include the resource name as a qualifier for uniqueness
+    expect(chunk!.id).toBe('cluster-resources/pod/production.json:app-pod:resource');
+  });
+
+  it('fallback path for two pods in same namespace share the same artifactId', () => {
+    const pod1 = makePodResource('pod-one', 'default');
+    const pod2 = makePodResource('pod-two', 'default');
+    const ctx = makeContext({ resources: [pod1, pod2] });
+    const chunks = buildChunkIndex(ctx).filter((c) => c.artifactCategory === 'kubernetes-resource');
+    expect(chunks).toHaveLength(2);
+    // Both pods live in the same namespace file
+    expect(chunks[0]!.artifactId).toBe('cluster-resources/pod/default.json');
+    expect(chunks[1]!.artifactId).toBe('cluster-resources/pod/default.json');
+    // IDs must still be unique (name qualifier disambiguates)
+    expect(chunks[0]!.id).not.toBe(chunks[1]!.id);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,10 @@
+Everything is in order. Here's my full assessment:
+
+**Reviewed:**
+- `src/tui/components/Pane.tsx` — Correct. `borderStyle="round"`, `borderColor` and title `color`/`bold` are all keyed on `focused`. JSDoc on both the Props interface and component. Matches the spec exactly.
+- `src/tui/components/StatusBar.tsx` — Correct. `StatusBarHeader` always shows the finding count (matching the literal spec text `— {findingCount} finding(s)`). `StatusBarFooter` has the right context-sensitive hints for all three panes. Both sub-components plus the combined `StatusBar` are exported. `phase` is kept in the props shape for `StatusBarHeader` (forward compatibility for later steps) but doesn't gate the count display, matching the spec's literal header template.
+- `src/tui/components/FindingsPane.tsx` — Correct. Column header matches `Dashboard.tsx`, row formatting is identical except `truncateTitle(title, 40)` (vs. 60 in Dashboard), empty-state message is gray "No findings.", everything wrapped in `<Pane title="Findings" focused={focused}>`.
+
+**No changes needed.** All three components satisfy the step requirements exactly, lint is clean (0 warnings), typecheck passes, and all 2291 unit tests pass.
+
+Verdict: approve

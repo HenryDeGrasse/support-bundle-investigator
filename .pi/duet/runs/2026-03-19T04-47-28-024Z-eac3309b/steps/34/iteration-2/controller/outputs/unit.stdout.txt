@@ -1,0 +1,125 @@
+
+> support-bundle-investigator@0.1.0 test
+> vitest run
+
+
+ RUN  v2.1.9 /Users/henrydegrasse/Development/GauntletAi/HPP/Replicated
+
+ ✓ src/investigators/__tests__/config-investigator.test.ts (71 tests) 7ms
+ ✓ src/ai/__tests__/lexical-search.test.ts (52 tests) 12ms
+ ✓ src/investigators/__tests__/hypothesis-generator.test.ts (104 tests) 10ms
+ ✓ src/reporters/__tests__/spec-recommender.test.ts (62 tests) 6ms
+ ✓ src/graph/__tests__/resource-graph.test.ts (41 tests) 10ms
+ ✓ src/investigators/__tests__/hypothesis-evidence-collector.test.ts (75 tests) 10ms
+ ✓ src/investigators/__tests__/hypothesis-ranking-integration.test.ts (59 tests) 6ms
+ ✓ src/graph/__tests__/diagnostic-graph.test.ts (84 tests) 16ms
+ ✓ src/investigators/__tests__/differential-diagnosis.test.ts (70 tests) 6ms
+ ✓ src/investigators/__tests__/kubernetes-investigator.test.ts (155 tests) 12ms
+ ✓ src/investigators/__tests__/verifier.test.ts (70 tests) 8ms
+ ✓ src/ai/__tests__/chunk-indexer.test.ts (68 tests) 19ms
+ ✓ src/investigators/__tests__/log-investigator.test.ts (100 tests) 14ms
+ ✓ src/investigators/__tests__/ai-investigator.test.ts (79 tests) 31ms
+ ✓ test/fixtures/__tests__/fixtures.test.ts (84 tests) 153ms
+ ✓ src/graph/__tests__/traversal.test.ts (36 tests) 11ms
+ ✓ src/ai/__tests__/contextual-retrieval.test.ts (54 tests) 65ms
+ ✓ src/graph/__tests__/causal-templates.test.ts (89 tests) 14ms
+ ✓ src/investigators/__tests__/network-policy-investigator.test.ts (28 tests) 9ms
+ ✓ src/investigators/__tests__/hypothesis-ranker.test.ts (65 tests) 8ms
+ ✓ src/tui/__tests__/dashboard-state.test.ts (93 tests) 9ms
+ ✓ src/investigators/__tests__/orchestrator.test.ts (44 tests) 42ms
+ ✓ src/investigators/__tests__/seed-generator.test.ts (50 tests) 18ms
+ ✓ src/reporters/__tests__/html-reporter.test.ts (96 tests) 24ms
+ ✓ src/investigators/__tests__/hypothesis-converter.test.ts (44 tests) 22ms
+ ✓ src/reporters/__tests__/markdown-reporter.test.ts (64 tests) 59ms
+ ✓ src/parsers/__tests__/log-parser.test.ts (39 tests) 97ms
+ ✓ src/graph/__tests__/chunker.test.ts (40 tests) 7ms
+ ✓ src/reporters/__tests__/json-reporter.test.ts (57 tests) 125ms
+ ✓ src/graph/__tests__/community.test.ts (35 tests) 15ms
+ ✓ src/investigators/__tests__/service-investigator.test.ts (18 tests) 7ms
+ ✓ test/retrieval/__tests__/graph-retrieval.test.ts (19 tests | 1 skipped) 13ms
+ ✓ src/ai/__tests__/prompts.test.ts (50 tests) 8ms
+ ✓ src/reporters/__tests__/report-builder.test.ts (44 tests) 8ms
+ ✓ src/pipeline/__tests__/analyze-progress.test.ts (15 tests) 11ms
+ ✓ src/ai/__tests__/schemas.test.ts (60 tests) 11ms
+ ✓ src/pipeline/__tests__/analyze-ai.test.ts (10 tests) 10ms
+ ✓ src/ai/__tests__/late-chunking.test.ts (30 tests) 12ms
+ ✓ src/parsers/__tests__/k8s-helpers.test.ts (41 tests) 8ms
+ ✓ test/retrieval/__tests__/lexical-retrieval.test.ts (16 tests | 1 skipped) 25ms
+ ✓ src/ai/__tests__/summarizer.test.ts (45 tests) 5ms
+ ✓ src/ingestion/__tests__/profiler.test.ts (30 tests) 13ms
+ ✓ src/tui/__tests__/state-machine.test.ts (62 tests) 5ms
+ ✓ src/graph/__tests__/finding-tree.test.ts (25 tests) 6ms
+ ✓ src/tui/__tests__/helpers.test.ts (54 tests) 4ms
+ ✓ src/ai/__tests__/local-embeddings.test.ts (22 tests) 11ms
+ ✓ src/graph/__tests__/knowledge-extractor.test.ts (42 tests) 10ms
+ ✓ src/parsers/__tests__/timeline.test.ts (30 tests) 6ms
+ ✓ src/parsers/__tests__/event-parser.test.ts (20 tests) 14ms
+ ✓ src/parsers/__tests__/analyzer-parser.test.ts (24 tests) 9ms
+ ✓ src/ai/__tests__/llm-client.test.ts (21 tests) 9ms
+ ✓ src/reporters/__tests__/report-builder-ai.test.ts (21 tests) 6ms
+ ✓ test/integration/__tests__/output-quality.test.ts (41 tests) 187ms
+ ✓ test/golden/__tests__/adversarial-llm.test.ts (14 tests) 7ms
+ ✓ src/parsers/__tests__/k8s-resource-parser.test.ts (17 tests) 12ms
+ ✓ test/golden/__tests__/ai-report-annotation.test.ts (13 tests) 8ms
+ ✓ src/ai/__tests__/vector-store.test.ts (26 tests) 19ms
+ ✓ src/cli/__tests__/runner.test.ts (8 tests) 6ms
+ ✓ src/utils/__tests__/type-guards.test.ts (51 tests) 5ms
+ ✓ src/ai/__tests__/config.test.ts (22 tests) 3ms
+ ✓ src/investigators/__tests__/ai-primary.test.ts (6 tests) 3ms
+ ✓ test/golden/__tests__/grounding-validation.test.ts (11 tests) 4ms
+ ✓ src/reporters/__tests__/display-helpers.test.ts (31 tests) 4ms
+ ✓ src/graph/__tests__/investigation-graph.test.ts (17 tests) 5ms
+ ✓ src/parsers/__tests__/helm-parser.test.ts (27 tests) 4ms
+ ✓ src/ai/__tests__/embeddings.test.ts (9 tests) 5ms
+ ✓ test/golden/__tests__/degradation-paths.test.ts (9 tests) 5ms
+Usage: sbi analyze [options] <bundle-path>
+
+Analyze a support bundle .tar.gz archive
+
+Arguments:
+  bundle-path         Path to the support bundle .tar.gz file
+
+Options:
+  --output-dir <dir>  Directory to write output artifacts (findings.json,
+                      report.md, report.html, optional trace.json)
+  --format <format>   Output format: json | text | summary | markdown | html
+                      (default: text) (default: "text")
+  --verbose           Enable verbose pipeline logging (default: false)
+  --trace             Write a JSON trace file to the output directory (default:
+                      false)
+  --no-ai             Disable AI features and run in heuristic-only mode
+  --tui               Launch interactive terminal UI for investigation results
+                      (default: false)
+  -h, --help          display help for command
+ ✓ src/cli/__tests__/cli.test.ts (22 tests) 7ms
+ ✓ src/cli/__tests__/env-loader.test.ts (8 tests) 5ms
+ ✓ src/ingestion/__tests__/classifier.test.ts (20 tests) 3ms
+ ✓ src/tui/__tests__/tui-import.test.ts (4 tests) 5ms
+ ✓ src/cli/__tests__/rat.test.ts (4 tests) 91ms
+ ✓ test/golden/__tests__/retrieval-contract.test.ts (19 tests) 279ms
+ ✓ src/ingestion/__tests__/extractor.test.ts (10 tests) 480ms
+ ✓ test/e2e/__tests__/scenarios.test.ts (128 tests) 827ms
+ ✓ test/golden/__tests__/golden-eval.test.ts (48 tests) 178ms
+ ✓ test/placeholder.test.ts (1 test) 1ms
+ ✓ test/integration/__tests__/real-bundle-regression.test.ts (4 tests) 124ms
+ ✓ src/tui/__tests__/fullscreen.test.ts (5 tests) 247ms
+stdout | test/integration/__tests__/pipeline.test.ts > Pipeline Integration > output directory handling > preserves output artifacts when outputDir is provided
+Reports written to /var/folders/26/7kx_4jvx6951yzfvf9k6_5k00000gn/T/sbi-output-uCmDnH: findings.json, report.md, report.html
+
+stdout | test/integration/__tests__/pipeline.test.ts > Pipeline Integration > output directory handling > findings.json written to outputDir contains valid JSON with findings array
+Reports written to /var/folders/26/7kx_4jvx6951yzfvf9k6_5k00000gn/T/sbi-output-json-skmuct: findings.json, report.md, report.html
+
+stdout | test/integration/__tests__/pipeline.test.ts > Pipeline Integration > output directory handling > report.md written to outputDir contains expected Markdown sections
+Reports written to /var/folders/26/7kx_4jvx6951yzfvf9k6_5k00000gn/T/sbi-output-md-mPwV7O: findings.json, report.md, report.html
+
+stdout | test/integration/__tests__/pipeline.test.ts > Pipeline Integration > output directory handling > report.html written to outputDir contains valid HTML
+Reports written to /var/folders/26/7kx_4jvx6951yzfvf9k6_5k00000gn/T/sbi-output-html-TfMhho: findings.json, report.md, report.html
+
+ ✓ test/integration/__tests__/pipeline.test.ts (32 tests) 608ms
+ ✓ src/tui/__tests__/tui-cli-integration.test.ts (3 tests) 458ms
+
+ Test Files  81 passed (81)
+      Tests  3315 passed | 2 skipped (3317)
+   Start at  08:34:08
+   Duration  2.10s (transform 4.37s, setup 0ms, collect 9.18s, tests 4.65s, environment 8ms, prepare 5.04s)
+

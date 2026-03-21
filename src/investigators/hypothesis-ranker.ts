@@ -21,6 +21,23 @@ const SPECIFICITY_CAP = 0.30;
 /** Bonus when supporting evidence spans two or more artifact types. */
 const CROSS_SOURCE_BONUS = 0.10;
 
+/** Additional bonus when supporting evidence spans three or more artifact types. */
+const EVIDENCE_DIVERSITY_BONUS = 0.05;
+
+/**
+ * Bonus when supporting evidence confirms a cross-namespace service match
+ * (e.g. the referenced service exists in a different namespace). This is
+ * treated as confirmed root-cause evidence and deserves a large boost.
+ */
+const CROSS_NAMESPACE_BONUS = 0.15;
+
+/**
+ * Matches evidence notes that confirm a service exists in a different
+ * namespace than the one referenced — produced by the DNS failure evidence
+ * collector when a cross-namespace service is found during step-2 look-up.
+ */
+const CROSS_NAMESPACE_PATTERN = /exists in namespace .* \(not /i;
+
 /** Each contradicting evidence item reduces confidence by this amount. */
 const CONTRADICTION_PER_ITEM = 0.15;
 /** Maximum total contradiction penalty. */
@@ -186,9 +203,14 @@ function getCategoryDecisiveBonus(hypothesis: Hypothesis): number {
  *    diagnostic signals (e.g., `"no such host"`, `"ErrImagePull"`).
  * 3. **Cross-source bonus** — `+0.10` when supporting evidence spans two or
  *    more artifact types (e.g., `log` + `kubernetes-resource`).
- * 4. **Contradiction penalty** — `min(n_contradicting × 0.15, 0.40)`.
- * 5. **Missing decisive penalty** — `min(n_missing × 0.10, 0.30)`.
- * 6. **Generic-only cap** — if every supporting item is a generic symptom
+ * 4. **Evidence diversity bonus** — additional `+0.05` when supporting
+ *    evidence spans three or more distinct artifact types.
+ * 5. **Cross-namespace corroboration bonus** — `+0.15` when any supporting
+ *    evidence note confirms a cross-namespace service match (confirmed root
+ *    cause; pattern: `/exists in namespace .* \(not /i`).
+ * 6. **Contradiction penalty** — `min(n_contradicting × 0.15, 0.40)`.
+ * 7. **Missing decisive penalty** — `min(n_missing × 0.10, 0.30)`.
+ * 8. **Generic-only cap** — if every supporting item is a generic symptom
  *    observation (no specific signal), the final score is capped at `0.50`.
  *
  * The result is always clamped to `[0, 1]`.
@@ -210,27 +232,42 @@ export function scoreHypothesis(hypothesis: Hypothesis): number {
   );
   const crossSourceBonus = artifactTypes.size >= 2 ? CROSS_SOURCE_BONUS : 0.0;
 
-  // 4. Contradiction penalty
+  // 4. Evidence diversity bonus: additional +0.05 for 3+ distinct artifact types
+  const diversityBonus = artifactTypes.size >= 3 ? EVIDENCE_DIVERSITY_BONUS : 0.0;
+
+  // 5. Cross-namespace corroboration bonus: +0.15 when any supporting evidence
+  //    note confirms a cross-namespace service match (confirmed root cause)
+  const hasCrossNamespace = supporting.some((e) => CROSS_NAMESPACE_PATTERN.test(e.note));
+  const crossNamespaceBonus = hasCrossNamespace ? CROSS_NAMESPACE_BONUS : 0.0;
+
+  // 6. Contradiction penalty
   const contradictionPenalty = Math.min(
     contradicting.length * CONTRADICTION_PER_ITEM,
     CONTRADICTION_CAP,
   );
 
-  // 5. Missing decisive evidence penalty
+  // 7. Missing decisive evidence penalty
   const missingPenalty = Math.min(missingDecisive.length * MISSING_PER_ITEM, MISSING_CAP);
 
-  // 6. Raw score
+  // 8. Raw score
   let score =
-    baseScore + specificityBonus + categoryDecisiveBonus + crossSourceBonus - contradictionPenalty - missingPenalty;
+    baseScore +
+    specificityBonus +
+    categoryDecisiveBonus +
+    crossSourceBonus +
+    diversityBonus +
+    crossNamespaceBonus -
+    contradictionPenalty -
+    missingPenalty;
 
-  // 7. Evidence sufficiency floor — cap generic-only hypotheses at GENERIC_ONLY_CAP
+  // 9. Evidence sufficiency floor — cap generic-only hypotheses at GENERIC_ONLY_CAP
   const hasSupporting = supporting.length > 0;
   const allGeneric = hasSupporting && supporting.every((e) => isGenericEvidence(e));
   if (allGeneric) {
     score = Math.min(score, GENERIC_ONLY_CAP);
   }
 
-  // 8. Clamp to [0, 1] and round away floating-point noise so calibrated
+  // 10. Clamp to [0, 1] and round away floating-point noise so calibrated
   // confidence thresholds remain stable in tests and downstream ranking.
   const clamped = Math.max(0.0, Math.min(1.0, score));
   return Math.round(clamped * 10000) / 10000;
@@ -274,6 +311,14 @@ export function buildConfidenceRationale(hypothesis: Hypothesis): string {
     if (artifactTypes.size >= 2) {
       const typeList = [...artifactTypes].join(', ');
       parts.push(`cross-source evidence from ${typeList}`);
+    }
+    if (artifactTypes.size >= 3) {
+      parts.push(`evidence diversity bonus (+${EVIDENCE_DIVERSITY_BONUS.toFixed(2)}) — ${artifactTypes.size} distinct artifact types`);
+    }
+
+    const hasCrossNamespace = supporting.some((e) => CROSS_NAMESPACE_PATTERN.test(e.note));
+    if (hasCrossNamespace) {
+      parts.push(`cross-namespace corroboration bonus (+${CROSS_NAMESPACE_BONUS.toFixed(2)}) — service confirmed in different namespace`);
     }
   }
 

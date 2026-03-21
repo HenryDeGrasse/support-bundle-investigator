@@ -1,0 +1,30 @@
+The `helmReleases` is passed both to `buildChunkIndex` (line 322) and to `runInvestigation` (line 467). Good.
+
+## Review Summary
+
+### What I reviewed:
+1. **`src/investigators/types.ts`** — `helmReleases?: HelmRelease[]` properly added to `InvestigatorContext` with correct import
+2. **`src/ai/chunk-indexer.ts`** — `identifiersFromHelmRelease` (exported), `augmentHelmReleaseChunk`, and the Helm release section in `buildChunkIndex` — all well-implemented with stable IDs (`helm-release:<ns>:<name>`), deterministic artifact paths, and proper metadata
+3. **`src/ai/summarizer.ts`** — `summarizeHelmRelease` covers all fields with appropriate conditional omission for empty values
+4. **`src/ai/index.ts`** — `summarizeHelmRelease` properly re-exported
+5. **`src/pipeline/analyze.ts`** — Step 6b parses Helm release files and passes them to both `buildChunkIndex` and `runInvestigation`
+6. **`src/ai/__tests__/chunk-indexer.test.ts`** — 20 Helm-specific tests thoroughly covering: context field acceptance, chunk production, all identifier types, status variants (failed, pending-install), summary content, namespace, artifactId, ID stability/uniqueness, and the `identifiersFromHelmRelease` helper
+7. **`src/ai/__tests__/summarizer.test.ts`** — 12 tests for `summarizeHelmRelease` covering all fields and edge cases
+
+### Checks run:
+- ✅ **typecheck**: clean (no errors)
+- ✅ **lint**: clean (no warnings/errors)  
+- ✅ **unit**: 2478 tests passed (68 test files), 0 failures
+
+### Assessment:
+The implementation is complete, well-tested, and follows the existing patterns in the codebase. All step requirements are met:
+1. ✅ `InvestigatorContext` accepts optional `helmReleases: HelmRelease[]`
+2. ✅ `buildChunkIndex` produces chunks for Helm releases with proper identifiers
+3. ✅ Failed releases have `failed` in identifiers
+4. ✅ Pipeline wiring parses Helm files and threads results through
+5. ✅ `summarizeHelmRelease` function added
+6. ✅ `identifiersFromHelmRelease` helper exported
+
+No changes needed.
+
+Verdict: approve

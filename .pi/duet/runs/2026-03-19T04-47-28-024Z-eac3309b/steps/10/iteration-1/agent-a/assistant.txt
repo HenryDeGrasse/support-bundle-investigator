@@ -1,0 +1,15 @@
+All Phase 4 items are implemented and integrated:
+
+1. **Contextual Retrieval (2.3)** — `src/ai/contextual-retrieval.ts` fully implemented, integrated into `buildChunkIndex`, exported from `src/ai/index.ts`, with comprehensive tests in `src/ai/__tests__/contextual-retrieval.test.ts`.
+
+2. **HyDE (2.4)** — `src/ai/hyde.ts` implemented, wired into `investigateWithAI` in `src/investigators/ai-investigator.ts` (step 2b in the investigation loop), exported from `src/ai/index.ts`, with tests in `src/investigators/__tests__/ai-investigator.test.ts`.
+
+3. **Seed deduplication (2.10)** — `computeChunkOverlap` and `deduplicateSeeds` implemented in `src/investigators/ai-investigator.ts`, called before the main investigation loop, with tests in the same test file.
+
+All four required checks pass cleanly with zero errors/warnings:
+- **lint**: ✅ 0 warnings  
+- **typecheck**: ✅ 0 errors  
+- **unit**: ✅ 74 files / 2801 tests (2 skipped, pre-existing)  
+- **build**: ✅ ESM + DTS success
+
+Verdict: approve

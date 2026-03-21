@@ -1,0 +1,20 @@
+All 2781 tests pass with 0 failures.
+
+## Review Summary
+
+### What I reviewed
+1. **`src/ai/hyde.ts`** — New file implementing `HydeLLMClient` interface, `HYDE_SYSTEM_PROMPT`, and `generateHypotheticalDocument` function with graceful fallback on error/empty response.
+2. **`src/ai/llm-client.ts`** — `LLMClient` now implements `HydeLLMClient` with a new `generateText` method (plain text, no JSON mode, throws on failure).
+3. **`src/investigators/ai-investigator.ts`** — HyDE wired into Step 2b: calls `generateHypotheticalDocument(seed.hypothesis, llmClient)` before `embeddingClient.embedSingle`.
+4. **`src/ai/index.ts`** — Exports `generateHypotheticalDocument`, `HYDE_SYSTEM_PROMPT`, and `HydeLLMClient`.
+5. **`src/investigators/__tests__/ai-investigator.test.ts`** — 12 new tests: 7 unit tests for `generateHypotheticalDocument` (success, error fallback, empty string fallback, whitespace trimming, whitespace-only fallback, prompt structure, rich output) and 5 integration tests for `investigateWithAI` HyDE wiring (hypothetical doc embedded, LLM fail fallback, empty string fallback, no HyDE without embedding client, semantic chunk retrieval via hypothetical embedding).
+
+### Assessment
+The implementation is complete and well-structured:
+- **TDD**: Tests cover all required scenarios from the step description (success path, fallback on LLM failure, fallback on empty response).
+- **Backward compatibility**: Existing tests that mock `llmClient` without `generateText` continue to pass because `generateHypotheticalDocument` catches TypeError and falls back.
+- **All checks pass**: lint ✅, typecheck ✅, unit tests ✅ (2781 passing).
+
+No changes needed.
+
+Verdict: approve

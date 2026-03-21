@@ -1,0 +1,22 @@
+The implementation is correct and complete. Let me review the key aspects:
+
+## Review Summary
+
+### What I reviewed
+1. **`src/ai/chunk-indexer.ts`** — the `identifiersFromLogContent` function changes
+2. **`src/ai/__tests__/chunk-indexer.test.ts`** — the new test block for log chunk path-based identifier extraction
+3. All three checks: unit tests (24/24 passing), typecheck (clean), lint (clean)
+
+### Assessment
+
+The implementation correctly addresses issue 1.3:
+
+1. **Extension stripping**: The loop over path segments now strips `.log`/`.txt` extensions before adding to identifiers, so `app-pod.log` → `app-pod` ✓
+2. **Grandparent regex**: For real Troubleshoot bundle paths like `*/logs/<ns>/<pod>/<container>.log`, the regex explicitly captures the pod name from the grandparent directory ✓
+3. **Tests**: Two new tests cover both real bundle paths (`pods/logs/default/app-pod/app.log`) and simpler paths (`logs/app/app-pod.log`) ✓
+4. **`logs` segment skipping**: The `logs` literal is still skipped, but other segments (namespace, pod name, container name minus extension) are all captured ✓
+5. **No regressions**: All 24 tests pass, existing behavior preserved
+
+The code is clean, well-commented, and follows existing patterns. No issues found.
+
+Verdict: approve

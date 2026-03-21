@@ -1,0 +1,1133 @@
+# Duet run summary
+
+Run ID: 2026-03-19T04-47-28-024Z-eac3309b
+Phase: completed
+Updated: 2026-03-19T14:29:26.189Z
+Goal: Implement all remaining phases (3–6) and Tier 7 items (7.5–7.12) from docs/findings-and-improvements.md. Phases 0, 1, and 2 are already complete. Use TDD: write tests first, then implement. Verify at each phase boundary with build. Phases: 3 (Hybrid Chunking + Local Embedding), 4 (Advanced Retrieval), 5 (Graph Architecture), 6 (New Investigators + Testing), 7 (Pipeline Integrity Remainder).
+Execution mode: relay
+Total steps: 37
+Handoff mode: none
+
+## Final plan
+- plan.json
+
+## Step outcomes
+
+### 1. Phase 3: Error-aware log chunking with dedup (3.1 + 3.5) (step-1)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/1/iteration-2
+- Changed files (15):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - .pi/duet/runs/2026-03-16T19-55-28-917Z-c283c28f
+  - .pi/duet/runs/2026-03-16T20-02-17-496Z-d45258d1
+  - .pi/duet/runs/2026-03-17T04-14-31-149Z-a4395a84
+  - .pi/duet/runs/2026-03-17T16-56-20-343Z-4184d000
+  - .pi/duet/runs/2026-03-18T00-23-36-373Z-c30ee659
+  - .pi/duet/runs/2026-03-18T03-20-26-247Z-2dd387da
+  - .pi/duet/runs/2026-03-18T04-58-10-431Z-6337c4f9
+  - .pi/duet/runs/2026-03-18T21-13-21-684Z-0bd167b6
+  - .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+
+### 2. Phase 3: Resource summary content for chunks (3.3) + embed content not summaries (2.8) (step-2)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/2/iteration-2
+- Changed files (18):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/summarizer.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - test/e2e/__tests__/scenarios.test.ts
+  - .pi/duet/runs/2026-03-16T19-55-28-917Z-c283c28f
+  - .pi/duet/runs/2026-03-16T20-02-17-496Z-d45258d1
+  - .pi/duet/runs/2026-03-17T04-14-31-149Z-a4395a84
+  - .pi/duet/runs/2026-03-17T16-56-20-343Z-4184d000
+  - .pi/duet/runs/2026-03-18T00-23-36-373Z-c30ee659
+  - .pi/duet/runs/2026-03-18T03-20-26-247Z-2dd387da
+  - .pi/duet/runs/2026-03-18T04-58-10-431Z-6337c4f9
+  - .pi/duet/runs/2026-03-18T21-13-21-684Z-0bd167b6
+  - .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+
+### 3. Phase 3: Token budget awareness in chunk merge (3.4) (step-3)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/3/iteration-2
+- Changed files (20):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/summarizer.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - src/investigators/ai-investigator.ts
+  - test/e2e/__tests__/scenarios.test.ts
+  - .pi/duet/runs/2026-03-16T19-55-28-917Z-c283c28f
+  - .pi/duet/runs/2026-03-16T20-02-17-496Z-d45258d1
+  - .pi/duet/runs/2026-03-17T04-14-31-149Z-a4395a84
+  - .pi/duet/runs/2026-03-17T16-56-20-343Z-4184d000
+  - .pi/duet/runs/2026-03-18T00-23-36-373Z-c30ee659
+  - .pi/duet/runs/2026-03-18T03-20-26-247Z-2dd387da
+  - .pi/duet/runs/2026-03-18T04-58-10-431Z-6337c4f9
+  - .pi/duet/runs/2026-03-18T21-13-21-684Z-0bd167b6
+  - .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+
+### 4. Phase 3: Local embedding backend with interface (3.6) (step-4)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/4/iteration-2
+- Changed files (31):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/summarizer.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - src/investigators/ai-investigator.ts
+  - src/pipeline/__tests__/analyze-ai.test.ts
+  - src/pipeline/__tests__/analyze-progress.test.ts
+  - src/pipeline/analyze.ts
+  - test/e2e/__tests__/scenarios.test.ts
+  - ...and 11 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+
+### 5. Phase 3: Late chunking infrastructure (3.2) (step-5)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/5/iteration-2
+- Changed files (33):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/summarizer.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - src/investigators/ai-investigator.ts
+  - src/pipeline/__tests__/analyze-ai.test.ts
+  - src/pipeline/__tests__/analyze-progress.test.ts
+  - src/pipeline/analyze.ts
+  - test/e2e/__tests__/scenarios.test.ts
+  - ...and 13 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+
+### 6. Phase 3: Build verification (step-6)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/6/iteration-1
+- Changed files (33):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/summarizer.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - src/investigators/ai-investigator.ts
+  - src/pipeline/__tests__/analyze-ai.test.ts
+  - src/pipeline/__tests__/analyze-progress.test.ts
+  - src/pipeline/analyze.ts
+  - test/e2e/__tests__/scenarios.test.ts
+  - ...and 13 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+  - build: passed
+
+### 7. Phase 4: Contextual retrieval (2.3) (step-7)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/7/iteration-2
+- Changed files (35):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/summarizer.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - src/investigators/ai-investigator.ts
+  - src/pipeline/__tests__/analyze-ai.test.ts
+  - src/pipeline/__tests__/analyze-progress.test.ts
+  - src/pipeline/analyze.ts
+  - test/e2e/__tests__/scenarios.test.ts
+  - ...and 15 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+
+### 8. Phase 4: HyDE — Hypothetical Document Embeddings (2.4) (step-8)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/8/iteration-2
+- Changed files (37):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/llm-client.ts
+  - src/ai/summarizer.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - src/investigators/ai-investigator.ts
+  - src/pipeline/__tests__/analyze-ai.test.ts
+  - src/pipeline/__tests__/analyze-progress.test.ts
+  - src/pipeline/analyze.ts
+  - ...and 17 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+
+### 9. Phase 4: Seed deduplication (2.10) (step-9)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/9/iteration-2
+- Changed files (37):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/llm-client.ts
+  - src/ai/summarizer.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - src/investigators/ai-investigator.ts
+  - src/pipeline/__tests__/analyze-ai.test.ts
+  - src/pipeline/__tests__/analyze-progress.test.ts
+  - src/pipeline/analyze.ts
+  - ...and 17 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+
+### 10. Phase 4: Build verification (step-10)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/10/iteration-1
+- Changed files (37):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/llm-client.ts
+  - src/ai/summarizer.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - src/investigators/ai-investigator.ts
+  - src/pipeline/__tests__/analyze-ai.test.ts
+  - src/pipeline/__tests__/analyze-progress.test.ts
+  - src/pipeline/analyze.ts
+  - ...and 17 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+  - build: passed
+
+### 11. Phase 5a: Unified diagnostic graph (4.1) (step-11)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/11/iteration-2
+- Changed files (39):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/llm-client.ts
+  - src/ai/summarizer.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - src/investigators/ai-investigator.ts
+  - src/pipeline/__tests__/analyze-ai.test.ts
+  - src/pipeline/__tests__/analyze-progress.test.ts
+  - src/pipeline/analyze.ts
+  - ...and 19 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+
+### 12. Phase 5a: Label-selector and service-selector edges (4.3) (step-12)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/12/iteration-2
+- Changed files (39):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/llm-client.ts
+  - src/ai/summarizer.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - src/investigators/ai-investigator.ts
+  - src/pipeline/__tests__/analyze-ai.test.ts
+  - src/pipeline/__tests__/analyze-progress.test.ts
+  - src/pipeline/analyze.ts
+  - ...and 19 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+
+### 13. Phase 5a: Typed weighted directional traversal engine (4.4) (step-13)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/13/iteration-2
+- Changed files (42):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/llm-client.ts
+  - src/ai/summarizer.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/graph/resource-graph.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - src/investigators/ai-investigator.ts
+  - src/pipeline/__tests__/analyze-ai.test.ts
+  - src/pipeline/__tests__/analyze-progress.test.ts
+  - ...and 22 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+
+### 14. Phase 5a: Orchestrator dedup consolidation (7.8) (step-14)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/14/iteration-2
+- Changed files (44):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/llm-client.ts
+  - src/ai/summarizer.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/graph/resource-graph.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - src/investigators/__tests__/orchestrator.test.ts
+  - src/investigators/ai-investigator.ts
+  - src/investigators/orchestrator.ts
+  - ...and 24 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+
+### 15. Phase 5a: Build verification (step-15)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/15/iteration-1
+- Changed files (44):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/llm-client.ts
+  - src/ai/summarizer.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/graph/resource-graph.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - src/investigators/__tests__/orchestrator.test.ts
+  - src/investigators/ai-investigator.ts
+  - src/investigators/orchestrator.ts
+  - ...and 24 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+  - build: passed
+
+### 16. Phase 5b: Causal template library and investigator causal edges (4.2) (step-16)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/16/iteration-4
+- Changed files (49):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/llm-client.ts
+  - src/ai/summarizer.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/graph/resource-graph.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - src/investigators/__tests__/kubernetes-investigator.test.ts
+  - src/investigators/__tests__/orchestrator.test.ts
+  - src/investigators/ai-investigator.ts
+  - ...and 29 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+
+### 17. Phase 5b: Wire finding tree and root-cause presentation (step-17)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/17/iteration-2
+- Changed files (59):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/llm-client.ts
+  - src/ai/summarizer.ts
+  - src/cli/__tests__/runner.test.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/__tests__/finding-tree.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/graph/resource-graph.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - src/investigators/__tests__/kubernetes-investigator.test.ts
+  - ...and 39 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+
+### 18. Phase 5b: Cross-symptom hypothesis correlation (7.5) (step-18)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/18/iteration-2
+- Changed files (61):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/llm-client.ts
+  - src/ai/summarizer.ts
+  - src/cli/__tests__/runner.test.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/__tests__/finding-tree.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/graph/resource-graph.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - src/investigators/__tests__/hypothesis-generator.test.ts
+  - ...and 41 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+
+### 19. Phase 5b: Active falsification of hypotheses (7.6) (step-19)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/19/iteration-2
+- Changed files (63):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/llm-client.ts
+  - src/ai/summarizer.ts
+  - src/cli/__tests__/runner.test.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/__tests__/finding-tree.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/graph/resource-graph.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - src/investigators/__tests__/hypothesis-evidence-collector.test.ts
+  - ...and 43 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+
+### 20. Phase 5b: Build verification (step-20)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/20/iteration-1
+- Changed files (63):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/llm-client.ts
+  - src/ai/summarizer.ts
+  - src/cli/__tests__/runner.test.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/__tests__/finding-tree.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/graph/resource-graph.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - src/investigators/__tests__/hypothesis-evidence-collector.test.ts
+  - ...and 43 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+  - build: passed
+
+### 21. Phase 5c: Temporal correlation edges (4.6) (step-21)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/21/iteration-2
+- Changed files (63):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/llm-client.ts
+  - src/ai/summarizer.ts
+  - src/cli/__tests__/runner.test.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/__tests__/finding-tree.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/graph/resource-graph.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - src/investigators/__tests__/hypothesis-evidence-collector.test.ts
+  - ...and 43 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+
+### 22. Phase 5c: Hierarchical graph abstraction — workload groups (4.7 middle layer) (step-22)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/22/iteration-2
+- Changed files (63):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/llm-client.ts
+  - src/ai/summarizer.ts
+  - src/cli/__tests__/runner.test.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/__tests__/finding-tree.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/graph/resource-graph.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - src/investigators/__tests__/hypothesis-evidence-collector.test.ts
+  - ...and 43 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+
+### 23. Phase 5c: Build verification (step-23)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/23/iteration-1
+- Changed files (63):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/llm-client.ts
+  - src/ai/summarizer.ts
+  - src/cli/__tests__/runner.test.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/__tests__/finding-tree.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/graph/resource-graph.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - src/investigators/__tests__/hypothesis-evidence-collector.test.ts
+  - ...and 43 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+  - build: passed
+
+### 24. Phase 5d: LLM knowledge extraction — triple extractor (4.5 part 1) (step-24)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/24/iteration-2
+- Changed files (65):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/llm-client.ts
+  - src/ai/summarizer.ts
+  - src/cli/__tests__/runner.test.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/__tests__/finding-tree.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/graph/resource-graph.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - src/investigators/__tests__/hypothesis-evidence-collector.test.ts
+  - ...and 45 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+
+### 25. Phase 5d: Community detection and summaries (4.5 part 2) (step-25)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/25/iteration-2
+- Changed files (67):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/llm-client.ts
+  - src/ai/summarizer.ts
+  - src/cli/__tests__/runner.test.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/__tests__/finding-tree.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/graph/resource-graph.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - src/investigators/__tests__/hypothesis-evidence-collector.test.ts
+  - ...and 47 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+
+### 26. Phase 5d: Build verification (step-26)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/26/iteration-1
+- Changed files (67):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/llm-client.ts
+  - src/ai/summarizer.ts
+  - src/cli/__tests__/runner.test.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/__tests__/finding-tree.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/graph/resource-graph.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - src/investigators/__tests__/hypothesis-evidence-collector.test.ts
+  - ...and 47 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+  - build: passed
+
+### 27. Phase 5e: Graph-driven investigation (4.8) (step-27)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/27/iteration-2
+- Changed files (69):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/llm-client.ts
+  - src/ai/summarizer.ts
+  - src/cli/__tests__/runner.test.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/__tests__/finding-tree.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/graph/resource-graph.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - src/investigators/__tests__/hypothesis-converter.test.ts
+  - ...and 49 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+
+### 28. Phase 5e: Build verification (step-28)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/28/iteration-1
+- Changed files (69):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/llm-client.ts
+  - src/ai/summarizer.ts
+  - src/cli/__tests__/runner.test.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/__tests__/finding-tree.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/graph/resource-graph.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - src/investigators/__tests__/hypothesis-converter.test.ts
+  - ...and 49 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+  - build: passed
+
+### 29. Phase 6: Services/Endpoints connectivity investigator (5.1) (step-29)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/29/iteration-2
+- Changed files (72):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/llm-client.ts
+  - src/ai/summarizer.ts
+  - src/cli/__tests__/runner.test.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/__tests__/finding-tree.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/graph/resource-graph.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - src/investigators/__tests__/hypothesis-converter.test.ts
+  - ...and 52 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+
+### 30. Phase 6: NetworkPolicy investigator (5.2) (step-30)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/30/iteration-2
+- Changed files (74):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/llm-client.ts
+  - src/ai/summarizer.ts
+  - src/cli/__tests__/runner.test.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/__tests__/finding-tree.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/graph/resource-graph.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - src/investigators/__tests__/hypothesis-converter.test.ts
+  - ...and 54 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+
+### 31. Phase 6: OOM investigator + Node health investigation (5.3 + 7.10) (step-31)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/31/iteration-2
+- Changed files (76):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/llm-client.ts
+  - src/ai/summarizer.ts
+  - src/cli/__tests__/runner.test.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/__tests__/finding-tree.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/graph/resource-graph.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - src/investigators/__tests__/hypothesis-converter.test.ts
+  - ...and 56 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+
+### 32. Phase 6: Build verification (step-32)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/32/iteration-1
+- Changed files (76):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/llm-client.ts
+  - src/ai/summarizer.ts
+  - src/cli/__tests__/runner.test.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/__tests__/finding-tree.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/graph/resource-graph.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - src/investigators/__tests__/hypothesis-converter.test.ts
+  - ...and 56 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+  - build: passed
+
+### 33. Tier 7: Spec recommender processes all findings (7.9) (step-33)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/33/iteration-2
+- Changed files (81):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/llm-client.ts
+  - src/ai/summarizer.ts
+  - src/cli/__tests__/runner.test.ts
+  - src/cli/rat.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/__tests__/finding-tree.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/graph/resource-graph.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - ...and 61 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+
+### 34. Tier 7: Confidence quality indicator (7.12) (step-34)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/34/iteration-2
+- Changed files (87):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/llm-client.ts
+  - src/ai/summarizer.ts
+  - src/cli/__tests__/runner.test.ts
+  - src/cli/rat.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/__tests__/finding-tree.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/graph/resource-graph.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - ...and 67 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+
+### 35. Tier 7: Declarative hypothesis templates (7.11) (step-35)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/35/iteration-3
+- Changed files (89):
+  - .pi/duet/config.json
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/llm-client.ts
+  - src/ai/summarizer.ts
+  - src/cli/__tests__/runner.test.ts
+  - src/cli/rat.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/__tests__/finding-tree.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/graph/resource-graph.ts
+  - src/investigators/__tests__/ai-investigator.test.ts
+  - ...and 69 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+
+### 36. Tier 7: Retrieval quality benchmark + confidence calibration (6.3 + 7.7) (step-36)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/36/iteration-2
+- Changed files (94):
+  - .pi/duet/config.json
+  - scripts/benchmark-hypotheses.mjs
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/llm-client.ts
+  - src/ai/summarizer.ts
+  - src/cli/__tests__/runner.test.ts
+  - src/cli/rat.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/__tests__/finding-tree.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/graph/resource-graph.ts
+  - ...and 74 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+
+### 37. Final build verification and integration smoke test (step-37)
+- Verdict: approve
+- Final artifacts: .pi/duet/runs/2026-03-19T04-47-28-024Z-eac3309b/steps/37/iteration-1
+- Changed files (94):
+  - .pi/duet/config.json
+  - scripts/benchmark-hypotheses.mjs
+  - src/ai/__tests__/chunk-indexer.test.ts
+  - src/ai/__tests__/config.test.ts
+  - src/ai/__tests__/embeddings.test.ts
+  - src/ai/__tests__/llm-client.test.ts
+  - src/ai/__tests__/summarizer.test.ts
+  - src/ai/chunk-indexer.ts
+  - src/ai/config.ts
+  - src/ai/embeddings.ts
+  - src/ai/index.ts
+  - src/ai/llm-client.ts
+  - src/ai/summarizer.ts
+  - src/cli/__tests__/runner.test.ts
+  - src/cli/rat.ts
+  - src/graph/__tests__/chunker.test.ts
+  - src/graph/__tests__/finding-tree.test.ts
+  - src/graph/chunker.ts
+  - src/graph/index.ts
+  - src/graph/resource-graph.ts
+  - ...and 74 more
+- Checks:
+  - lint: passed
+  - typecheck: passed
+  - unit: passed
+  - build: passed
+
+## Preserved artifacts
+- config.snapshot.json
+- state.json
+- plan.json
+- final step artifact directories
+- escalation directories
+- operator-notes.md (if present)
+- interventions.jsonl (if present)
+- interventions.1.jsonl (if rotated)

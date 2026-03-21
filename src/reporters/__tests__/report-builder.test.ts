@@ -93,6 +93,7 @@ function makePipelineResult(findings: Finding[] = []): PipelineResult {
       completedAt: new Date().toISOString(),
       steps: [],
     } as unknown as InvestigationTrace,
+    aiMode: 'off',
   };
 }
 

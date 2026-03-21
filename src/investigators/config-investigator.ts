@@ -222,6 +222,11 @@ function findEnvServiceMismatches(
     const podName = resource.metadata.name;
     const namespace = resource.metadata.namespace ?? 'default';
 
+    // Skip kube-system pods — system components (kindnet, kube-proxy, etcd,
+    // etc.) use env vars like CONTROL_PLANE_ENDPOINT that reference hostnames,
+    // not K8s Service names. Checking them produces noisy false positives.
+    if (namespace === 'kube-system') continue;
+
     const containers = resource.spec['containers'];
     if (!Array.isArray(containers)) continue;
 
@@ -618,15 +623,37 @@ const WORKLOAD_IMAGE_KINDS = new Set([
 ]);
 
 /**
- * Strips a digest suffix from an image reference before comparison.
+ * Normalizes an image reference for comparison.
  *
- * e.g. `myapp:v1.2.3@sha256:abc123` → `myapp:v1.2.3`
+ * Handles:
+ * 1. Strips digest suffixes: `myapp:v1.2.3@sha256:abc123` → `myapp:v1.2.3`
+ * 2. Strips default Docker registry prefix: `docker.io/library/busybox` → `busybox`
+ *    and `docker.io/hashicorp/http-echo` → `hashicorp/http-echo`
+ * 3. Strips architecture suffixes that container runtimes append on multi-arch
+ *    images: `registry.k8s.io/kube-proxy-arm64:v1.35.0` → `registry.k8s.io/kube-proxy:v1.35.0`
  *
- * This avoids false-positive mismatches when the registry appends a digest
- * to the tag recorded in pod status.
+ * This avoids false-positive mismatches when comparing spec images against
+ * the runtime-resolved images in pod status.
  */
 function normalizeImageRef(image: string): string {
-  return image.split('@')[0]!.trim();
+  // 1. Strip digest suffix
+  let normalized = image.split('@')[0]!.trim();
+
+  // 2. Strip default Docker Hub registry prefixes
+  // docker.io/library/busybox:tag → busybox:tag
+  normalized = normalized.replace(/^docker\.io\/library\//, '');
+  // docker.io/org/image:tag → org/image:tag
+  normalized = normalized.replace(/^docker\.io\//, '');
+
+  // 3. Strip architecture suffixes from image name (before the tag)
+  // registry.k8s.io/kube-proxy-arm64:v1.35.0 → registry.k8s.io/kube-proxy:v1.35.0
+  // This handles -arm64, -amd64, -s390x, -ppc64le suffixes
+  normalized = normalized.replace(
+    /-(arm64|amd64|s390x|ppc64le)(:|$)/,
+    '$2',
+  );
+
+  return normalized;
 }
 
 function extractStringMap(value: unknown): Record<string, string> | undefined {

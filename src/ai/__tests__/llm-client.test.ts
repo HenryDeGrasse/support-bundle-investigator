@@ -34,6 +34,9 @@ const TEST_CONFIG: AIConfig = {
   embeddingModel: 'text-embedding-3-small',
   embeddingBackend: 'openai',
   embeddingUrl: 'http://localhost:8080',
+  llmBackend: 'openai',
+  llmUrl: 'https://api.openai.com/v1',
+  tokenBudget: 100000,
   enabled: true,
 };
 

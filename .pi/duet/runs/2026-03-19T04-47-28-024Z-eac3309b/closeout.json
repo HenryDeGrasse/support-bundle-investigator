@@ -1,0 +1,16 @@
+{
+  "mode": "compact",
+  "compactedAt": "2026-03-19T16:52:57.581Z",
+  "preserved": [
+    "config.snapshot.json",
+    "state.json",
+    "plan.json",
+    "run-summary.md",
+    "closeout.json",
+    "operator-notes.md",
+    "interventions.jsonl",
+    "interventions.1.jsonl (if rotated)",
+    "steps/*/iteration-* (final only)",
+    "steps/*/escalation-*"
+  ]
+}
