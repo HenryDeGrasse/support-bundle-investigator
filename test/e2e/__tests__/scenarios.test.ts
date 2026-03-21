@@ -469,6 +469,55 @@ describe('E2E — Pipeline Trace', () => {
     const parsed = JSON.parse(serialized) as typeof trace;
     expect(parsed.bundlePath).toBe(trace.bundlePath);
     expect(parsed.steps).toHaveLength(trace.steps.length);
+    expect(parsed.metadata).toBeDefined();
+  });
+
+  it('trace metadata includes parsed artifact counts and finding telemetry', () => {
+    const metadata = result.trace.metadata;
+    expect(metadata).toBeDefined();
+    expect(metadata?.['analyzerCount']).toBe(result.analyzerResults.length);
+    expect(metadata?.['resourceCount']).toBe(result.resources.length);
+    expect(metadata?.['eventCount']).toBe(result.events.length);
+    expect(metadata?.['logFileCount']).toBe(result.logs.length);
+    expect(metadata?.['helmReleaseCount']).toBe(0);
+    expect(metadata?.['findingCount']).toBe(result.findings.length);
+    expect(metadata?.['rawFindingCount']).toBeGreaterThanOrEqual(result.findings.length);
+    expect(metadata?.['finalFindingCount']).toBe(result.findings.length);
+
+    const seedCategories = metadata?.['seedCategories'] as Record<string, number> | undefined;
+    expect(seedCategories).toBeDefined();
+    expect(Object.values(seedCategories ?? {}).reduce((sum, count) => sum + count, 0)).toBe(
+      metadata?.['seedCount'],
+    );
+
+    const hypothesisStats = metadata?.['hypothesisStats'] as
+      | { generated: number; verified: number; converted: number }
+      | undefined;
+    expect(hypothesisStats).toBeDefined();
+    expect(hypothesisStats?.generated).toBeGreaterThanOrEqual(hypothesisStats?.verified ?? 0);
+    expect(hypothesisStats?.verified).toBeGreaterThanOrEqual(hypothesisStats?.converted ?? 0);
+
+    const confidenceStats = metadata?.['confidenceStats'] as
+      | { min: number; max: number; mean: number; median: number }
+      | undefined;
+    expect(confidenceStats).toBeDefined();
+    expect(confidenceStats?.min).toBeGreaterThanOrEqual(0);
+    expect(confidenceStats?.max).toBeLessThanOrEqual(1);
+
+    const retrievalStats = metadata?.['retrievalStats'] as
+      | { graphChunks: number; lexicalChunks: number; semanticChunks: number; mergedChunks: number }
+      | undefined;
+    expect(retrievalStats).toBeDefined();
+    expect(retrievalStats?.graphChunks).toBeGreaterThanOrEqual(0);
+    expect(retrievalStats?.mergedChunks).toBeGreaterThanOrEqual(0);
+
+    expect(metadata?.['parsedArtifactCount']).toBe(
+      result.analyzerResults.length +
+        result.resources.length +
+        result.events.length +
+        result.logs.length +
+        ((metadata?.['helmReleaseCount'] as number | undefined) ?? 0),
+    );
   });
 });
 
@@ -1133,6 +1182,38 @@ describe('E2E — Pipeline Trace Investigation Steps', () => {
     expect(investigateStep).toBeDefined();
     expect(investigateStep!.startedAt).toBeTruthy();
     expect(investigateStep!.completedAt).toBeTruthy();
+  });
+
+  it('investigate step includes seed, retrieval, confidence, and hypothesis telemetry', () => {
+    const investigateStep = result.trace.steps.find((s) => s.name === 'investigate');
+    expect(investigateStep).toBeDefined();
+    expect(investigateStep!.seedCount).toBeGreaterThan(0);
+    expect(investigateStep!.seedCategories).toBeDefined();
+    expect(Object.values(investigateStep!.seedCategories ?? {}).reduce((sum, count) => sum + count, 0))
+      .toBe(investigateStep!.seedCount);
+
+    expect(investigateStep!.retrievalStats).toBeDefined();
+    expect(investigateStep!.retrievalStats!.graphChunks).toBeGreaterThanOrEqual(0);
+    expect(investigateStep!.retrievalStats!.lexicalChunks).toBeGreaterThanOrEqual(0);
+    expect(investigateStep!.retrievalStats!.semanticChunks).toBeGreaterThanOrEqual(0);
+    expect(investigateStep!.retrievalStats!.mergedChunks).toBeGreaterThanOrEqual(0);
+
+    expect(investigateStep!.confidenceStats).toBeDefined();
+    expect(investigateStep!.confidenceStats!.min).toBeGreaterThanOrEqual(0);
+    expect(investigateStep!.confidenceStats!.max).toBeLessThanOrEqual(1);
+    expect(investigateStep!.confidenceStats!.min).toBeLessThanOrEqual(investigateStep!.confidenceStats!.median);
+    expect(investigateStep!.confidenceStats!.median).toBeLessThanOrEqual(investigateStep!.confidenceStats!.max);
+    expect(investigateStep!.confidenceStats!.mean).toBeGreaterThanOrEqual(0);
+    expect(investigateStep!.confidenceStats!.mean).toBeLessThanOrEqual(1);
+
+    expect(investigateStep!.hypothesisStats).toBeDefined();
+    expect(investigateStep!.hypothesisStats!.generated).toBeGreaterThanOrEqual(
+      investigateStep!.hypothesisStats!.verified,
+    );
+    expect(investigateStep!.hypothesisStats!.verified).toBeGreaterThanOrEqual(
+      investigateStep!.hypothesisStats!.converted,
+    );
+    expect(investigateStep!.hypothesisStats!.converted).toBeLessThanOrEqual(result.findings.length);
   });
 
   it('investigate step completes after build-graph step', () => {

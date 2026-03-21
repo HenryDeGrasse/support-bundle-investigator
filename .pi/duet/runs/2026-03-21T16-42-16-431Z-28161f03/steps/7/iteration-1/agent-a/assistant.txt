@@ -1,0 +1,45 @@
+Reviewed:
+- `src/pipeline/trace.ts`
+- `src/pipeline/analyze.ts`
+- `src/investigators/ai-investigator.ts`
+- `src/investigators/orchestrator.ts`
+- `src/investigators/types.ts`
+- `test/e2e/__tests__/scenarios.test.ts`
+- related pipeline test helpers
+
+Changed:
+- Extended `TraceStep` in `src/pipeline/trace.ts` with:
+  - `seedCount`
+  - `seedCategories`
+  - `retrievalStats`
+  - `confidenceStats`
+  - `hypothesisStats`
+- Added top-level `metadata?: Record<string, unknown>` to `InvestigationTrace`
+- Updated `completeTrace(...)` to accept/store trace metadata
+- Added retrieval telemetry aggregation in `src/investigators/ai-investigator.ts`
+- Extended orchestrator metadata in `src/investigators/orchestrator.ts` with:
+  - `hypothesesConverted`
+  - aggregated `retrievalStats`
+- Extended shared `InvestigatorResult` in `src/investigators/types.ts` with optional metadata
+- Updated `src/pipeline/analyze.ts` to populate:
+  - investigate-step seed telemetry
+  - investigate-step retrieval telemetry
+  - investigate-step confidence distribution
+  - investigate-step hypothesis counters
+  - top-level trace metadata with parsed artifact/finding counts and AI/seed telemetry
+- Updated pipeline mock tests to include the new metadata fields:
+  - `src/pipeline/__tests__/analyze-ai.test.ts`
+  - `src/pipeline/__tests__/analyze-progress.test.ts`
+- Updated E2E trace tests in `test/e2e/__tests__/scenarios.test.ts` to verify the new telemetry fields are present and sensible
+
+Checks run:
+- `npx vitest run test/e2e/__tests__/scenarios.test.ts src/pipeline/__tests__/analyze-ai.test.ts src/pipeline/__tests__/analyze-progress.test.ts src/investigators/__tests__/orchestrator.test.ts` ✅
+- `npm run lint` ✅
+- `npm run typecheck` ✅
+- `npm run unit` ✅
+
+Assessment:
+- Step 7 is implemented and green.
+- Trace output now carries structured seed, retrieval, hypothesis, and confidence telemetry while remaining JSON-serializable and compatible with existing pipeline behavior.
+
+Verdict: changes_made

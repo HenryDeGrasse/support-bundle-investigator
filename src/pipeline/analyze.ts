@@ -58,7 +58,11 @@ import {
   completeTraceStep,
   completeTrace,
 } from './trace.js';
-import type { InvestigationTrace } from './trace.js';
+import type {
+  ConfidenceStats,
+  InvestigationTrace,
+  RetrievalStats,
+} from './trace.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -145,6 +149,48 @@ function resolveCassetteDir(options: PipelineOptions): string {
   }
 
   return path.resolve(os.tmpdir(), 'sbi-cassettes');
+}
+
+function buildSeedCategoryBreakdown(
+  seeds: ReadonlyArray<{ category: string }>,
+): Record<string, number> {
+  return seeds.reduce<Record<string, number>>((counts, seed) => {
+    counts[seed.category] = (counts[seed.category] ?? 0) + 1;
+    return counts;
+  }, {});
+}
+
+function computeConfidenceStats(findings: ReadonlyArray<Pick<Finding, 'confidence'>>): ConfidenceStats {
+  if (findings.length === 0) {
+    return { min: 0, max: 0, mean: 0, median: 0 };
+  }
+
+  const confidences = findings
+    .map((finding) => finding.confidence)
+    .sort((left, right) => left - right);
+  const min = confidences[0] ?? 0;
+  const max = confidences[confidences.length - 1] ?? 0;
+  const mean = confidences.reduce((sum, value) => sum + value, 0) / confidences.length;
+  const middle = Math.floor(confidences.length / 2);
+  const median = confidences.length % 2 === 0
+    ? ((confidences[middle - 1] ?? 0) + (confidences[middle] ?? 0)) / 2
+    : (confidences[middle] ?? 0);
+
+  return {
+    min,
+    max,
+    mean,
+    median,
+  };
+}
+
+function zeroRetrievalStats(): RetrievalStats {
+  return {
+    graphChunks: 0,
+    lexicalChunks: 0,
+    semanticChunks: 0,
+    mergedChunks: 0,
+  };
 }
 
 function addInvestigationEvidenceNode(
@@ -675,6 +721,20 @@ export async function analyzeBundlePipeline(
     investigationResult.findings.length +
     investigationResult.edges.length;
   completeTraceStep(trace, step8, investigateArtifactsProcessed);
+
+  const investigateStep = trace.steps[step8];
+  if (investigateStep) {
+    investigateStep.seedCount = investigationResult.metadata.seedCount;
+    investigateStep.seedCategories = buildSeedCategoryBreakdown(investigationResult.seeds);
+    investigateStep.retrievalStats = investigationResult.metadata.retrievalStats ?? zeroRetrievalStats();
+    investigateStep.confidenceStats = computeConfidenceStats(investigationResult.findings);
+    investigateStep.hypothesisStats = {
+      generated: investigationResult.metadata.hypothesesGenerated,
+      verified: investigationResult.metadata.hypothesesVerified,
+      converted: investigationResult.metadata.hypothesesConverted,
+    };
+  }
+
   emitProgress(options, { step: 'investigate', status: 'completed', artifactsProcessed: investigateArtifactsProcessed });
   const aiSuffix = investigationResult.metadata.aiEnabled
     ? `, ${investigationResult.metadata.aiFindings} AI findings`
@@ -688,15 +748,48 @@ export async function analyzeBundlePipeline(
     verbose,
   );
 
-  // ── 10. Complete trace ────────────────────────────────────────────────────
-  completeTrace(trace, profile);
-
   // Derive AI mode label for TUI / reports
   const aiMode: AIMode = !aiConfig.enabled
     ? 'off'
     : aiConfig.llmBackend === 'local'
       ? 'local'
       : 'cloud';
+  const seedCategories = buildSeedCategoryBreakdown(investigationResult.seeds);
+  const retrievalStats = investigationResult.metadata.retrievalStats ?? zeroRetrievalStats();
+  const confidenceStats = computeConfidenceStats(investigationResult.findings);
+  const hypothesisStats = {
+    generated: investigationResult.metadata.hypothesesGenerated,
+    verified: investigationResult.metadata.hypothesesVerified,
+    converted: investigationResult.metadata.hypothesesConverted,
+  };
+
+  // ── 10. Complete trace ────────────────────────────────────────────────────
+  completeTrace(trace, profile, {
+    analyzerCount: analyzerResults.length,
+    resourceCount: resources.length,
+    eventCount: events.length,
+    logFileCount: logs.length,
+    helmReleaseCount: helmReleases.length,
+    findingCount: investigationResult.findings.length,
+    rawFindingCount: investigationResult.metadata.rawFindingCount,
+    finalFindingCount: investigationResult.metadata.finalFindingCount,
+    aiMode,
+    aiEnabled: investigationResult.metadata.aiEnabled,
+    aiFindings: investigationResult.metadata.aiFindings,
+    seedCount: investigationResult.metadata.seedCount,
+    seedCategories,
+    seedClusterCount: investigationResult.metadata.seedClusterCount,
+    seedClusteringEnabled: investigationResult.metadata.seedClusteringEnabled,
+    retrievalStats,
+    confidenceStats,
+    hypothesisStats,
+    parsedArtifactCount:
+      analyzerResults.length +
+      resources.length +
+      events.length +
+      logs.length +
+      helmReleases.length,
+  });
 
   return {
     profile,

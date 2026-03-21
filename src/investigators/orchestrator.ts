@@ -65,6 +65,15 @@ export interface InvestigationResult {
     hypothesesGenerated: number;
     /** Number of hypotheses that received a confidence score > 0 after evidence collection. */
     hypothesesVerified: number;
+    /** Number of hypothesis findings converted into report findings. */
+    hypothesesConverted: number;
+    /** Aggregated AI retrieval breakdown across all investigated seeds. */
+    retrievalStats: {
+      graphChunks: number;
+      lexicalChunks: number;
+      semanticChunks: number;
+      mergedChunks: number;
+    };
     /**
      * Number of symptom findings matched by causal template analysis.
      * These findings were excluded from the hypothesis generator and handled
@@ -1252,13 +1261,15 @@ export async function runInvestigation(
   // confidence (at least one supporting evidence item contributed to the score).
   const allHypothesisFindings = convertHypothesisSetsToFindings(hypothesisSets);
 
-  // Include both hypothesis findings (fallback path) and graph root-cause
-  // findings (graph-driven path) in the combined pool that Pass 1 processes.
-  // The graph root-cause findings are ranked by path length + edge weight +
-  // evidence count so the most diagnostic root cause appears first.
+  const convertedHypothesisFindings = allHypothesisFindings.filter((hf) => hf.confidence > 0);
+
+  // Include both converted hypothesis findings (fallback path) and graph
+  // root-cause findings (graph-driven path) in the combined pool that Pass 1
+  // processes. The graph root-cause findings are ranked by path length + edge
+  // weight + evidence count so the most diagnostic root cause appears first.
   const rankedGraphRootCauses = rankGraphRootCauses(graphRootCauseFindings, causalInstances);
   const nonZeroHypothesisFindings = [
-    ...allHypothesisFindings.filter((hf) => hf.confidence > 0),
+    ...convertedHypothesisFindings,
     ...correlatedMetaFindings,
     ...rankedGraphRootCauses,
   ];
@@ -1267,6 +1278,12 @@ export async function runInvestigation(
   const rawFindings: Finding[] = [...heuristicFindings];
   let aiEnabled = false;
   let aiFindings = 0;
+  let retrievalStats = {
+    graphChunks: 0,
+    lexicalChunks: 0,
+    semanticChunks: 0,
+    mergedChunks: 0,
+  };
 
   if (aiDeps !== undefined) {
     try {
@@ -1278,6 +1295,7 @@ export async function runInvestigation(
       allEdges.push(...aiResult.edges);
       aiEnabled = true;
       aiFindings = aiResult.findings.length;
+      retrievalStats = aiResult.metadata?.retrievalStats ?? retrievalStats;
     } catch (error) {
       // Graceful degradation: log the failure, continue with heuristic results
       console.warn(
@@ -1443,6 +1461,8 @@ export async function runInvestigation(
       aiFindings,
       hypothesesGenerated,
       hypothesesVerified,
+      hypothesesConverted: convertedHypothesisFindings.length,
+      retrievalStats,
       graphMatchedSymptoms,
       seedClusterCount: clusteredSeeds.length,
       seedClusteringEnabled,

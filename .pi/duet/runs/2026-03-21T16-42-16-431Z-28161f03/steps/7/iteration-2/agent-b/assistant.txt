@@ -1,0 +1,42 @@
+Reviewed:
+- `src/pipeline/trace.ts`
+- `src/pipeline/analyze.ts`
+- `src/investigators/ai-investigator.ts`
+- `src/investigators/orchestrator.ts`
+- `src/investigators/types.ts`
+- `test/e2e/__tests__/scenarios.test.ts`
+- related pipeline tests
+
+What I changed
+- Improved top-level trace metadata population in `src/pipeline/analyze.ts`:
+  - added `seedCategories`
+  - added `hypothesisStats`
+  - added `rawFindingCount`
+  - added `finalFindingCount`
+- Strengthened E2E trace assertions in `test/e2e/__tests__/scenarios.test.ts` to verify the new metadata is present and internally consistent.
+
+Why
+- The prior implementation populated the new investigate-step telemetry well, but the top-level `trace.metadata` was still missing some of the most useful summary fields implied by the step.
+- This makes the trace more useful as an artifact for debugging, reporting, and later report wiring.
+
+What I verified
+- Investigate-step telemetry is present:
+  - `seedCount`
+  - `seedCategories`
+  - `retrievalStats`
+  - `confidenceStats`
+  - `hypothesisStats`
+- Top-level `trace.metadata` is populated and JSON-serializable.
+- Updated E2E and pipeline tests pass.
+
+Checks run
+- `npx vitest run test/e2e/__tests__/scenarios.test.ts src/pipeline/__tests__/analyze-ai.test.ts src/pipeline/__tests__/analyze-progress.test.ts src/investigators/__tests__/orchestrator.test.ts` ✅
+- `npm run lint` ✅
+- `npm run typecheck` ✅
+- `npm run unit` ✅
+
+Assessment
+- Step 7 is complete and in better shape after the metadata enrichment.
+- No blocking issues remain.
+
+Verdict: changes_made

@@ -188,4 +188,12 @@ export interface SeedClusterLLMClient {
 export interface InvestigatorResult {
   findings: Finding[];
   edges: GraphEdge[];
+  metadata?: {
+    retrievalStats?: {
+      graphChunks: number;
+      lexicalChunks: number;
+      semanticChunks: number;
+      mergedChunks: number;
+    };
+  };
 }

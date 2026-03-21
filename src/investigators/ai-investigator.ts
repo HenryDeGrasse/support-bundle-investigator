@@ -854,6 +854,12 @@ export async function investigateWithAI(
   const allEdges: GraphEdge[] = [];
   const counter: Counter = { value: 0 };
   const seedTotal = deduplicatedSeeds.length;
+  const retrievalStats = {
+    graphChunks: 0,
+    lexicalChunks: 0,
+    semanticChunks: 0,
+    mergedChunks: 0,
+  };
 
   for (let seedIdx = 0; seedIdx < deduplicatedSeeds.length; seedIdx++) {
     const seed = deduplicatedSeeds[seedIdx]!;
@@ -944,6 +950,11 @@ export async function investigateWithAI(
       ];
       const mergedChunks = mergeChunks(retrievalLists, effectiveTokenBudget);
 
+      retrievalStats.graphChunks += graphChunks.length;
+      retrievalStats.lexicalChunks += lexicalChunks.length;
+      retrievalStats.semanticChunks += semanticChunks.length;
+      retrievalStats.mergedChunks += mergedChunks.length;
+
       // ── Verbose retrieval stats ───────────────────────────────────────────
       if (verbose) {
         const artifactTypes = new Set<string>(
@@ -992,5 +1003,8 @@ export async function investigateWithAI(
   return {
     findings: allFindings,
     edges: allEdges,
+    metadata: {
+      retrievalStats,
+    },
   };
 }

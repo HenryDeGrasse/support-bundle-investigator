@@ -1,0 +1,34 @@
+Reviewed the Step 7 trace work across:
+- `src/pipeline/trace.ts`
+- `src/pipeline/analyze.ts`
+- `src/investigators/ai-investigator.ts`
+- `src/investigators/orchestrator.ts`
+- `src/investigators/types.ts`
+- `test/e2e/__tests__/scenarios.test.ts`
+
+What I changed:
+- Fixed a telemetry semantics issue in `src/investigators/orchestrator.ts`:
+  - `metadata.hypothesesConverted` was counting all non-zero “hypothesis-layer” findings, including correlated meta-findings and graph root-cause findings.
+  - I narrowed it to only count actual converted positive-confidence hypothesis findings, which matches the field’s comment and intended meaning.
+- Strengthened `test/e2e/__tests__/scenarios.test.ts`:
+  - verified top-level `trace.metadata` now includes and coherently reports:
+    - parsed artifact counts
+    - `rawFindingCount` / `finalFindingCount`
+    - `seedCategories`
+    - `hypothesisStats`
+    - `confidenceStats`
+    - `retrievalStats`
+  - tightened investigate-step telemetry assertions so `verified >= converted`, now that the converted count is accurate.
+
+Assessment:
+- The step is complete.
+- The new trace fields are present, populated, JSON-serializable, and covered by tests.
+- The only real issue I found was the over-counting of `hypothesesConverted`; that is now corrected.
+
+Checks run:
+- `npx vitest run test/e2e/__tests__/scenarios.test.ts src/investigators/__tests__/orchestrator.test.ts` ✅
+- `npm run lint` ✅
+- `npm run typecheck` ✅
+- `npm run unit` ✅
+
+Verdict: changes_made

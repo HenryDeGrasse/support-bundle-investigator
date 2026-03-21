@@ -158,6 +158,13 @@ function makeInvestigationResult() {
       aiFindings: 0,
       hypothesesGenerated: 0,
       hypothesesVerified: 0,
+      hypothesesConverted: 0,
+      retrievalStats: {
+        graphChunks: 0,
+        lexicalChunks: 0,
+        semanticChunks: 0,
+        mergedChunks: 0,
+      },
       graphMatchedSymptoms: 0,
       seedClusterCount: 0,
       seedClusteringEnabled: false,

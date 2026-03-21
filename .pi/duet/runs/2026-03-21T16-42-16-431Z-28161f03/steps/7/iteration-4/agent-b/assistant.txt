@@ -1,0 +1,33 @@
+Reviewed:
+- `src/pipeline/trace.ts`
+- `src/pipeline/analyze.ts`
+- `src/investigators/types.ts`
+- `src/investigators/orchestrator.ts`
+- `src/investigators/ai-investigator.ts`
+- `test/e2e/__tests__/scenarios.test.ts`
+
+What I verified
+- `TraceStep` now includes:
+  - `seedCount`
+  - `seedCategories`
+  - `retrievalStats`
+  - `confidenceStats`
+  - `hypothesisStats`
+- `InvestigationTrace` now includes top-level `metadata`
+- `analyzeBundlePipeline` populates:
+  - investigate-step telemetry
+  - top-level trace metadata with parsed artifact/finding/AI/seed telemetry
+- `hypothesesConverted` semantics in orchestrator are now correct
+- E2E trace tests verify the new fields and their internal consistency
+
+Checks run
+- `npx vitest run test/e2e/__tests__/scenarios.test.ts src/pipeline/__tests__/analyze-ai.test.ts src/pipeline/__tests__/analyze-progress.test.ts src/investigators/__tests__/orchestrator.test.ts` ✅
+- `npm run lint` ✅
+- `npm run typecheck` ✅
+- `npm run unit` ✅
+
+Assessment
+- Step 7 is complete and correct.
+- I didn’t make any further changes this round; the current implementation and tests look good.
+
+Verdict: approve
