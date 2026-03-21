@@ -1,0 +1,31 @@
+Reviewed:
+- `src/reporters/types.ts`
+- `src/reporters/report-builder.ts`
+- `src/reporters/json-reporter.ts`
+- `src/reporters/markdown-reporter.ts`
+- `src/cli/output.ts`
+- `src/reporters/__tests__/report-builder.test.ts`
+- `src/reporters/__tests__/json-reporter.test.ts`
+- `src/reporters/__tests__/markdown-reporter.test.ts`
+- `test/integration/__tests__/perf-benchmark.test.ts`
+
+What I checked:
+- `buildReport()` now accepts `includeDiagnostics?: boolean` and `trace?: InvestigationTrace`
+- diagnostics are derived from trace/finding data and threaded onto `InvestigationReport`
+- JSON output emits top-level `diagnostics`
+- Markdown output renders a `## Diagnostics` section and supports suppression with `includeDiagnostics: false`
+- CLI/report writing path is building reports with diagnostics enabled
+- perf benchmark remains green with the current wall-clock + trace variance assertions
+
+Checks run:
+- `npm run lint` ✅
+- `npm run typecheck` ✅
+- `npm run unit` ✅
+- `npm run build` ✅
+
+Assessment:
+- Step 15 is complete and correct.
+- I didn’t find any regressions or missing wiring in the implemented diagnostics flow.
+- The full suite is green, including the reporter tests and perf benchmark.
+
+Verdict: approve

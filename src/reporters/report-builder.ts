@@ -1,6 +1,11 @@
 import type { PipelineResult } from '../pipeline/analyze.js';
+import type { InvestigationTrace, TraceStep } from '../pipeline/trace.js';
 import type { Finding } from '../types/index.js';
-import type { InvestigationReport } from './types.js';
+import type {
+  ConfidenceHistogram,
+  InvestigationDiagnostics,
+  InvestigationReport,
+} from './types.js';
 import { generateSpecRecommendations } from './spec-recommender.js';
 import { cleanEvidencePath, humanizeTitle } from './display-helpers.js';
 
@@ -168,6 +173,80 @@ function collectDeduped(
   return result;
 }
 
+function buildConfidenceHistogram(findings: Finding[]): ConfidenceHistogram {
+  const histogram: ConfidenceHistogram = {
+    '0-0.5': 0,
+    '0.5-0.75': 0,
+    '0.75-1.0': 0,
+  };
+
+  for (const finding of findings) {
+    if (finding.confidence < 0.5) {
+      histogram['0-0.5']++;
+    } else if (finding.confidence < 0.75) {
+      histogram['0.5-0.75']++;
+    } else {
+      histogram['0.75-1.0']++;
+    }
+  }
+
+  return histogram;
+}
+
+function timingFromStep(step: TraceStep): { name: string; durationMs: number; artifactsProcessed: number; errors?: string[] } {
+  return {
+    name: step.name,
+    durationMs:
+      step.completedAt === undefined
+        ? 0
+        : Math.max(0, new Date(step.completedAt).getTime() - new Date(step.startedAt).getTime()),
+    artifactsProcessed: step.artifactsProcessed,
+    ...(step.errors !== undefined ? { errors: step.errors } : {}),
+  };
+}
+
+function buildDiagnostics(
+  trace: InvestigationTrace,
+  findings: Finding[],
+): InvestigationDiagnostics {
+  const investigateStep = trace.steps.find((step) => step.name === 'investigate');
+  const seedCategories = investigateStep?.seedCategories;
+  const seedCount = investigateStep?.seedCount ??
+    (seedCategories !== undefined
+      ? Object.values(seedCategories).reduce((sum, count) => sum + count, 0)
+      : undefined);
+  const hypothesisStats = investigateStep?.hypothesisStats;
+
+  return {
+    stepTimings: trace.steps.map(timingFromStep),
+    ...(seedCount !== undefined ? { seedCount } : {}),
+    ...(seedCategories !== undefined ? { seedCategories } : {}),
+    ...(investigateStep?.retrievalStats !== undefined
+      ? { retrievalStats: investigateStep.retrievalStats }
+      : {}),
+    ...(investigateStep?.confidenceStats !== undefined
+      ? { confidenceStats: investigateStep.confidenceStats }
+      : {}),
+    confidenceHistogram: buildConfidenceHistogram(findings),
+    ...(hypothesisStats !== undefined
+      ? {
+          hypothesisStats: {
+            ...hypothesisStats,
+            ...(hypothesisStats.generated > 0
+              ? { conversionRate: hypothesisStats.converted / hypothesisStats.generated }
+              : {}),
+          },
+        }
+      : {}),
+    ...(trace.aiSummary !== undefined ? { aiSummary: trace.aiSummary } : {}),
+  };
+}
+
+export interface BuildReportOptions {
+  includeDiagnostics?: boolean;
+  trace?: InvestigationTrace;
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -195,10 +274,16 @@ function collectDeduped(
  *
  * @param result - The completed pipeline result containing findings, profile,
  *                 and all parsed bundle data.
+ * @param options - Optional report-building controls such as diagnostics inclusion
+ *                  and explicit trace override.
  * @returns A fully assembled {@link InvestigationReport}.
  */
-export function buildReport(result: PipelineResult): InvestigationReport {
+export function buildReport(
+  result: PipelineResult,
+  options: BuildReportOptions = {},
+): InvestigationReport {
   const { findings, profile } = result;
+  const trace = options.trace ?? result.trace;
 
   const executiveSummary = generateExecutiveSummary(findings);
   const rootCause = deriveRootCause(findings);
@@ -217,6 +302,7 @@ export function buildReport(result: PipelineResult): InvestigationReport {
     nextSteps,
     missingEvidence,
     specRecommendations,
-    aiSummary: result.trace.aiSummary,
+    aiSummary: trace.aiSummary,
+    ...(options.includeDiagnostics === true ? { diagnostics: buildDiagnostics(trace, findings) } : {}),
   };
 }

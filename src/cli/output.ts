@@ -160,7 +160,7 @@ export async function writePipelineResult(
     const resolvedDir = path.resolve(outputDir);
     await fsp.mkdir(resolvedDir, { recursive: true });
 
-    const report = buildReport(result);
+    const report = buildReport(result, { includeDiagnostics: true });
 
     await writeJsonReport(report, resolvedDir, { includeProvenance });
 
@@ -180,7 +180,7 @@ export async function writePipelineResult(
     return;
   }
 
-  const report = buildReport(result);
+  const report = buildReport(result, { includeDiagnostics: true });
 
   if (format === 'json') {
     console.log(generateJsonReport(report, { includeProvenance }));

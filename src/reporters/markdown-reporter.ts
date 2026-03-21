@@ -1,7 +1,11 @@
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import type { Finding, FindingSeverity } from '../types/index.js';
-import type { InvestigationReport, SpecRecommendation } from './types.js';
+import type {
+  InvestigationDiagnostics,
+  InvestigationReport,
+  SpecRecommendation,
+} from './types.js';
 import { isAIFinding } from './report-builder.js';
 import {
   cleanEvidencePath,
@@ -236,6 +240,89 @@ function renderMetadataFooter(report: InvestigationReport, generatedAt: string):
   return lines.join('\n');
 }
 
+function renderDiagnostics(diagnostics: InvestigationDiagnostics): string {
+  const lines: string[] = [];
+  lines.push('## Diagnostics');
+  lines.push('');
+
+  lines.push('### Pipeline Step Timings');
+  lines.push('');
+  lines.push('| Step | Duration (ms) | Artifacts Processed |');
+  lines.push('|------|---------------:|--------------------:|');
+  for (const step of diagnostics.stepTimings) {
+    lines.push(`| ${step.name} | ${step.durationMs} | ${step.artifactsProcessed} |`);
+  }
+  lines.push('');
+
+  if (diagnostics.seedCategories !== undefined) {
+    lines.push('### Seed Count by Category');
+    lines.push('');
+    lines.push(`Total seeds: ${diagnostics.seedCount ?? 0}`);
+    lines.push('');
+    for (const [category, count] of Object.entries(diagnostics.seedCategories)) {
+      lines.push(`- ${category}: ${count}`);
+    }
+    lines.push('');
+  }
+
+  lines.push('### Finding Confidence Histogram');
+  lines.push('');
+  lines.push(`- 0-0.5: ${diagnostics.confidenceHistogram['0-0.5']}`);
+  lines.push(`- 0.5-0.75: ${diagnostics.confidenceHistogram['0.5-0.75']}`);
+  lines.push(`- 0.75-1.0: ${diagnostics.confidenceHistogram['0.75-1.0']}`);
+  lines.push('');
+
+  if (diagnostics.hypothesisStats !== undefined) {
+    lines.push('### Hypothesis Conversion');
+    lines.push('');
+    lines.push(`- Generated: ${diagnostics.hypothesisStats.generated}`);
+    lines.push(`- Verified: ${diagnostics.hypothesisStats.verified}`);
+    lines.push(`- Converted: ${diagnostics.hypothesisStats.converted}`);
+    if (diagnostics.hypothesisStats.conversionRate !== undefined) {
+      lines.push(`- Conversion Rate: ${(diagnostics.hypothesisStats.conversionRate * 100).toFixed(1)}%`);
+    }
+    lines.push('');
+  }
+
+  if (diagnostics.retrievalStats !== undefined) {
+    lines.push('### Retrieval Stats');
+    lines.push('');
+    lines.push(`- Graph Chunks: ${diagnostics.retrievalStats.graphChunks}`);
+    lines.push(`- Lexical Chunks: ${diagnostics.retrievalStats.lexicalChunks}`);
+    lines.push(`- Semantic Chunks: ${diagnostics.retrievalStats.semanticChunks}`);
+    lines.push(`- Merged Chunks: ${diagnostics.retrievalStats.mergedChunks}`);
+    lines.push('');
+  }
+
+  if (diagnostics.aiSummary !== undefined && diagnostics.aiSummary.backend !== 'off') {
+    lines.push('### AI Call Stats');
+    lines.push('');
+    lines.push(`- Backend: ${diagnostics.aiSummary.backend}`);
+    lines.push(`- Model: ${diagnostics.aiSummary.model}`);
+    lines.push(`- Total Calls: ${diagnostics.aiSummary.totalCalls}`);
+    lines.push(`- Successful Calls: ${diagnostics.aiSummary.successfulCalls}`);
+    lines.push(`- Failed Calls: ${diagnostics.aiSummary.failedCalls}`);
+    lines.push(`- Total Latency (ms): ${diagnostics.aiSummary.totalLatencyMs}`);
+    lines.push(`- Average Latency (ms): ${diagnostics.aiSummary.avgLatencyMs}`);
+    if (diagnostics.aiSummary.totalPromptTokens !== undefined) {
+      lines.push(`- Prompt Tokens: ${diagnostics.aiSummary.totalPromptTokens}`);
+    }
+    if (diagnostics.aiSummary.totalCompletionTokens !== undefined) {
+      lines.push(`- Completion Tokens: ${diagnostics.aiSummary.totalCompletionTokens}`);
+    }
+    if (diagnostics.aiSummary.estimatedCostUsd !== undefined) {
+      lines.push(`- Estimated Cost (USD): ${diagnostics.aiSummary.estimatedCostUsd}`);
+    }
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
+export interface MarkdownReportOptions {
+  includeDiagnostics?: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -258,7 +345,10 @@ function renderMetadataFooter(report: InvestigationReport, generatedAt: string):
  * @param report - The investigation report to render.
  * @returns A UTF-8 Markdown string.
  */
-export function generateMarkdownReport(report: InvestigationReport): string {
+export function generateMarkdownReport(
+  report: InvestigationReport,
+  options: MarkdownReportOptions = {},
+): string {
   const generatedAt = new Date().toISOString();
 
   const sections = [
@@ -266,6 +356,9 @@ export function generateMarkdownReport(report: InvestigationReport): string {
     renderFindings(report.findings),
     renderMissingEvidence(report.missingEvidence),
     renderSpecRecommendations(report.specRecommendations),
+    ...(report.diagnostics !== undefined && options.includeDiagnostics !== false
+      ? [renderDiagnostics(report.diagnostics)]
+      : []),
     renderMetadataFooter(report, generatedAt),
   ];
 

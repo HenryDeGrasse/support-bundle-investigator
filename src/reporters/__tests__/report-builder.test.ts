@@ -89,11 +89,65 @@ function makePipelineResult(findings: Finding[] = []): PipelineResult {
     } as unknown as InvestigationGraphImpl,
     trace: {
       bundlePath: '/tmp/test.tar.gz',
-      startedAt: new Date().toISOString(),
-      completedAt: new Date().toISOString(),
+      startedAt: new Date('2024-01-01T00:00:00.000Z').toISOString(),
+      completedAt: new Date('2024-01-01T00:00:02.000Z').toISOString(),
       steps: [],
     } as unknown as InvestigationTrace,
     aiMode: 'off',
+  };
+}
+
+function makeDiagnosticsTrace(): InvestigationTrace {
+  return {
+    bundlePath: '/tmp/test.tar.gz',
+    startedAt: '2024-01-01T00:00:00.000Z',
+    completedAt: '2024-01-01T00:00:02.000Z',
+    aiSummary: {
+      model: 'gpt-4o-mini',
+      backend: 'cloud',
+      totalCalls: 2,
+      successfulCalls: 2,
+      failedCalls: 0,
+      totalLatencyMs: 240,
+      avgLatencyMs: 120,
+    },
+    steps: [
+      {
+        name: 'extract',
+        startedAt: '2024-01-01T00:00:00.000Z',
+        completedAt: '2024-01-01T00:00:00.300Z',
+        artifactsProcessed: 5,
+      },
+      {
+        name: 'investigate',
+        startedAt: '2024-01-01T00:00:01.000Z',
+        completedAt: '2024-01-01T00:00:01.800Z',
+        artifactsProcessed: 12,
+        seedCount: 4,
+        seedCategories: {
+          kubernetes: 2,
+          configuration: 1,
+          connectivity: 1,
+        },
+        retrievalStats: {
+          graphChunks: 10,
+          lexicalChunks: 8,
+          semanticChunks: 0,
+          mergedChunks: 12,
+        },
+        confidenceStats: {
+          min: 0.4,
+          max: 0.95,
+          mean: 0.675,
+          median: 0.675,
+        },
+        hypothesisStats: {
+          generated: 4,
+          verified: 3,
+          converted: 2,
+        },
+      },
+    ],
   };
 }
 
@@ -141,6 +195,66 @@ describe('buildReport — return type and structure', () => {
   it('returns an object with specRecommendations array', () => {
     const report = buildReport(makePipelineResult([makeFinding()]));
     expect(Array.isArray(report.specRecommendations)).toBe(true);
+  });
+
+  it('omits diagnostics by default', () => {
+    const report = buildReport(makePipelineResult([makeFinding()]));
+    expect(report.diagnostics).toBeUndefined();
+  });
+
+  it('includes diagnostics when includeDiagnostics is true', () => {
+    const result = makePipelineResult([
+      makeFinding({ id: 'f:0', confidence: 0.4 }),
+      makeFinding({ id: 'f:1', confidence: 0.8 }),
+    ]);
+    result.trace = makeDiagnosticsTrace();
+
+    const report = buildReport(result, { includeDiagnostics: true });
+
+    expect(report.diagnostics).toMatchObject({
+      seedCount: 4,
+      seedCategories: {
+        kubernetes: 2,
+        configuration: 1,
+        connectivity: 1,
+      },
+      retrievalStats: {
+        graphChunks: 10,
+        lexicalChunks: 8,
+        semanticChunks: 0,
+        mergedChunks: 12,
+      },
+      confidenceHistogram: {
+        '0-0.5': 1,
+        '0.5-0.75': 0,
+        '0.75-1.0': 1,
+      },
+      hypothesisStats: {
+        generated: 4,
+        verified: 3,
+        converted: 2,
+        conversionRate: 0.5,
+      },
+      aiSummary: {
+        model: 'gpt-4o-mini',
+        backend: 'cloud',
+      },
+    });
+    expect(report.diagnostics?.stepTimings[0]).toEqual({
+      name: 'extract',
+      durationMs: 300,
+      artifactsProcessed: 5,
+    });
+  });
+
+  it('prefers an explicit trace override when building diagnostics', () => {
+    const result = makePipelineResult([makeFinding({ confidence: 0.8 })]);
+    const overrideTrace = makeDiagnosticsTrace();
+
+    const report = buildReport(result, { includeDiagnostics: true, trace: overrideTrace });
+
+    expect(report.aiSummary?.model).toBe('gpt-4o-mini');
+    expect(report.diagnostics?.seedCount).toBe(4);
   });
 });
 

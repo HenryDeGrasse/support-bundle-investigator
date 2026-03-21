@@ -89,6 +89,7 @@ export function generateJsonReport(
     missingEvidence: report.missingEvidence,
     specRecommendations: report.specRecommendations,
     ...(report.aiSummary !== undefined ? { aiSummary: report.aiSummary } : {}),
+    ...(report.diagnostics !== undefined ? { diagnostics: report.diagnostics } : {}),
   };
 
   return JSON.stringify(output, null, 2);

@@ -176,6 +176,50 @@ describe('generateJsonReport — top-level report fields', () => {
     const parsed = JSON.parse(generateJsonReport(report)) as Record<string, unknown>;
     expect(parsed['aiSummary']).toEqual(report.aiSummary);
   });
+
+  it('includes diagnostics when present on the report', () => {
+    const report = makeReport({
+      diagnostics: {
+        stepTimings: [{ name: 'investigate', durationMs: 420, artifactsProcessed: 12 }],
+        seedCount: 3,
+        seedCategories: { kubernetes: 2, connectivity: 1 },
+        retrievalStats: {
+          graphChunks: 5,
+          lexicalChunks: 4,
+          semanticChunks: 0,
+          mergedChunks: 6,
+        },
+        confidenceStats: {
+          min: 0.4,
+          max: 0.9,
+          mean: 0.65,
+          median: 0.65,
+        },
+        confidenceHistogram: {
+          '0-0.5': 1,
+          '0.5-0.75': 0,
+          '0.75-1.0': 1,
+        },
+        hypothesisStats: {
+          generated: 4,
+          verified: 3,
+          converted: 2,
+          conversionRate: 0.5,
+        },
+        aiSummary: {
+          model: 'gpt-4o-mini',
+          backend: 'cloud',
+          totalCalls: 1,
+          successfulCalls: 1,
+          failedCalls: 0,
+          totalLatencyMs: 120,
+          avgLatencyMs: 120,
+        },
+      },
+    });
+    const parsed = JSON.parse(generateJsonReport(report)) as Record<string, unknown>;
+    expect(parsed['diagnostics']).toEqual(report.diagnostics);
+  });
 });
 
 // ---------------------------------------------------------------------------

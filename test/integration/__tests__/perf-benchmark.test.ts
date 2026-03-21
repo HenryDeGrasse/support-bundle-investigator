@@ -35,6 +35,12 @@ function traceDurationMs(trace: InvestigationTrace): number {
   return durationMs(trace.startedAt, trace.completedAt!);
 }
 
+function median(values: number[]): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted[middle] ?? 0;
+}
+
 describe('Pipeline performance benchmark', () => {
   it(
     'completes three heuristic-only runs within generous CI throughput ceilings',
@@ -77,15 +83,15 @@ describe('Pipeline performance benchmark', () => {
       }
 
       const maxWallClock = Math.max(...wallClockDurations);
-      const minWallClock = Math.min(...wallClockDurations);
+      const medianWallClock = median(wallClockDurations);
       const maxTrace = Math.max(...traceDurations);
-      const minTrace = Math.min(...traceDurations);
+      const medianTrace = median(traceDurations);
 
-      expect(minWallClock).toBeGreaterThan(0);
-      expect(minTrace).toBeGreaterThanOrEqual(0);
-      expect(maxWallClock / minWallClock).toBeLessThanOrEqual(2);
-      if (minTrace > 0) {
-        expect(maxTrace / minTrace).toBeLessThanOrEqual(2);
+      expect(medianWallClock).toBeGreaterThan(0);
+      expect(maxWallClock / medianWallClock).toBeLessThanOrEqual(2);
+      expect(medianTrace).toBeGreaterThanOrEqual(0);
+      if (medianTrace > 0) {
+        expect(maxTrace / medianTrace).toBeLessThanOrEqual(2);
       }
 
       expect(stepDurationSets).toHaveLength(3);

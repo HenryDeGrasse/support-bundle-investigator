@@ -111,6 +111,86 @@ describe('generateMarkdownReport — section headers', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Section 2b: Diagnostics section
+// ---------------------------------------------------------------------------
+
+describe('generateMarkdownReport — diagnostics section', () => {
+  it('renders diagnostics when present on the report', () => {
+    const result = generateMarkdownReport(
+      makeReport({
+        diagnostics: {
+          stepTimings: [{ name: 'investigate', durationMs: 420, artifactsProcessed: 12 }],
+          seedCount: 3,
+          seedCategories: { kubernetes: 2, connectivity: 1 },
+          retrievalStats: {
+            graphChunks: 5,
+            lexicalChunks: 4,
+            semanticChunks: 0,
+            mergedChunks: 6,
+          },
+          confidenceStats: {
+            min: 0.4,
+            max: 0.9,
+            mean: 0.65,
+            median: 0.65,
+          },
+          confidenceHistogram: {
+            '0-0.5': 1,
+            '0.5-0.75': 0,
+            '0.75-1.0': 1,
+          },
+          hypothesisStats: {
+            generated: 4,
+            verified: 3,
+            converted: 2,
+            conversionRate: 0.5,
+          },
+          aiSummary: {
+            model: 'gpt-4o-mini',
+            backend: 'cloud',
+            totalCalls: 2,
+            successfulCalls: 2,
+            failedCalls: 0,
+            totalLatencyMs: 240,
+            avgLatencyMs: 120,
+          },
+        },
+      }),
+    );
+
+    expect(result).toContain('## Diagnostics');
+    expect(result).toContain('### Pipeline Step Timings');
+    expect(result).toContain('| investigate | 420 | 12 |');
+    expect(result).toContain('### Seed Count by Category');
+    expect(result).toContain('- kubernetes: 2');
+    expect(result).toContain('### Finding Confidence Histogram');
+    expect(result).toContain('- 0.75-1.0: 1');
+    expect(result).toContain('### Hypothesis Conversion');
+    expect(result).toContain('Conversion Rate: 50.0%');
+    expect(result).toContain('### AI Call Stats');
+    expect(result).toContain('- Model: gpt-4o-mini');
+  });
+
+  it('does not render diagnostics when explicitly disabled', () => {
+    const result = generateMarkdownReport(
+      makeReport({
+        diagnostics: {
+          stepTimings: [{ name: 'investigate', durationMs: 420, artifactsProcessed: 12 }],
+          confidenceHistogram: {
+            '0-0.5': 0,
+            '0.5-0.75': 0,
+            '0.75-1.0': 1,
+          },
+        },
+      }),
+      { includeDiagnostics: false },
+    );
+
+    expect(result).not.toContain('## Diagnostics');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Section 3: Executive summary content
 // ---------------------------------------------------------------------------
 

@@ -1,5 +1,6 @@
 import type { Finding } from '../types/index.js';
 import type { AIRunSummary } from '../ai/telemetry.js';
+import type { ConfidenceStats, HypothesisStats, RetrievalStats } from '../pipeline/trace.js';
 
 // ---------------------------------------------------------------------------
 // SpecRecommendation
@@ -52,6 +53,30 @@ export interface ReportOptions {
   format?: ReportFormat;
   outputDir?: string;
   includeTrace?: boolean;
+}
+
+export interface PipelineStepTiming {
+  name: string;
+  durationMs: number;
+  artifactsProcessed: number;
+  errors?: string[];
+}
+
+export interface ConfidenceHistogram {
+  '0-0.5': number;
+  '0.5-0.75': number;
+  '0.75-1.0': number;
+}
+
+export interface InvestigationDiagnostics {
+  stepTimings: PipelineStepTiming[];
+  seedCount?: number;
+  seedCategories?: Record<string, number>;
+  retrievalStats?: RetrievalStats;
+  confidenceStats?: ConfidenceStats;
+  confidenceHistogram: ConfidenceHistogram;
+  hypothesisStats?: HypothesisStats & { conversionRate?: number };
+  aiSummary?: AIRunSummary;
 }
 
 // ---------------------------------------------------------------------------
@@ -119,4 +144,7 @@ export interface InvestigationReport {
 
   /** Summary of AI model usage, latency, and token/cost telemetry for this run. */
   aiSummary?: AIRunSummary;
+
+  /** Optional diagnostics derived from the investigation trace and findings. */
+  diagnostics?: InvestigationDiagnostics;
 }
