@@ -1,0 +1,24 @@
+{
+  "name": "storefront",
+  "namespace": "default",
+  "revision": 7,
+  "status": "failed",
+  "chart": "storefront-2.3.1",
+  "app_version": "1.18.0",
+  "updated": "2024-03-21T12:18:00Z",
+  "values": {
+    "image": {
+      "repository": "ghcr.io/example/storefront",
+      "tag": "1.18.0"
+    },
+    "hooks": {
+      "postInstall": {
+        "enabled": true,
+        "appMode": "invalid_mode"
+      }
+    },
+    "env": {
+      "APP_MODE": "invalid_mode"
+    }
+  }
+}

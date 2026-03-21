@@ -1,0 +1,37 @@
+Reviewed:
+- `test/fixtures/scenarios/helm-release-failure/`
+- `test/fixtures/__tests__/fixtures.test.ts`
+- `test/golden/expectations.ts`
+- `src/parsers/helm-parser.ts`
+- `src/pipeline/analyze.ts`
+
+What I verified
+- New fixture exists at `test/fixtures/scenarios/helm-release-failure/` with:
+  - `version.yaml`
+  - `analysis.json`
+  - `cluster-info/cluster_version.json`
+  - `helm/releases/storefront.json`
+  - CrashLoopBackOff pod YAML
+  - events
+  - hook log
+- Fixture tests cover:
+  - bundle structure
+  - analyzer content
+  - Helm release parsing via `parseHelmReleaseContent`
+  - failed Helm status
+  - CrashLoopBackOff pod/events/logs
+- Golden expectation entry for `helm-release-failure` is present and passing.
+- Heuristic-only pipeline behavior matches the expectation:
+  - top finding is `CrashLoopBackOff: Pod 'storefront-hook-pod'...`
+- Helm file placement under `helm/releases/` is valid for existing classifier/parser behavior.
+
+Checks run
+- `npm run lint` ✅
+- `npm run typecheck` ✅
+- `npm run unit` ✅
+
+Assessment
+- Step 3 is complete and correct.
+- I did not make further changes.
+
+Verdict: approve

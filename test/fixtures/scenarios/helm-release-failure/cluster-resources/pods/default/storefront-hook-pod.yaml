@@ -1,0 +1,51 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: storefront-hook-pod
+  namespace: default
+  labels:
+    app.kubernetes.io/name: storefront
+    app.kubernetes.io/instance: storefront
+    helm.sh/chart: storefront-2.3.1
+    helm.sh/hook: post-install
+  creationTimestamp: "2024-03-21T12:17:00Z"
+spec:
+  restartPolicy: Always
+  containers:
+    - name: migrate-hook
+      image: ghcr.io/example/storefront:1.18.0
+      env:
+        - name: APP_MODE
+          value: "invalid_mode"
+      command: ["/bin/sh", "-c", "./run-post-install.sh"]
+status:
+  phase: Running
+  conditions:
+    - type: Ready
+      status: "False"
+      reason: ContainersNotReady
+      message: "containers with unready status: [migrate-hook]"
+    - type: ContainersReady
+      status: "False"
+      reason: ContainersNotReady
+      message: "containers with unready status: [migrate-hook]"
+    - type: PodScheduled
+      status: "True"
+    - type: Initialized
+      status: "True"
+  containerStatuses:
+    - name: migrate-hook
+      ready: false
+      restartCount: 6
+      image: ghcr.io/example/storefront:1.18.0
+      state:
+        waiting:
+          reason: CrashLoopBackOff
+          message: "back-off 5m0s restarting failed container=migrate-hook pod=storefront-hook-pod_default(abcde-98765)"
+      lastState:
+        terminated:
+          exitCode: 1
+          reason: Error
+          message: "Helm post-install hook failed: invalid APP_MODE=invalid_mode from values override"
+          finishedAt: "2024-03-21T12:19:10Z"
+          startedAt: "2024-03-21T12:19:05Z"

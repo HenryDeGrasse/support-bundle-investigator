@@ -8,6 +8,7 @@ import { parseResourceJson } from "../../../src/parsers/k8s-resource-parser.js";
 import { parseEventsJson } from "../../../src/parsers/event-parser.js";
 import { parseAnalyzerJson } from "../../../src/parsers/analyzer-parser.js";
 import { parseLogFile } from "../../../src/parsers/log-parser.js";
+import { parseHelmReleaseContent } from "../../../src/parsers/helm-parser.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1270,6 +1271,110 @@ describe("Scenario 5: multi-namespace-retrieval", () => {
     it("createTestBundle works with node-taint-memory-pressure scenario", async () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sbi-taint-"));
       const outPath = path.join(tmpDir, "node-taint-memory-pressure.tar.gz");
+      try {
+        const result = await createTestBundle(dir, outPath);
+        expect(exists(result)).toBe(true);
+        expect(fs.statSync(result).size).toBeGreaterThan(0);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Scenario 8: helm-release-failure
+  // ---------------------------------------------------------------------------
+
+  describe("Scenario 8: helm-release-failure", () => {
+    const dir = getFixturePath("helm-release-failure");
+
+    it("fixture directory exists", () => {
+      expect(exists(dir)).toBe(true);
+    });
+
+    it("has version.yaml with SupportBundle kind", () => {
+      const versionPath = path.join(dir, "version.yaml");
+      expect(exists(versionPath)).toBe(true);
+      expect(fs.readFileSync(versionPath, "utf8")).toContain("SupportBundle");
+    });
+
+    it("has cluster_version.json", () => {
+      expect(exists(path.join(dir, "cluster-info", "cluster_version.json"))).toBe(true);
+    });
+
+    it("analysis.json contains Helm failure analyzer entries", () => {
+      const raw = fs.readFileSync(path.join(dir, "analysis.json"), "utf8");
+      const results = parseAnalyzerJson(raw);
+      expect(results.some((r) => r.severity === "error")).toBe(true);
+      expect(results.some((r) => r.severity === "warn")).toBe(true);
+      expect(raw).toContain("Helm release 'storefront'");
+      expect(raw).toContain("APP_MODE=invalid_mode");
+    });
+
+    it("contains a parseable failed Helm release file", () => {
+      const releasePath = path.join(dir, "helm", "releases", "storefront.json");
+      expect(exists(releasePath)).toBe(true);
+      const raw = fs.readFileSync(releasePath, "utf8");
+      const releases = parseHelmReleaseContent(raw);
+      expect(releases).toHaveLength(1);
+      expect(releases[0]!.name).toBe("storefront");
+      expect(releases[0]!.status).toBe("failed");
+      expect(releases[0]!.chart).toBe("storefront");
+      expect(releases[0]!.chartVersion).toBe("2.3.1");
+      expect(releases[0]!.values["env"]).toBeDefined();
+    });
+
+    it("contains a CrashLoopBackOff hook pod with Helm hook labels", () => {
+      const podPath = path.join(
+        dir,
+        "cluster-resources",
+        "pods",
+        "default",
+        "storefront-hook-pod.yaml",
+      );
+      expect(exists(podPath)).toBe(true);
+      const raw = fs.readFileSync(podPath, "utf8");
+      expect(raw).toContain("storefront-hook-pod");
+      expect(raw).toContain("helm.sh/hook: post-install");
+      expect(raw).toContain("CrashLoopBackOff");
+      expect(raw).toContain("APP_MODE");
+      expect(raw).toContain("invalid_mode");
+    });
+
+    it("events include Failed and BackOff reasons for the hook pod", () => {
+      const eventsPath = path.join(dir, "cluster-resources", "events", "default.json");
+      expect(exists(eventsPath)).toBe(true);
+      const events = parseEventsJson(fs.readFileSync(eventsPath, "utf8"));
+      expect(events.some((e) => e.reason === "Failed")).toBe(true);
+      expect(events.some((e) => e.reason === "BackOff")).toBe(true);
+      expect(events.some((e) => e.message.includes("storefront"))).toBe(true);
+    });
+
+    it("hook pod log contains Helm-related startup errors", async () => {
+      const logPath = path.join(
+        dir,
+        "cluster-resources",
+        "pods",
+        "logs",
+        "default",
+        "storefront-hook-pod",
+        "hook.log",
+      );
+      expect(exists(logPath)).toBe(true);
+      const raw = fs.readFileSync(logPath, "utf8");
+      expect(raw).toContain("Helm post-install hook");
+      expect(raw).toContain("storefront");
+      expect(raw).toContain("invalid_mode");
+      expect(raw).toContain("FAILED");
+
+      const logFile = await parseLogFile(logPath);
+      expect(logFile.lines.length).toBeGreaterThan(0);
+      expect(logFile.errorCount).toBeGreaterThan(0);
+    });
+
+    it("createTestBundle works with helm-release-failure scenario", async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sbi-helm-"));
+      const outPath = path.join(tmpDir, "helm-release-failure.tar.gz");
       try {
         const result = await createTestBundle(dir, outPath);
         expect(exists(result)).toBe(true);

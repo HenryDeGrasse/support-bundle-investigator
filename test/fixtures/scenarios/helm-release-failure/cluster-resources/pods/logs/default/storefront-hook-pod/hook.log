@@ -1,0 +1,6 @@
+2024-03-21T12:17:20Z INFO  Starting Helm post-install hook for release storefront
+2024-03-21T12:17:21Z INFO  Reading Helm values override APP_MODE=invalid_mode
+2024-03-21T12:17:22Z ERROR Helm release storefront entered failed hook execution path
+2024-03-21T12:17:22Z ERROR invalid APP_MODE=invalid_mode from Helm values override
+2024-03-21T12:17:23Z ERROR startup validation failed for release storefront
+2024-03-21T12:17:23Z FATAL Helm post-install hook aborted; marking release storefront as FAILED

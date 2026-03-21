@@ -1,0 +1,37 @@
+Reviewed:
+- `src/parsers/helm-parser.ts`
+- `src/pipeline/analyze.ts`
+- `test/fixtures/__tests__/fixtures.test.ts`
+- `test/golden/expectations.ts`
+
+Changed:
+- Added new fixture scenario: `test/fixtures/scenarios/helm-release-failure/`
+  - `version.yaml`
+  - `analysis.json`
+  - `cluster-info/cluster_version.json`
+  - `helm/releases/storefront.json`
+  - `cluster-resources/pods/default/storefront-hook-pod.yaml`
+  - `cluster-resources/events/default.json`
+  - `cluster-resources/pods/logs/default/storefront-hook-pod/hook.log`
+- Added fixture coverage in `test/fixtures/__tests__/fixtures.test.ts` for the new scenario
+  - validates bundle structure
+  - validates analyzer content
+  - validates Helm release parsing and failed status
+  - validates CrashLoopBackOff pod, events, and logs
+- Added golden expectation entry in `test/golden/expectations.ts` for `helm-release-failure`
+
+Notes:
+- I first ran the heuristic-only pipeline against the new fixture in a scratch test to see actual findings.
+- I adjusted the scenario to avoid accidental noisy DNS-style hypothesis generation from env values, so the scenario now cleanly produces the intended top `CrashLoopBackOff` finding.
+- The Helm release file is placed under `helm/releases/`, which is correctly classified as `helm-release` by the existing classifier.
+
+Checks run:
+- `npm run lint` ✅
+- `npm run typecheck` ✅
+- `npm run unit` ✅
+
+Assessment:
+- Step 3 is complete.
+- The new fixture demonstrates Helm release parsing coverage and integrates cleanly with the existing golden-eval flow.
+
+Verdict: changes_made

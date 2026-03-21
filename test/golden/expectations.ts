@@ -158,6 +158,32 @@ export const GOLDEN_EXPECTATIONS: Record<string, ScenarioExpectation> = {
     mustMentionIdentifiers: ['api-client-pod', 'deny-all-egress', 'payments-api'],
   },
 
+  'helm-release-failure': {
+    name: 'Helm Release Failure (Failed Hook CrashLoop)',
+    minFindings: 1,
+    topFindingMustMatch: [
+      /CrashLoopBackOff/i,
+      /storefront-hook-pod/i,
+      /hook/i,
+    ],
+    topFindingSeverity: ['critical'],
+    topFindingMinConfidence: 0.95,
+    mustCiteEvidence: [
+      /pods/i,
+      /events/i,
+    ],
+    mustNotHallucinate: [
+      /ImagePullBackOff/i,
+      /missing.*secret/i,
+      /NetworkPolicy/i,
+    ],
+    rootCauseMustMatch: [
+      /crashloop|backoff|restart/i,
+      /migrate-hook|storefront-hook-pod/i,
+    ],
+    mustMentionIdentifiers: ['storefront-hook-pod', 'migrate-hook'],
+  },
+
   'wrong-db-endpoint': {
     name: 'Wrong DB Endpoint (DNS Failure)',
     minFindings: 1,

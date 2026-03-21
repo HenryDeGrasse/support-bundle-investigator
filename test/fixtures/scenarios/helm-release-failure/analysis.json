@@ -1,0 +1,18 @@
+[
+  {
+    "name": "helm-release-status",
+    "insight": {
+      "severity": "error",
+      "primary": "Helm release storefront is FAILED",
+      "detail": "Helm release 'storefront' in namespace 'default' is in FAILED state after a bad values override set APP_MODE=invalid_mode for the post-install hook."
+    }
+  },
+  {
+    "name": "helm-hook-crashloop",
+    "insight": {
+      "severity": "warn",
+      "primary": "storefront-hook-pod is CrashLoopBackOff",
+      "detail": "Pod 'storefront-hook-pod' repeatedly exits because the Helm post-install hook starts with APP_MODE=invalid_mode from the release values override."
+    }
+  }
+]
