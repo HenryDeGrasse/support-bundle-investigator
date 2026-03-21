@@ -139,7 +139,7 @@ function buildHypothesisSupportEdges(findings: Finding[]): GraphEdge[] {
  * declare their family via their ID. All other findings are classified from
  * their title using a precedence-ordered pattern list.
  */
-function normalizeIssueFamilyForPass1(finding: Finding): string {
+export function normalizeIssueFamilyForPass1(finding: Finding): string {
   // Hypothesis findings declare their family in their ID structure.
   if (finding.id.startsWith('finding:hypothesis:')) {
     return finding.id.split(':')[2] ?? 'unknown';
@@ -284,16 +284,10 @@ function findingPriority(finding: Finding): number {
  * A small convergence boost is applied when multiple independent findings
  * corroborate the same issue.
  */
-function mergeComponentGroup(group: Finding[]): Finding {
-  if (group.length === 1) return group[0]!;
+function absorbIntoWinner(winner: Finding, absorbedFindings: Finding[]): Finding {
+  if (absorbedFindings.length === 0) return winner;
 
-  // Sort by priority then confidence so the winner is sorted[0]
-  const sorted = [...group].sort((a, b) => {
-    const pd = findingPriority(a) - findingPriority(b);
-    if (pd !== 0) return pd;
-    return b.confidence - a.confidence;
-  });
-  const winner = sorted[0]!;
+  const group = [winner, ...absorbedFindings];
 
   // Convergence boost: multiple independent findings agree → slightly higher
   // confidence, capped at +0.10 regardless of group size.
@@ -321,6 +315,20 @@ function mergeComponentGroup(group: Finding[]): Finding {
     contradictionsChecked: unionStrings(...group.map((f) => f.contradictionsChecked)),
     missingEvidence: unionStrings(...group.map((f) => f.missingEvidence)),
   };
+}
+
+function mergeComponentGroup(group: Finding[]): Finding {
+  if (group.length === 1) return group[0]!;
+
+  // Sort by priority then confidence so the winner is sorted[0]
+  const sorted = [...group].sort((a, b) => {
+    const pd = findingPriority(a) - findingPriority(b);
+    if (pd !== 0) return pd;
+    return b.confidence - a.confidence;
+  });
+  const winner = sorted[0]!;
+
+  return absorbIntoWinner(winner, sorted.slice(1));
 }
 
 /**
@@ -354,6 +362,11 @@ function mergeComponentGroup(group: Finding[]): Finding {
  * Findings from different issue families on the same component remain
  * separate (e.g. CrashLoopBackOff and missing-secret both survive for the
  * same pod because they describe different problems).
+ *
+ * **Non-overlap boundary with Pass 2:** this pass decides structural identity
+ * only — component + issue family. It is responsible for cross-layer winner
+ * selection and evidence absorption. It does **not** perform cosmetic title
+ * dedup across different components; that is exclusively Pass 2's job.
  *
  * One normalization strategy: {@link extractPrimaryComponentForPass1} +
  * {@link normalizeIssueFamilyForPass1}.
@@ -394,60 +407,53 @@ function pass1ComponentMerge(
   }
   const mergedPool = Array.from(heuristicGroups.values()).map(mergeComponentGroup);
 
-  // Index the merged pool by (component, family) for O(1) hypothesis lookup.
-  const poolByKey = new Map<string, Finding>();
-  for (const f of mergedPool) {
-    const key = `${extractPrimaryComponentForPass1(f)}::${normalizeIssueFamilyForPass1(f)}`;
-    poolByKey.set(key, f);
-  }
-
-  // ── Step C: Cross-layer selection ──────────────────────────────────────────
-  // Determine which hypothesis findings survive and which pool findings are
-  // displaced by hypothesis findings.
-  //
-  // Rule 2: hypothesis displaces heuristic (non-AI) for same (component, family).
-  // Rule 3: AI displaces hypothesis for same (component, family).
-  const absorbedPoolKeys = new Set<string>(); // Pool (component, family) keys displaced by hypotheses
-  const absorbedHypKeys = new Set<string>();  // Hypothesis (c, f, title) keys displaced by AI
-
+  const hypothesesByPoolKey = new Map<string, Finding[]>();
   for (const hyp of uniqueHypotheses) {
-    const component = extractPrimaryComponentForPass1(hyp);
-    const family = normalizeIssueFamilyForPass1(hyp);
-    const poolKey = `${component}::${family}`;
-    const poolFinding = poolByKey.get(poolKey);
-
-    if (poolFinding == null) {
-      // No heuristic/AI for this (component, family) → hypothesis survives as-is.
-    } else if (poolFinding.id.startsWith('finding:ai:')) {
-      // Rule 3: AI present → hypothesis is absorbed by the AI finding.
-      const hypKey = `${poolKey}::${normalizeTitleForPass2(hyp.title)}`;
-      absorbedHypKeys.add(hypKey);
-    } else {
-      // Rule 2: Only heuristic present → hypothesis wins, heuristic displaced.
-      absorbedPoolKeys.add(poolKey);
-    }
+    const key = `${extractPrimaryComponentForPass1(hyp)}::${normalizeIssueFamilyForPass1(hyp)}`;
+    const group = hypothesesByPoolKey.get(key) ?? [];
+    group.push(hyp);
+    hypothesesByPoolKey.set(key, group);
   }
 
-  // ── Step D: Assemble final result ──────────────────────────────────────────
+  // ── Step C: Cross-layer selection + evidence absorption ────────────────────
+  // Rule 2: hypothesis displaces heuristic (non-AI) for same (component, family)
+  // and absorbs its evidence.
+  // Rule 3: AI displaces hypothesis for same (component, family) and absorbs
+  // the hypothesis evidence.
   const result: Finding[] = [];
+  const handledPoolKeys = new Set<string>();
 
-  // Include pool (heuristic+AI) findings that were not displaced by a hypothesis.
-  for (const f of mergedPool) {
-    const key = `${extractPrimaryComponentForPass1(f)}::${normalizeIssueFamilyForPass1(f)}`;
-    if (!absorbedPoolKeys.has(key)) {
-      result.push(f);
+  for (const poolFinding of mergedPool) {
+    const poolKey =
+      `${extractPrimaryComponentForPass1(poolFinding)}::${normalizeIssueFamilyForPass1(poolFinding)}`;
+    const competingHypotheses = hypothesesByPoolKey.get(poolKey) ?? [];
+
+    if (competingHypotheses.length === 0) {
+      result.push(poolFinding);
+      handledPoolKeys.add(poolKey);
+      continue;
     }
+
+    if (poolFinding.id.startsWith('finding:ai:')) {
+      // AI is the sole survivor for this structural group.
+      result.push(absorbIntoWinner(poolFinding, competingHypotheses));
+      handledPoolKeys.add(poolKey);
+      continue;
+    }
+
+    // Heuristic findings are displaced by each competing hypothesis / graph
+    // root cause, but their absorbed evidence is retained on every surviving
+    // theory so Pass 2 cannot accidentally erase that context later.
+    for (const hyp of competingHypotheses) {
+      result.push(absorbIntoWinner(hyp, [poolFinding]));
+    }
+    handledPoolKeys.add(poolKey);
   }
 
-  // Include hypothesis findings that were not absorbed by an AI finding.
-  for (const hyp of uniqueHypotheses) {
-    const component = extractPrimaryComponentForPass1(hyp);
-    const family = normalizeIssueFamilyForPass1(hyp);
-    const title = normalizeTitleForPass2(hyp.title);
-    const hypKey = `${component}::${family}::${title}`;
-    if (!absorbedHypKeys.has(hypKey)) {
-      result.push(hyp);
-    }
+  // Hypothesis-only groups survive untouched.
+  for (const [poolKey, hypotheses] of hypothesesByPoolKey) {
+    if (handledPoolKeys.has(poolKey)) continue;
+    result.push(...hypotheses);
   }
 
   return result;
@@ -473,7 +479,7 @@ function pass1ComponentMerge(
  * `(symptom:…)` suffixes) and normalises typographic variants (curly quotes)
  * so that functionally-identical titles map to the same key.
  */
-function normalizeTitleForPass2(title: string): string {
+export function normalizeTitleForPass2(title: string): string {
   return title
     .replace(/\[Hypothesis\]\s*/i, '')
     .replace(/\(symptom:.*\)$/i, '')
@@ -493,6 +499,11 @@ function normalizeTitleForPass2(title: string): string {
  * This pass uses one normalization strategy ({@link normalizeTitleForPass2})
  * and one merge strategy (higher confidence wins; AI wins before confidence is
  * compared, making the pass stable when confidence values are equal).
+ *
+ * **Non-overlap boundary with Pass 1:** this pass is purely cosmetic. It must
+ * not recompute component/family identity, and it must preserve any evidence
+ * already absorbed by Pass 1 on the winning finding. It chooses *which whole
+ * finding survives* for a title collision; it does not re-merge evidence.
  */
 function pass2TitleDedup(findings: Finding[]): Finding[] {
   // AI findings are sorted first so they win title collisions over non-AI
@@ -528,6 +539,17 @@ function pass2TitleDedup(findings: Finding[]): Finding[] {
 // ---------------------------------------------------------------------------
 // Edge utilities
 // ---------------------------------------------------------------------------
+
+export function __testOnlyPass1ComponentMerge(
+  heuristicAndAI: Finding[],
+  hypothesisFindings: Finding[],
+): Finding[] {
+  return pass1ComponentMerge(heuristicAndAI, hypothesisFindings);
+}
+
+export function __testOnlyPass2TitleDedup(findings: Finding[]): Finding[] {
+  return pass2TitleDedup(findings);
+}
 
 function filterEdgesForRetainedFindings(
   edges: GraphEdge[],

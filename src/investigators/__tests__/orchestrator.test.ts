@@ -1,11 +1,17 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { InvestigatorContext } from '../types.js';
-import type { BundleProfile, K8sResource, K8sEvent } from '../../types/index.js';
+import type { BundleProfile, K8sResource, K8sEvent, Finding } from '../../types/index.js';
 import type { LogFile, LogLine } from '../../parsers/index.js';
 import type { AIInvestigatorDeps } from '../ai-investigator.js';
 import type { ResourceRelationshipGraph } from '../../graph/resource-graph.js';
 import { classifyLogLevel } from '../../parsers/index.js';
-import { runInvestigation } from '../orchestrator.js';
+import {
+  runInvestigation,
+  normalizeIssueFamilyForPass1,
+  normalizeTitleForPass2,
+  __testOnlyPass1ComponentMerge,
+  __testOnlyPass2TitleDedup,
+} from '../orchestrator.js';
 import { getRootCauses } from '../../graph/finding-tree.js';
 
 // ---------------------------------------------------------------------------
@@ -60,6 +66,22 @@ function makeLogFile(logPath: string, lines: string[]): LogFile {
   const errorCount = logLines.filter((l) => l.level === 'error').length;
   const warningCount = logLines.filter((l) => l.level === 'warning').length;
   return { path: logPath, lines: logLines, errorCount, warningCount, importance: 0.5 };
+}
+
+function makeFinding(overrides: Partial<Finding> & Pick<Finding, 'id' | 'title'>): Finding {
+  return {
+    id: overrides.id,
+    title: overrides.title,
+    severity: overrides.severity ?? 'high',
+    confidence: overrides.confidence ?? 0.7,
+    affectedComponents: overrides.affectedComponents ?? ['Pod/default/example-pod'],
+    reasoningSummary: overrides.reasoningSummary ?? 'Test finding',
+    evidence: overrides.evidence ?? [],
+    contradictionsChecked: overrides.contradictionsChecked ?? [],
+    recommendedAction: overrides.recommendedAction ?? 'Investigate',
+    missingEvidence: overrides.missingEvidence ?? [],
+    confidenceQuality: overrides.confidenceQuality,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1237,6 +1259,208 @@ describe('runInvestigation', () => {
     const dnsLogForPassTest = makeLogFile('pod-logs/default/dns-test-pod.log', [
       'ERROR lookup db: no such host',
     ]);
+
+    // ── Normalization contracts ───────────────────────────────────────────────
+
+    it('normalization helpers keep component/family and title responsibilities separate', () => {
+      const heuristicSecret = makeFinding({
+        id: 'finding:config:0',
+        title: "Missing Secret 'app-credentials' required by pod",
+      });
+      const hypothesisTitle =
+        "[Hypothesis] Missing Secret 'app-credentials' required by pod (symptom: Pod/default/example-pod)";
+
+      expect(normalizeIssueFamilyForPass1(heuristicSecret)).toBe('missing-secret');
+      expect(normalizeTitleForPass2(hypothesisTitle)).toBe(
+        "missing secret 'app-credentials' required by pod",
+      );
+    });
+
+    // ── Pass 1: Component-based merge ─────────────────────────────────────────
+
+    it('Pass 1 — hypothesis displaces heuristic for the same component/family and absorbs its evidence', () => {
+      const heuristic = makeFinding({
+        id: 'finding:config:missing-secret:0',
+        title: "Missing Secret 'app-credentials' not found for pod",
+        confidence: 0.55,
+        affectedComponents: ['Pod/default/shared-pod'],
+        evidence: [
+          {
+            path: 'cluster-resources/pods/default/shared-pod.yaml',
+            note: 'Pod references secret app-credentials',
+            artifactType: 'kubernetes-resource',
+          },
+        ],
+      });
+      const hypothesis = makeFinding({
+        id: 'finding:hypothesis:missing-secret:0',
+        title:
+          "[Hypothesis] Missing Secret 'app-credentials' prevents startup (symptom: Pod/default/shared-pod)",
+        confidence: 0.8,
+        affectedComponents: ['Pod/default/shared-pod'],
+        evidence: [
+          {
+            path: 'cluster-resources/events/default.json',
+            note: 'FailedMount event says secret app-credentials not found',
+            artifactType: 'event',
+          },
+        ],
+      });
+
+      const result = __testOnlyPass1ComponentMerge([heuristic], [hypothesis]);
+
+      expect(result).toHaveLength(1);
+      expect(result[0]!.id).toBe('finding:hypothesis:missing-secret:0');
+      expect(result[0]!.evidence).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ note: 'Pod references secret app-credentials' }),
+          expect.objectContaining({ note: 'FailedMount event says secret app-credentials not found' }),
+        ]),
+      );
+    });
+
+    it('Pass 1 — AI wins over hypothesis for the same component/family and absorbs hypothesis evidence', () => {
+      const ai = makeFinding({
+        id: 'finding:ai:0',
+        title: "Missing Secret 'app-credentials' prevents startup",
+        confidence: 0.92,
+        affectedComponents: ['Pod/default/shared-pod'],
+        evidence: [
+          {
+            path: 'ai/context.txt',
+            note: 'AI correlated missing secret with startup failure',
+            artifactType: 'log',
+          },
+        ],
+      });
+      const hypothesis = makeFinding({
+        id: 'finding:hypothesis:missing-secret:1',
+        title:
+          "[Hypothesis] Missing Secret 'app-credentials' prevents startup (symptom: Pod/default/shared-pod)",
+        confidence: 0.81,
+        affectedComponents: ['Pod/default/shared-pod'],
+        evidence: [
+          {
+            path: 'cluster-resources/events/default.json',
+            note: 'FailedMount event says secret app-credentials not found',
+            artifactType: 'event',
+          },
+        ],
+      });
+
+      const result = __testOnlyPass1ComponentMerge([ai], [hypothesis]);
+
+      expect(result).toHaveLength(1);
+      expect(result[0]!.id).toBe('finding:ai:0');
+      expect(result[0]!.evidence).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ note: 'AI correlated missing secret with startup failure' }),
+          expect.objectContaining({ note: 'FailedMount event says secret app-credentials not found' }),
+        ]),
+      );
+    });
+
+    it('Pass 1 — competing hypothesis findings with the same component/family but different titles both survive', () => {
+      const hypothesisA = makeFinding({
+        id: 'finding:hypothesis:missing-secret:10',
+        title: "[Hypothesis] Missing Secret 'app-credentials' prevents startup (symptom: Pod/default/shared-pod)",
+        affectedComponents: ['Pod/default/shared-pod'],
+      });
+      const hypothesisB = makeFinding({
+        id: 'finding:hypothesis:missing-secret:11',
+        title: "[Hypothesis] Secret volume mount for 'app-credentials' is misconfigured (symptom: Pod/default/shared-pod)",
+        affectedComponents: ['Pod/default/shared-pod'],
+      });
+
+      const result = __testOnlyPass1ComponentMerge([], [hypothesisA, hypothesisB]);
+
+      expect(result).toHaveLength(2);
+      expect(result.map((finding) => finding.id)).toEqual(
+        expect.arrayContaining([
+          'finding:hypothesis:missing-secret:10',
+          'finding:hypothesis:missing-secret:11',
+        ]),
+      );
+    });
+
+    // ── Pass 2: Title-based dedup ─────────────────────────────────────────────
+
+    it('Pass 2 — keeps the higher-confidence finding when normalized titles match across components', () => {
+      const lowConfidence = makeFinding({
+        id: 'finding:heuristic:0',
+        title:
+          "[Hypothesis] Missing Secret 'shared-credentials' is absent from the namespace (symptom: Pod/default/pod-a)",
+        confidence: 0.6,
+        affectedComponents: ['Pod/default/pod-a'],
+      });
+      const highConfidence = makeFinding({
+        id: 'finding:heuristic:1',
+        title: "Missing Secret 'shared-credentials' is absent from the namespace",
+        confidence: 0.9,
+        affectedComponents: ['Pod/default/pod-b'],
+      });
+
+      const result = __testOnlyPass2TitleDedup([lowConfidence, highConfidence]);
+
+      expect(result).toHaveLength(1);
+      expect(result[0]!.id).toBe('finding:heuristic:1');
+      expect(result[0]!.affectedComponents).toContain('Pod/default/pod-b');
+    });
+
+    it('non-overlap — evidence absorbed in Pass 1 is preserved when Pass 2 selects that finding', () => {
+      const heuristic = makeFinding({
+        id: 'finding:config:missing-secret:2',
+        title: "Missing Secret 'shared-credentials' is absent from the namespace",
+        confidence: 0.55,
+        affectedComponents: ['Pod/default/pod-a'],
+        evidence: [
+          {
+            path: 'cluster-resources/pods/default/pod-a.yaml',
+            note: 'Pod A references secret shared-credentials',
+            artifactType: 'kubernetes-resource',
+          },
+        ],
+      });
+      const hypothesis = makeFinding({
+        id: 'finding:hypothesis:missing-secret:2',
+        title:
+          "[Hypothesis] Missing Secret 'shared-credentials' is absent from the namespace (symptom: Pod/default/pod-a)",
+        confidence: 0.8,
+        affectedComponents: ['Pod/default/pod-a'],
+        evidence: [
+          {
+            path: 'cluster-resources/events/default.json',
+            note: 'FailedMount event confirms shared-credentials is missing',
+            artifactType: 'event',
+          },
+        ],
+      });
+      const competingTitleDuplicate = makeFinding({
+        id: 'finding:ai:other-component',
+        title: "Missing Secret 'shared-credentials' is absent from the namespace",
+        confidence: 0.4,
+        affectedComponents: ['Pod/default/pod-b'],
+        evidence: [
+          {
+            path: 'cluster-resources/pods/default/pod-b.yaml',
+            note: 'Pod B also references the secret',
+            artifactType: 'kubernetes-resource',
+          },
+        ],
+      });
+
+      const pass1 = __testOnlyPass1ComponentMerge([heuristic], [hypothesis]);
+      const pass2 = __testOnlyPass2TitleDedup([...pass1, competingTitleDuplicate]);
+
+      expect(pass2).toHaveLength(1);
+      expect(pass2[0]!.id).toBe('finding:hypothesis:missing-secret:2');
+      expect(pass2[0]!.evidence).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ note: 'Pod A references secret shared-credentials' }),
+          expect.objectContaining({ note: 'FailedMount event confirms shared-credentials is missing' }),
+        ]),
+      );
+    });
 
     // ── Pass 1: Component-based merge ─────────────────────────────────────────
 
