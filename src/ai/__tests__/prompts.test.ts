@@ -396,6 +396,21 @@ describe('buildInvestigationPrompt — chunk formatting', () => {
     const { user } = buildInvestigationPrompt(seed, [chunk]);
     expect(user).toContain('```\nkind: Pod\n```');
   });
+
+  it('redacts sensitive values from chunk content before including it in the prompt', () => {
+    const seed = makeSeed('configuration', 'Investigate api-key: SUPER_SECRET_TOKEN_12345');
+    const chunk = makeChunk(
+      'chunk-1',
+      'cluster-resources/configmaps/default/app-config.yaml',
+      'api-key: SUPER_SECRET_TOKEN_12345\npassword=hunter2',
+    );
+    const { user } = buildInvestigationPrompt(seed, [chunk]);
+
+    expect(user).not.toContain('SUPER_SECRET_TOKEN_12345');
+    expect(user).not.toContain('hunter2');
+    expect(user).toContain('api-key: [REDACTED]');
+    expect(user).toContain('password=[REDACTED]');
+  });
 });
 
 // ---------------------------------------------------------------------------

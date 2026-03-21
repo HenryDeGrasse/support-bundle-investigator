@@ -62,6 +62,7 @@ import {
   completeTraceStep,
   completeTrace,
 } from './trace.js';
+import { sanitizeFindings, sanitizeFindingTree } from '../utils/sensitive-data.js';
 import type {
   ConfidenceStats,
   InvestigationTrace,
@@ -703,13 +704,16 @@ export async function analyzeBundlePipeline(
     }
   }
 
+  const sanitizedFindings = sanitizeFindings(investigationResult.findings);
+  const sanitizedFindingTree = sanitizeFindingTree(investigationResult.findingTree);
+
   const evidenceNodeCount = addInvestigationEvidenceNodes(
     graph,
-    investigationResult.findings,
+    sanitizedFindings,
   );
 
   // Add finding nodes to the investigation graph.
-  for (const finding of investigationResult.findings) {
+  for (const finding of sanitizedFindings) {
     graph.addNode({
       id: finding.id,
       type: 'finding',
@@ -723,7 +727,7 @@ export async function analyzeBundlePipeline(
 
   const derivedEvidenceNodeCount = ensureInvestigationEdgeEndpoints(
     graph,
-    investigationResult.findings,
+    sanitizedFindings,
     investigationResult.edges,
   );
 
@@ -735,7 +739,7 @@ export async function analyzeBundlePipeline(
   const investigateArtifactsProcessed =
     evidenceNodeCount +
     derivedEvidenceNodeCount +
-    investigationResult.findings.length +
+    sanitizedFindings.length +
     investigationResult.edges.length;
   completeTraceStep(trace, step8, investigateArtifactsProcessed);
 
@@ -744,7 +748,7 @@ export async function analyzeBundlePipeline(
     investigateStep.seedCount = investigationResult.metadata.seedCount;
     investigateStep.seedCategories = buildSeedCategoryBreakdown(investigationResult.seeds);
     investigateStep.retrievalStats = investigationResult.metadata.retrievalStats ?? zeroRetrievalStats();
-    investigateStep.confidenceStats = computeConfidenceStats(investigationResult.findings);
+    investigateStep.confidenceStats = computeConfidenceStats(sanitizedFindings);
     investigateStep.hypothesisStats = {
       generated: investigationResult.metadata.hypothesesGenerated,
       verified: investigationResult.metadata.hypothesesVerified,
@@ -773,7 +777,7 @@ export async function analyzeBundlePipeline(
       : 'cloud';
   const seedCategories = buildSeedCategoryBreakdown(investigationResult.seeds);
   const retrievalStats = investigationResult.metadata.retrievalStats ?? zeroRetrievalStats();
-  const confidenceStats = computeConfidenceStats(investigationResult.findings);
+  const confidenceStats = computeConfidenceStats(sanitizedFindings);
   const hypothesisStats = {
     generated: investigationResult.metadata.hypothesesGenerated,
     verified: investigationResult.metadata.hypothesesVerified,
@@ -792,7 +796,7 @@ export async function analyzeBundlePipeline(
     eventCount: events.length,
     logFileCount: logs.length,
     helmReleaseCount: helmReleases.length,
-    findingCount: investigationResult.findings.length,
+    findingCount: sanitizedFindings.length,
     rawFindingCount: investigationResult.metadata.rawFindingCount,
     finalFindingCount: investigationResult.metadata.finalFindingCount,
     aiMode,
@@ -819,8 +823,8 @@ export async function analyzeBundlePipeline(
     resources,
     events,
     logs,
-    findings: investigationResult.findings,
-    findingTree: investigationResult.findingTree,
+    findings: sanitizedFindings,
+    findingTree: sanitizedFindingTree,
     graph,
     trace,
     aiMode,

@@ -13,6 +13,7 @@
 
 import type { InvestigationSeed } from '../investigators/types.js';
 import type { IndexedChunk } from './chunk-indexer.js';
+import { sanitizeSensitiveText } from '../utils/sensitive-data.js';
 
 // ---------------------------------------------------------------------------
 // Playbook category
@@ -237,10 +238,10 @@ function formatChunk(chunk: IndexedChunk, index: number): string {
     `### Chunk ${index + 1}`,
     `Source: ${chunk.artifactId} (${category}, ${lineRange})`,
     `Chunk ID: ${chunk.id}`,
-    `Summary: ${chunk.summary}`,
+    `Summary: ${sanitizeSensitiveText(chunk.summary)}`,
     '',
     '```',
-    chunk.content,
+    sanitizeSensitiveText(chunk.content),
     '```',
   ].join('\n');
 }
@@ -319,8 +320,8 @@ export function buildSeedClusteringPrompt(seeds: InvestigationSeed[]): {
 } {
   const serialisedSeeds = seeds.map((s) => ({
     id: s.id,
-    hypothesis: s.hypothesis,
-    source: s.source,
+    hypothesis: sanitizeSensitiveText(s.hypothesis),
+    source: sanitizeSensitiveText(s.source),
     category: s.category,
     priority: s.priority,
   }));
@@ -392,7 +393,7 @@ export function buildInvestigationPrompt(
   const user = [
     '## Investigation Hypothesis',
     '',
-    seed.hypothesis,
+    sanitizeSensitiveText(seed.hypothesis),
     '',
     `Category: ${seed.category} (playbook: ${playbookCategory})`,
     `Seed ID: ${seed.id}`,
