@@ -1,0 +1,28 @@
+Reviewed:
+- `test/integration/__tests__/robustness.test.ts`
+- `src/ingestion/extractor.ts`
+- relevant pipeline/parser behavior exercised by the new tests
+
+What I verified
+- New robustness coverage exists for all requested cases:
+  - corrupt archive
+  - truncated archive
+  - empty archive
+  - missing expected files
+  - malformed YAML/JSON
+  - binary file in bundle
+- Tests build fixtures programmatically in temp dirs using `fs` + `tar.c(...)`
+- Assertions are sensible and match current graceful-degradation behavior
+- No production-code changes were needed for this step
+
+Checks run
+- `npx vitest run test/integration/__tests__/robustness.test.ts` ✅
+- `npm run lint` ✅
+- `npm run typecheck` ✅
+- `npm run unit` ✅
+
+Assessment
+- Step 11 is complete and correct.
+- The new integration suite meaningfully improves robustness confidence without destabilizing existing behavior.
+
+Verdict: approve

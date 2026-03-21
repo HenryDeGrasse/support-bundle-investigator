@@ -1,0 +1,35 @@
+{"t":373,"type":"message_end","role":"user"}
+{"t":1934,"type":"thinking_start"}
+{"t":5860,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":5894,"type":"tool_start","toolName":"bash","toolArgs":"git status --short test/integration/__tests__/robustness.tes…"}
+{"t":5894,"type":"tool_start","toolName":"read","toolArgs":"test/integration/__tests__/robustness.test.ts"}
+{"t":5894,"type":"tool_start","toolName":"grep","toolArgs":"test/integration/__tests__/robustness.test.ts"}
+{"t":5894,"type":"tool_start","toolName":"read","toolArgs":"src/ingestion/extractor.ts"}
+{"t":5894,"type":"tool_end","toolName":"bash"}
+{"t":5894,"type":"message_end","role":"toolResult"}
+{"t":5928,"type":"tool_end","toolName":"read"}
+{"t":5995,"type":"message_end","role":"toolResult"}
+{"t":6036,"type":"tool_end","toolName":"grep"}
+{"t":6070,"type":"message_end","role":"toolResult"}
+{"t":6136,"type":"tool_end","toolName":"read"}
+{"t":6169,"type":"message_end","role":"toolResult"}
+{"t":6203,"type":"turn_end","toolCount":4,"thinkingLength":400,"textLength":0}
+{"t":7965,"type":"thinking_start"}
+{"t":14163,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":14204,"type":"tool_start","toolName":"bash","toolArgs":"npx vitest run test/integration/__tests__/robustness.test.ts"}
+{"t":14204,"type":"tool_start","toolName":"bash","toolArgs":"npm run lint"}
+{"t":14204,"type":"tool_start","toolName":"bash","toolArgs":"npm run typecheck"}
+{"t":14204,"type":"tool_start","toolName":"bash","toolArgs":"npm run unit"}
+{"t":15407,"type":"tool_end","toolName":"bash"}
+{"t":15407,"type":"message_end","role":"toolResult"}
+{"t":17982,"type":"tool_end","toolName":"bash"}
+{"t":18017,"type":"message_end","role":"toolResult"}
+{"t":18017,"type":"tool_end","toolName":"bash"}
+{"t":18017,"type":"message_end","role":"toolResult"}
+{"t":18095,"type":"tool_end","toolName":"bash"}
+{"t":18130,"type":"message_end","role":"toolResult"}
+{"t":18164,"type":"turn_end","toolCount":8,"thinkingLength":828,"textLength":0}
+{"t":20308,"type":"thinking_start"}
+{"t":43228,"type":"message_end","role":"assistant","stopReason":"stop","textLength":892,"textPreview":"Reviewed: - `test/integration/__tests__/robustness.test.ts` - `src/ingestion/extractor.ts` - relevant pipeline/parser behavior exercised by the new tests What I verified - New robustness coverage exists for all requested cases: - corrupt archive - truncated archive - empty archive - missing expected files - malformed YAML/JSON - binary file in bundle - Tests build fixtures programmatically in temp…"}
+{"t":43263,"type":"turn_end","toolCount":8,"thinkingLength":2613,"textLength":892}
+{"t":43334,"type":"agent_end","messageCount":12,"toolCount":8,"thinkingLength":2613,"textLength":892}

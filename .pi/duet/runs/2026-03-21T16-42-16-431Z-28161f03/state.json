@@ -1,7 +1,7 @@
 {
   "version": 1,
   "phase": "plan_approved",
-  "updatedAt": "2026-03-21T19:36:14.992Z",
+  "updatedAt": "2026-03-21T19:41:22.890Z",
   "runId": "2026-03-21T16-42-16-431Z-28161f03",
   "handoffMode": "summary",
   "postPlanMode": "review",
@@ -72,8 +72,8 @@
   "round": 2,
   "resumeAction": "run",
   "activeSummary": {
-    "stepId": "step-9",
-    "stepTitle": "Add --debug CLI flag that emits enriched trace and provenance",
+    "stepId": "step-10",
+    "stepTitle": "Robustness: corrupt and partial bundle tests",
     "gateResults": [
       {
         "id": "lint",
@@ -261,5 +261,5 @@
       }
     ]
   },
-  "stepIndex": 10
+  "stepIndex": 11
 }
