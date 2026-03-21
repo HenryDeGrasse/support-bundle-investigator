@@ -14,11 +14,19 @@ export interface EvalDetail {
   detail: string;
 }
 
+export type EvalMode = 'heuristic' | 'ai';
+
 export interface ScenarioEvalResult {
   scenario: string;
+  displayName: string;
   pass: boolean;
   score: number;
   checks: EvalDetail[];
+  topFinding: string;
+  expectedPattern: string;
+  confidence: number;
+  evidenceCount: number;
+  mode: EvalMode;
 }
 
 export interface EvalReport {
@@ -38,10 +46,17 @@ function allFindingsText(findings: Finding[]): string {
     .join(' ');
 }
 
+function summarizeExpectedPattern(expectation: ScenarioExpectation): string {
+  return expectation.topFindingMustMatch
+    .map((pattern) => pattern.source)
+    .join(' || ');
+}
+
 export function evaluateScenario(
   scenarioName: string,
   expectation: ScenarioExpectation,
   findings: Finding[],
+  mode: EvalMode = 'heuristic',
 ): ScenarioEvalResult {
   const checks: EvalDetail[] = [];
   const top = findings[0];
@@ -141,9 +156,15 @@ export function evaluateScenario(
 
   return {
     scenario: scenarioName,
+    displayName: expectation.name,
     pass: checks.every((c) => c.pass),
     score,
     checks,
+    topFinding: top?.title ?? 'No findings produced',
+    expectedPattern: summarizeExpectedPattern(expectation),
+    confidence: top?.confidence ?? 0,
+    evidenceCount: findings.reduce((sum, finding) => sum + finding.evidence.length, 0),
+    mode,
   };
 }
 

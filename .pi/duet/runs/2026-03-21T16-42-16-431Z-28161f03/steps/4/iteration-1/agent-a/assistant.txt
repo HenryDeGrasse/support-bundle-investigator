@@ -1,0 +1,43 @@
+Reviewed:
+- `test/golden/evaluate.ts`
+- `test/golden/expectations.ts`
+- `test/golden/__tests__/golden-eval.test.ts`
+
+Changed:
+- Added `test/golden/scorecard.ts`
+  - exports `generateScorecard(report: EvalReport): string`
+  - renders:
+    - Markdown summary header
+    - Markdown table with columns:
+      `Scenario, Pass/Fail, Score%, Top Finding, Expected Pattern, Confidence, Evidence Count, Heuristic/AI`
+    - fenced JSON summary for machine-readable consumption
+- Extended `test/golden/evaluate.ts`
+  - enriched `ScenarioEvalResult` with scorecard-ready fields:
+    - `displayName`
+    - `topFinding`
+    - `expectedPattern`
+    - `confidence`
+    - `evidenceCount`
+    - `mode`
+  - kept existing eval behavior intact
+- Added `test/golden/__tests__/scorecard.test.ts`
+  - runs all scenarios in `GOLDEN_EXPECTATIONS`
+  - builds an `EvalReport` with `buildEvalReport`
+  - generates the scorecard
+  - asserts:
+    - markdown structure is present
+    - JSON summary block is parseable
+    - every scenario row is present
+    - `overallScore > 0.9`
+
+Checks run:
+- `npx vitest run test/golden/__tests__/scorecard.test.ts test/golden/__tests__/golden-eval.test.ts` ✅
+- `npm run lint` ✅
+- `npm run typecheck` ✅
+- `npm run unit` ✅
+
+Assessment:
+- Step 4 is implemented and passing.
+- The scorecard now provides both reviewer-friendly Markdown output and a structured JSON summary suitable for regression gating.
+
+Verdict: changes_made
