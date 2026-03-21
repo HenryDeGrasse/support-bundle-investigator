@@ -628,6 +628,57 @@
       "costCacheWrite": 0,
       "costTotal": 0.20289100000000002,
       "timestamp": "2026-03-21T19:41:16.649Z"
+    },
+    {
+      "phase": 11,
+      "role": "relay-a",
+      "round": 1,
+      "model": "openai-codex/gpt-5.4",
+      "inputTokens": 49089,
+      "outputTokens": 2826,
+      "cacheReadTokens": 963968,
+      "cacheWriteTokens": 0,
+      "totalTokens": 1015883,
+      "costInput": 0.12272250000000001,
+      "costOutput": 0.04239,
+      "costCacheRead": 0.24099199999999998,
+      "costCacheWrite": 0,
+      "costTotal": 0.4061045,
+      "timestamp": "2026-03-21T19:42:50.214Z"
+    },
+    {
+      "phase": 11,
+      "role": "relay-b",
+      "round": 2,
+      "model": "openai-codex/gpt-5.4",
+      "inputTokens": 27073,
+      "outputTokens": 829,
+      "cacheReadTokens": 676608,
+      "cacheWriteTokens": 0,
+      "totalTokens": 704510,
+      "costInput": 0.0676825,
+      "costOutput": 0.012435000000000002,
+      "costCacheRead": 0.169152,
+      "costCacheWrite": 0,
+      "costTotal": 0.24926949999999998,
+      "timestamp": "2026-03-21T19:43:19.357Z"
+    },
+    {
+      "phase": 11,
+      "role": "relay-a",
+      "round": 3,
+      "model": "openai-codex/gpt-5.4",
+      "inputTokens": 26107,
+      "outputTokens": 470,
+      "cacheReadTokens": 292096,
+      "cacheWriteTokens": 0,
+      "totalTokens": 318673,
+      "costInput": 0.0652675,
+      "costOutput": 0.00705,
+      "costCacheRead": 0.073024,
+      "costCacheWrite": 0,
+      "costTotal": 0.1453415,
+      "timestamp": "2026-03-21T19:43:53.769Z"
     }
   ]
 }

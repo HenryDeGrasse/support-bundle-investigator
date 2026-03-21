@@ -1,0 +1,38 @@
+Reviewed:
+- `test/integration/__tests__/robustness.test.ts`
+- `src/ingestion/extractor.ts`
+- relevant pipeline parse flow in `src/pipeline/analyze.ts`
+
+What I changed:
+- Extended `test/integration/__tests__/robustness.test.ts` with 3 new robustness/scale tests for Step 12:
+  1. **Oversized archive**
+     - creates a normal bundle whose uncompressed contents exceed 1 KB
+     - asserts `extractBundle(bundle, { maxSize: 1024 })` rejects with an `exceeds maxSize` error
+  2. **Large single file**
+     - creates a bundle with a single ~5 MB log file
+     - asserts the pipeline completes successfully and parses the log without crashing
+  3. **Many small files**
+     - creates a bundle with 525 tiny log files plus minimal analyzer/resource content
+     - asserts profiling/parsing complete and all log files are accounted for
+
+- Added a small helper in the same test file:
+  - `makeLogContent(sizeBytes)` for deterministic large log generation
+
+Notes:
+- I kept everything in the same robustness test file as requested.
+- No production code changes were needed; the extractor/pipeline already supported the needed behavior.
+
+Checks run:
+- `npx vitest run test/integration/__tests__/robustness.test.ts` ✅
+- `npm run typecheck` ✅
+- `npm run lint` ✅
+- `npm run unit` ✅
+
+Assessment:
+- Step 12 is implemented and green.
+- The new tests now cover:
+  - extractor size-guard enforcement
+  - large-file pipeline sanity
+  - many-file profiling/parsing resilience
+
+Verdict: changes_made

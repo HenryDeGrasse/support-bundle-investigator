@@ -144,6 +144,11 @@ spec:
       env: [unterminated
 `;
 
+function makeLogContent(sizeBytes: number): string {
+  const line = '2026-03-21T00:00:00Z INFO request handled successfully\n';
+  return line.repeat(Math.ceil(sizeBytes / line.length)).slice(0, sizeBytes);
+}
+
 afterEach(() => {
   for (const target of cleanupPaths) {
     fs.rmSync(target, { recursive: true, force: true });
@@ -243,6 +248,57 @@ describe('Robustness integration coverage', () => {
       expect(result.resources).toEqual([]);
       expect(result.events).toEqual([]);
       expect(result.logs).toEqual([]);
+    });
+  });
+
+  it('oversized archive: extractBundle rejects archives that exceed maxSize', async () => {
+    const bundlePath = await createBundle({
+      'analysis.json': makeAnalyzerJson(),
+      'cluster-resources/pods/logs/default/api/app.log': makeLogContent(2_048),
+    }, 'oversized.tar.gz');
+
+    await expect(extractBundle(bundlePath, { maxSize: 1_024 })).rejects.toThrow(
+      /exceeds maxSize/i,
+    );
+  });
+
+  it('large single file: pipeline completes for a bundle containing one 5MB log file', async () => {
+    const bundlePath = await createBundle({
+      'analysis.json': makeAnalyzerJson(),
+      'cluster-resources/pods/logs/default/api/app.log': makeLogContent(5 * 1024 * 1024),
+    }, 'large-log.tar.gz');
+
+    await withPipelineResult(bundlePath, (result) => {
+      expect(result.analyzerResults).toHaveLength(1);
+      expect(result.logs).toHaveLength(1);
+      expect(result.logs[0]?.lines.length).toBeGreaterThan(0);
+      expect(result.profile.logFileCount).toBe(1);
+      expect(Array.isArray(result.findings)).toBe(true);
+    });
+  });
+
+  it('many small files: profiling and parsing complete for 500+ tiny files', async () => {
+    const files: Record<string, string> = {
+      'analysis.json': makeAnalyzerJson(),
+      'cluster-resources/services/default/api.yaml': VALID_SERVICE_YAML,
+    };
+
+    for (let i = 0; i < 525; i++) {
+      files[`cluster-resources/pods/logs/default/app-pod/log-${i}.log`] =
+        `2026-03-21T00:00:${String(i % 60).padStart(2, '0')}Z INFO log file ${i}\n`;
+    }
+
+    const bundlePath = await createBundle(files, 'many-small-files.tar.gz');
+
+    await withPipelineResult(bundlePath, (result) => {
+      expect(result.analyzerResults).toHaveLength(1);
+      expect(result.profile.manifest.files).toHaveLength(527);
+      expect(result.profile.logFileCount).toBe(525);
+      expect(result.logs).toHaveLength(525);
+      expect(result.profile.resourceCount).toBe(1);
+      expect(result.resources).toHaveLength(1);
+      expect(result.resources[0]?.kind).toBe('Service');
+      expect(result.events).toEqual([]);
     });
   });
 });

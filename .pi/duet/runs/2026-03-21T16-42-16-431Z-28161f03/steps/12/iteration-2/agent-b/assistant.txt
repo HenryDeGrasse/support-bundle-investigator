@@ -1,0 +1,29 @@
+Reviewed:
+- `test/integration/__tests__/robustness.test.ts`
+- `src/ingestion/extractor.ts`
+- related pipeline behavior exercised by the new scale/guard tests
+
+What I changed
+- Strengthened the “many small files” assertion in `test/integration/__tests__/robustness.test.ts`:
+  - added an explicit manifest-file-count check (`527`) so the test verifies the bundle was fully profiled in addition to log parsing and resource parsing.
+  - also asserted `events` stays empty for that case.
+
+What I verified
+- Step 12 coverage now exists in the same robustness test file for:
+  - oversized archive rejected by `extractBundle(..., { maxSize })`
+  - large single-file bundle (~5 MB log) completing successfully
+  - many-small-files bundle (525 logs) profiling/parsing successfully
+- The extractor’s `maxSize` guard behavior matches the test expectation.
+- Full required checks pass.
+
+Checks run
+- `npx vitest run test/integration/__tests__/robustness.test.ts` ✅
+- `npm run lint` ✅
+- `npm run typecheck` ✅
+- `npm run unit` ✅
+
+Assessment
+- Step 12 is complete and correct.
+- I only made a small test improvement to make the scale coverage more explicit.
+
+Verdict: changes_made

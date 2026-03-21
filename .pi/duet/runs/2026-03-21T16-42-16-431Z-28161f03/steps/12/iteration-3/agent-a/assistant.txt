@@ -1,0 +1,24 @@
+Reviewed:
+- `test/integration/__tests__/robustness.test.ts`
+- `src/ingestion/extractor.ts`
+- the parse/profile flow exercised by these tests
+
+What I checked:
+- Oversized archive coverage exists and uses `extractBundle(..., { maxSize })`
+- Large single-file bundle coverage exists with a ~5 MB log
+- Many-small-files coverage exists with 525 tiny logs
+- The many-files case now also verifies full profiling via manifest file count and confirms no events were parsed
+- Required checks are green
+
+What I changed:
+- No code changes needed
+
+Assessment:
+- Step 12 is complete and correct.
+- The tests are in the requested file, exercise the intended resilience/scale paths, and all required checks pass.
+
+Checks run:
+- `npx vitest run test/integration/__tests__/robustness.test.ts` ✅
+- `npm run lint && npm run typecheck && npm run unit` ✅
+
+Verdict: approve
