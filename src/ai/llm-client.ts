@@ -37,6 +37,28 @@ export interface AIFindingResponse {
   rawResponse?: string;
 }
 
+/**
+ * Shared interface for AI investigation clients.
+ *
+ * Implemented by the real {@link LLMClient} and by wrappers such as
+ * `ReplayableLLMClient` that intercept investigation calls.
+ */
+export interface InvestigationLLMClient extends HydeLLMClient {
+  investigateSeed(
+    systemPrompt: string,
+    userPrompt: string,
+  ): Promise<AIFindingResponse>;
+}
+
+/**
+ * Optional extension point for clients that need to know which seed is about
+ * to be investigated before `investigateSeed()` is called.
+ */
+export interface SeedAwareInvestigationLLMClient extends InvestigationLLMClient {
+  setSeedContext(seedId: string, seedCategory: string): void;
+  clearSeedContext?(): void;
+}
+
 // ---------------------------------------------------------------------------
 // LLMClient
 // ---------------------------------------------------------------------------
@@ -55,7 +77,7 @@ export interface AIFindingResponse {
  * backends via the `llmUrl` config field. Local backends use an OpenAI-
  * compatible API, so the same client works for both.
  */
-export class LLMClient implements HydeLLMClient {
+export class LLMClient implements InvestigationLLMClient {
   private readonly client: OpenAI;
   private readonly model: string;
 
@@ -65,6 +87,10 @@ export class LLMClient implements HydeLLMClient {
       baseURL: config.llmUrl,
     });
     this.model = config.model;
+  }
+
+  getModel(): string {
+    return this.model;
   }
 
   /**

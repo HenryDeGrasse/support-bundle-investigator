@@ -74,6 +74,10 @@ vi.mock('../../ai/index.js', () => ({
   buildChunkIndex: vi.fn(),
   LexicalSearchIndex: vi.fn(),
   LLMClient: vi.fn(),
+  ReplayableLLMClient: vi.fn(),
+  CassetteRecorder: vi.fn(),
+  defaultSeedResolver: vi.fn(),
+  getRecorderMode: vi.fn(),
   EmbeddingClient: vi.fn(),
   createEmbeddingClient: vi.fn(),
   VectorStore: vi.fn(),
@@ -93,6 +97,10 @@ import {
   buildChunkIndex,
   LexicalSearchIndex,
   LLMClient,
+  ReplayableLLMClient,
+  CassetteRecorder,
+  defaultSeedResolver,
+  getRecorderMode,
   EmbeddingClient,
   createEmbeddingClient,
   VectorStore,
@@ -208,8 +216,39 @@ beforeEach(() => {
   vi.mocked(LexicalSearchIndex).mockImplementation(() => mockLexInstance as unknown as InstanceType<typeof LexicalSearchIndex>);
 
   // LLMClient mock instance
-  const mockLLMInstance = { investigateSeed: vi.fn().mockResolvedValue({ findings: [] }) };
+  const mockLLMInstance = {
+    investigateSeed: vi.fn().mockResolvedValue({ findings: [] }),
+    generateText: vi.fn().mockResolvedValue(''),
+    getModel: vi.fn().mockReturnValue('gpt-4o'),
+  };
   vi.mocked(LLMClient).mockImplementation(() => mockLLMInstance as unknown as InstanceType<typeof LLMClient>);
+
+  vi.mocked(getRecorderMode).mockReturnValue('live');
+  vi.mocked(defaultSeedResolver).mockImplementation(() => ({
+    seedId: 'seed:default:0',
+    seedCategory: 'kubernetes',
+  }));
+
+  const mockReplayableLLMInstance = {
+    investigateSeed: vi.fn().mockResolvedValue({ findings: [] }),
+    generateText: vi.fn().mockResolvedValue(''),
+    setSeedContext: vi.fn(),
+    clearSeedContext: vi.fn(),
+  };
+  vi.mocked(ReplayableLLMClient).mockImplementation(
+    () => mockReplayableLLMInstance as unknown as InstanceType<typeof ReplayableLLMClient>,
+  );
+
+  const mockCassetteRecorderInstance = {
+    mode: 'live' as const,
+    load: vi.fn().mockResolvedValue(undefined),
+    flush: vi.fn().mockResolvedValue(undefined),
+  };
+  (
+    CassetteRecorder as unknown as {
+      mockImplementation: (impl: (...args: unknown[]) => unknown) => void;
+    }
+  ).mockImplementation(() => mockCassetteRecorderInstance);
 
   // EmbeddingClient mock instance (kept for backward compatibility)
   const mockEmbeddingInstance = {
@@ -410,6 +449,93 @@ describe('analyzeBundlePipeline — AI conditional path', () => {
     const aiStep = result.trace.steps.find((s) => s.name === 'ai-index');
     expect(aiStep).toBeDefined();
     expect(aiStep?.completedAt).toBeDefined();
+  });
+
+  it('loads replay cassettes, wraps the LLM client, and skips embedding network setup in replay mode', async () => {
+    vi.mocked(loadAIConfig).mockReturnValue({
+      provider: 'openai',
+      apiKey: 'replay',
+      model: 'gpt-4o',
+      embeddingModel: 'text-embedding-3-small',
+      embeddingBackend: 'local',
+      embeddingUrl: 'http://localhost:8080',
+      llmBackend: 'openai',
+      llmUrl: 'https://api.openai.com/v1',
+      tokenBudget: 100000,
+      enabled: true,
+    });
+    vi.mocked(isAIEnabled).mockReturnValue(true);
+    vi.mocked(buildChunkIndex).mockReturnValue([]);
+    vi.mocked(getRecorderMode).mockReturnValue('replay');
+
+    const mockRecorder = {
+      mode: 'replay' as const,
+      load: vi.fn().mockResolvedValue(undefined),
+      flush: vi.fn().mockResolvedValue(undefined),
+    };
+    (
+      CassetteRecorder as unknown as {
+        mockImplementation: (impl: (...args: unknown[]) => unknown) => void;
+      }
+    ).mockImplementation(() => mockRecorder);
+
+    const mockReplayable = {
+      investigateSeed: vi.fn().mockResolvedValue({ findings: [] }),
+      generateText: vi.fn().mockResolvedValue(''),
+      setSeedContext: vi.fn(),
+      clearSeedContext: vi.fn(),
+    };
+    vi.mocked(ReplayableLLMClient).mockImplementation(
+      () => mockReplayable as unknown as InstanceType<typeof ReplayableLLMClient>,
+    );
+
+    await analyzeBundlePipeline('/fake/bundle.tar.gz', { outputDir: '/tmp/sbi-output' });
+
+    expect(CassetteRecorder).toHaveBeenCalledWith('replay', '/tmp/sbi-output/cassettes');
+    expect(mockRecorder.load).toHaveBeenCalledTimes(1);
+    expect(mockRecorder.flush).not.toHaveBeenCalled();
+    expect(ReplayableLLMClient).toHaveBeenCalledTimes(1);
+    expect(createEmbeddingClient).not.toHaveBeenCalled();
+    expect(runInvestigation).toHaveBeenCalled();
+    expect(vi.mocked(runInvestigation).mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({ llmClient: mockReplayable }),
+    );
+  });
+
+  it('flushes recorded cassettes and respects PipelineOptions.cassetteDir', async () => {
+    vi.mocked(loadAIConfig).mockReturnValue({
+      provider: 'openai',
+      apiKey: 'sk-test',
+      model: 'gpt-4o',
+      embeddingModel: 'text-embedding-3-small',
+      embeddingBackend: 'none',
+      embeddingUrl: 'http://localhost:8080',
+      llmBackend: 'openai',
+      llmUrl: 'https://api.openai.com/v1',
+      tokenBudget: 100000,
+      enabled: true,
+    });
+    vi.mocked(isAIEnabled).mockReturnValue(true);
+    vi.mocked(buildChunkIndex).mockReturnValue([]);
+    vi.mocked(getRecorderMode).mockReturnValue('record');
+
+    const mockRecorder = {
+      mode: 'record' as const,
+      load: vi.fn().mockResolvedValue(undefined),
+      flush: vi.fn().mockResolvedValue(undefined),
+    };
+    (
+      CassetteRecorder as unknown as {
+        mockImplementation: (impl: (...args: unknown[]) => unknown) => void;
+      }
+    ).mockImplementation(() => mockRecorder);
+
+    await analyzeBundlePipeline('/fake/bundle.tar.gz', { cassetteDir: '/tmp/explicit-cassettes' });
+
+    expect(CassetteRecorder).toHaveBeenCalledWith('record', '/tmp/explicit-cassettes');
+    expect(mockRecorder.load).not.toHaveBeenCalled();
+    expect(mockRecorder.flush).toHaveBeenCalledTimes(1);
+    expect(ReplayableLLMClient).toHaveBeenCalledTimes(1);
   });
 
   // ── Graceful fallback when AI setup throws ───────────────────────────────

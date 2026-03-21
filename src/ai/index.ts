@@ -19,7 +19,13 @@ export {
 } from './prompts.js';
 export type { PlaybookCategory } from './prompts.js';
 export { LLMClient } from './llm-client.js';
-export type { AIFindingResponse } from './llm-client.js';
+export type {
+  AIFindingResponse,
+  InvestigationLLMClient,
+  SeedAwareInvestigationLLMClient,
+} from './llm-client.js';
+export { ReplayableLLMClient, defaultSeedResolver } from './replayable-llm-client.js';
+export type { SeedIdentity } from './replayable-llm-client.js';
 export { EmbeddingClient } from './embeddings.js';
 export type { EmbeddingClientInterface } from './embeddings.js';
 export { LocalEmbeddingClient, createEmbeddingClient } from './local-embeddings.js';

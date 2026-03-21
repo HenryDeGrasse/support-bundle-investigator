@@ -21,6 +21,8 @@
 //   SBI_EMBEDDING_URL      — Local embedding endpoint (default: http://localhost:8080)
 //                            Used when SBI_EMBEDDING_BACKEND=local
 
+import { getRecorderMode } from './recorder.js';
+
 export type AIProvider = 'openai' | 'none';
 
 /**
@@ -151,6 +153,7 @@ export function loadAIConfig(overrides: LoadAIConfigOverrides = {}): AIConfig {
   const embeddingBackend = resolveEmbeddingBackend(process.env['SBI_EMBEDDING_BACKEND']);
   const embeddingUrl = process.env['SBI_EMBEDDING_URL'] ?? 'http://localhost:8080';
   const requestedProvider = resolveRequestedProvider(aiProvider);
+  const recorderMode = getRecorderMode();
 
   // Resolve LLM URL: explicit env var > backend-specific default
   const llmUrlEnv = process.env['SBI_LLM_URL'] ?? '';
@@ -173,13 +176,19 @@ export function loadAIConfig(overrides: LoadAIConfigOverrides = {}): AIConfig {
   const enabled =
     requestedProvider === 'openai' &&
     !noAi &&
-    (hasKey || llmBackend === 'local');
+    (hasKey || llmBackend === 'local' || recorderMode === 'replay');
 
   const provider: AIProvider = enabled ? 'openai' : 'none';
 
-  // For local backends without an explicit key, use a placeholder so the
-  // OpenAI client constructor doesn't throw.
-  const effectiveApiKey = hasKey ? apiKey : (llmBackend === 'local' ? 'local' : '');
+  // For local backends or cassette replay without an explicit key, use a
+  // placeholder so the OpenAI client constructor doesn't throw.
+  const effectiveApiKey = hasKey
+    ? apiKey
+    : recorderMode === 'replay'
+      ? 'replay'
+      : llmBackend === 'local'
+        ? 'local'
+        : '';
 
   return {
     provider,

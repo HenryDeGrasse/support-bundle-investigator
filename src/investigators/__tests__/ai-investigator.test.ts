@@ -2465,4 +2465,31 @@ describe('affectedComponents normalization (7.3)', () => {
     expect(result.findings[0]!.affectedComponents).toContain('Pod/default/app-pod');
     expect(result.findings[0]!.affectedComponents).toContain('Secret/default/app-secret');
   });
+
+  it('sets per-seed context on seed-aware LLM clients before investigation calls', async () => {
+    const setSeedContext = vi.fn();
+    const clearSeedContext = vi.fn();
+    const investigateSeed = vi.fn().mockResolvedValue({ findings: [] });
+    const deps: AIInvestigatorDeps = {
+      llmClient: {
+        setSeedContext,
+        clearSeedContext,
+        investigateSeed,
+      } as unknown as AIInvestigatorDeps['llmClient'],
+      chunkIndex: [],
+      resourceGraph: { nodes: new Map(), edges: [] },
+      lexicalIndex: {
+        build: vi.fn(),
+        search: vi.fn().mockReturnValue([]),
+        extractQueryIdentifiers: vi.fn().mockReturnValue([]),
+      } as unknown as AIInvestigatorDeps['lexicalIndex'],
+    };
+
+    const seeds = [makeSeed('seed:k8s:context', 'kubernetes', 'Pod is crashing')];
+    await investigateWithAI(makeContext(), seeds, deps);
+
+    expect(setSeedContext).toHaveBeenCalledWith('seed:k8s:context', 'kubernetes');
+    expect(clearSeedContext).toHaveBeenCalledTimes(1);
+    expect(investigateSeed).toHaveBeenCalledTimes(1);
+  });
 });

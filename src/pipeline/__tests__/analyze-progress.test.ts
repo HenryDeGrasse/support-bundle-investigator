@@ -67,6 +67,10 @@ vi.mock('../../ai/index.js', () => ({
   buildChunkIndex: vi.fn(),
   LexicalSearchIndex: vi.fn(),
   LLMClient: vi.fn(),
+  ReplayableLLMClient: vi.fn(),
+  CassetteRecorder: vi.fn(),
+  defaultSeedResolver: vi.fn(),
+  getRecorderMode: vi.fn(),
   EmbeddingClient: vi.fn(),
   createEmbeddingClient: vi.fn(),
   VectorStore: vi.fn(),
@@ -88,6 +92,10 @@ import {
   buildChunkIndex,
   LexicalSearchIndex,
   LLMClient,
+  ReplayableLLMClient,
+  CassetteRecorder,
+  defaultSeedResolver,
+  getRecorderMode,
   EmbeddingClient,
   createEmbeddingClient,
   VectorStore,
@@ -210,10 +218,41 @@ beforeEach(() => {
   vi.mocked(LexicalSearchIndex).mockImplementation(
     () => mockLexInstance as unknown as InstanceType<typeof LexicalSearchIndex>,
   );
-  const mockLLMInstance = { investigateSeed: vi.fn().mockResolvedValue({ findings: [] }) };
+  const mockLLMInstance = {
+    investigateSeed: vi.fn().mockResolvedValue({ findings: [] }),
+    generateText: vi.fn().mockResolvedValue(''),
+    getModel: vi.fn().mockReturnValue('gpt-4o'),
+  };
   vi.mocked(LLMClient).mockImplementation(
     () => mockLLMInstance as unknown as InstanceType<typeof LLMClient>,
   );
+
+  vi.mocked(getRecorderMode).mockReturnValue('live');
+  vi.mocked(defaultSeedResolver).mockImplementation(() => ({
+    seedId: 'seed:default:0',
+    seedCategory: 'kubernetes',
+  }));
+
+  const mockReplayableLLMInstance = {
+    investigateSeed: vi.fn().mockResolvedValue({ findings: [] }),
+    generateText: vi.fn().mockResolvedValue(''),
+    setSeedContext: vi.fn(),
+    clearSeedContext: vi.fn(),
+  };
+  vi.mocked(ReplayableLLMClient).mockImplementation(
+    () => mockReplayableLLMInstance as unknown as InstanceType<typeof ReplayableLLMClient>,
+  );
+
+  const mockCassetteRecorderInstance = {
+    mode: 'live' as const,
+    load: vi.fn().mockResolvedValue(undefined),
+    flush: vi.fn().mockResolvedValue(undefined),
+  };
+  (
+    CassetteRecorder as unknown as {
+      mockImplementation: (impl: (...args: unknown[]) => unknown) => void;
+    }
+  ).mockImplementation(() => mockCassetteRecorderInstance);
 
   const mockEmbeddingInstance = {
     embed: vi.fn().mockResolvedValue([]),

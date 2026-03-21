@@ -10,12 +10,16 @@ function withEnv(
   vars: Record<string, string | undefined>,
   fn: () => void,
 ): void {
+  const managedVars: Record<string, string | undefined> = {
+    SBI_AI_MODE: undefined,
+    ...vars,
+  };
   const originals: Record<string, string | undefined> = {};
-  for (const key of Object.keys(vars)) {
+  for (const key of Object.keys(managedVars)) {
     originals[key] = process.env[key];
   }
   try {
-    for (const [key, value] of Object.entries(vars)) {
+    for (const [key, value] of Object.entries(managedVars)) {
       if (value === undefined) {
         delete process.env[key];
       } else {
@@ -189,6 +193,31 @@ describe('loadAIConfig()', () => {
 
   it('disables AI when both key is missing and noAi is true', () => {
     withEnv({ OPENAI_API_KEY: undefined }, () => {
+      const config = loadAIConfig({ noAi: true });
+      expect(config.enabled).toBe(false);
+      expect(config.provider).toBe('none');
+    });
+  });
+
+  it('enables AI in replay mode without a real API key', () => {
+    withEnv({ OPENAI_API_KEY: undefined, SBI_AI_MODE: 'replay' }, () => {
+      const config = loadAIConfig();
+      expect(config.enabled).toBe(true);
+      expect(config.provider).toBe('openai');
+      expect(config.apiKey).toBe('replay');
+    });
+  });
+
+  it('keeps AI disabled in live mode when no API key is present', () => {
+    withEnv({ OPENAI_API_KEY: undefined, SBI_AI_MODE: 'live' }, () => {
+      const config = loadAIConfig();
+      expect(config.enabled).toBe(false);
+      expect(config.provider).toBe('none');
+    });
+  });
+
+  it('keeps replay mode disabled when noAi is true', () => {
+    withEnv({ OPENAI_API_KEY: undefined, SBI_AI_MODE: 'replay' }, () => {
       const config = loadAIConfig({ noAi: true });
       expect(config.enabled).toBe(false);
       expect(config.provider).toBe('none');

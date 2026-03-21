@@ -16,7 +16,10 @@
 
 import type { Finding, Evidence, GraphEdge } from '../types/index.js';
 import type { InvestigatorContext, InvestigatorResult, InvestigationSeed } from './types.js';
-import type { LLMClient } from '../ai/llm-client.js';
+import type {
+  InvestigationLLMClient,
+  SeedAwareInvestigationLLMClient,
+} from '../ai/llm-client.js';
 import type { IndexedChunk } from '../ai/chunk-indexer.js';
 import type { ResourceRelationshipGraph } from '../graph/resource-graph.js';
 import type { LexicalSearchIndex } from '../ai/lexical-search.js';
@@ -137,7 +140,7 @@ export const DEFAULT_TOKEN_BUDGET = 100_000;
  */
 export interface AIInvestigatorDeps {
   /** LLM client for structured investigation calls. */
-  llmClient: LLMClient;
+  llmClient: InvestigationLLMClient;
   /** Pre-built flat chunk index from `buildChunkIndex`. */
   chunkIndex: IndexedChunk[];
   /** Pre-built K8s resource relationship graph (backward-compat adapter). */
@@ -955,7 +958,16 @@ export async function investigateWithAI(
 
       // ── Step 4 + 5: Build prompt and call LLM ─────────────────────────────
       const { system, user } = buildInvestigationPrompt(seed, mergedChunks);
-      const response = await llmClient.investigateSeed(system, user);
+      const seedAwareClient = llmClient as Partial<SeedAwareInvestigationLLMClient>;
+      seedAwareClient.setSeedContext?.(seed.id, seed.category);
+
+      let response;
+      try {
+        response = await llmClient.investigateSeed(system, user);
+      } finally {
+        seedAwareClient.clearSeedContext?.();
+      }
+
       const validatedFindings = validateAIFindings(response.findings);
 
       // ── Step 6: Convert and accumulate ────────────────────────────────────

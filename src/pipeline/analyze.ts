@@ -33,8 +33,25 @@ import type {
 import type { LogFile } from '../parsers/index.js';
 import { runInvestigation } from '../investigators/index.js';
 import type { AIInvestigatorDeps } from '../investigators/index.js';
-import { loadAIConfig, isAIEnabled, buildChunkIndex, LexicalSearchIndex, LLMClient, createEmbeddingClient, VectorStore, lateChunkEmbed } from '../ai/index.js';
-import type { EmbeddingClientInterface, LateChunkEmbeddingClient } from '../ai/index.js';
+import {
+  loadAIConfig,
+  isAIEnabled,
+  buildChunkIndex,
+  LexicalSearchIndex,
+  LLMClient,
+  ReplayableLLMClient,
+  CassetteRecorder,
+  defaultSeedResolver,
+  getRecorderMode,
+  createEmbeddingClient,
+  VectorStore,
+  lateChunkEmbed,
+} from '../ai/index.js';
+import type {
+  EmbeddingClientInterface,
+  InvestigationLLMClient,
+  LateChunkEmbeddingClient,
+} from '../ai/index.js';
 import {
   createTrace,
   startTraceStep,
@@ -67,6 +84,8 @@ export interface PipelineOptions {
   trace?: boolean;
   /** When true, AI features are disabled regardless of API key presence. */
   noAi?: boolean;
+  /** Optional explicit cassette directory override for AI record/replay mode. */
+  cassetteDir?: string;
   /** Optional callback invoked when each pipeline step starts and completes. */
   onProgress?: (event: PipelineProgressEvent) => void;
 }
@@ -108,6 +127,24 @@ function log(message: string, verbose: boolean): void {
 
 function emitProgress(options: PipelineOptions, event: PipelineProgressEvent): void {
   options.onProgress?.(event);
+}
+
+function resolveCassetteDir(options: PipelineOptions): string {
+  const explicit = options.cassetteDir?.trim();
+  if (explicit !== undefined && explicit.length > 0) {
+    return path.resolve(explicit);
+  }
+
+  const envOverride = process.env['SBI_CASSETTE_DIR']?.trim();
+  if (envOverride !== undefined && envOverride.length > 0) {
+    return path.resolve(envOverride);
+  }
+
+  if (options.outputDir !== undefined && options.outputDir.trim().length > 0) {
+    return path.resolve(options.outputDir, 'cassettes');
+  }
+
+  return path.resolve(os.tmpdir(), 'sbi-cassettes');
 }
 
 function addInvestigationEvidenceNode(
@@ -334,8 +371,10 @@ export async function analyzeBundlePipeline(
 
   // ── 7. Build AI chunk index and lexical index (optional, AI-gated) ────────
   let aiDeps: AIInvestigatorDeps | undefined;
+  let cassetteRecorder: CassetteRecorder | undefined;
 
   const aiConfig = loadAIConfig({ noAi: options.noAi });
+  const recorderMode = getRecorderMode();
   if (isAIEnabled(aiConfig)) {
     const stepAI = startTraceStep(trace, 'ai-index');
     emitProgress(options, { step: 'ai-index', status: 'started' });
@@ -358,7 +397,20 @@ export async function analyzeBundlePipeline(
 
       const lexicalIndex = new LexicalSearchIndex();
       lexicalIndex.build(chunks);
-      const llmClient = new LLMClient(aiConfig);
+
+      const rawLlmClient = new LLMClient(aiConfig);
+      let llmClient: InvestigationLLMClient = rawLlmClient;
+      if (recorderMode === 'record' || recorderMode === 'replay') {
+        cassetteRecorder = new CassetteRecorder(recorderMode, resolveCassetteDir(options));
+        if (recorderMode === 'replay') {
+          await cassetteRecorder.load();
+        }
+        llmClient = new ReplayableLLMClient(
+          rawLlmClient,
+          cassetteRecorder,
+          defaultSeedResolver,
+        );
+      }
 
       // ── Semantic index (optional expansion layer) ──────────────────────────
       // Uses createEmbeddingClient to select the right backend (local TEI/Ollama
@@ -370,7 +422,14 @@ export async function analyzeBundlePipeline(
       let vectorStore: VectorStore | undefined;
 
       try {
-        embeddingClient = createEmbeddingClient(aiConfig);
+        // Replay mode must remain network-free: cassette-backed LLM responses are
+        // allowed, but semantic embedding calls must not hit local or remote
+        // services. Fall back to graph + lexical retrieval only.
+        if (recorderMode === 'replay') {
+          log('Semantic index skipped in replay mode', verbose);
+        } else {
+          embeddingClient = createEmbeddingClient(aiConfig);
+        }
         if (embeddingClient !== undefined) {
           // Determine whether the client supports late chunking (TEI token-level)
           const supportsLateChunking =
@@ -446,7 +505,7 @@ export async function analyzeBundlePipeline(
             log('Semantic index skipped: no valid embeddings returned', verbose);
             embeddingClient = undefined;
           }
-        } else {
+        } else if (recorderMode !== 'replay') {
           log('Semantic index skipped: no embedding backend configured', verbose);
         }
       } catch (embeddingError) {
@@ -560,19 +619,26 @@ export async function analyzeBundlePipeline(
       }
     : undefined;
 
-  const investigationResult = await runInvestigation(
-    {
-      analyzerResults,
-      resources,
-      events,
-      logs,
-      profile,
-      resourceSourceFiles,
-      helmReleases,
-    },
-    aiDeps,
-    seedProgress,
-  );
+  let investigationResult: Awaited<ReturnType<typeof runInvestigation>>;
+  try {
+    investigationResult = await runInvestigation(
+      {
+        analyzerResults,
+        resources,
+        events,
+        logs,
+        profile,
+        resourceSourceFiles,
+        helmReleases,
+      },
+      aiDeps,
+      seedProgress,
+    );
+  } finally {
+    if (cassetteRecorder?.mode === 'record') {
+      await cassetteRecorder.flush();
+    }
+  }
 
   const evidenceNodeCount = addInvestigationEvidenceNodes(
     graph,
