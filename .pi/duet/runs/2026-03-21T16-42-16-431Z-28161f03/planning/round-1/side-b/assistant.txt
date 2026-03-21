@@ -1,0 +1,19 @@
+Mostly workable, but I’d request one revision before implementation.
+
+The plan lines up with the repo in most areas:
+- golden evals are in `test/golden/`
+- trace types are in `src/pipeline/trace.ts`
+- reporting is in `src/reporters/`
+- robustness tests fit `test/integration/`
+- recorder primitives already exist in `src/ai/recorder.ts`
+
+The one real blocker is the AI cassette piece.
+
+Non-blocking suggestions:
+- For the Helm scenario, don’t rely on `cluster-resources/helm/...` unless you also adjust classification; current classifier only marks paths with a `helm` segment outside the `cluster-resources` fast path as `helm-release` (`src/ingestion/classifier.ts`). Put Helm fixtures under a top-level `helm/` path or explicitly update classification.
+- The `--debug` flag needs to be added in `src/cli/cli.ts`, not `src/cli/runner.ts`; `runner.ts` only consumes `parseArgs()`.
+- For the Helm scenario expectations, be careful not to make the heuristic golden suite depend on Helm metadata unless you also add actual heuristic consumption of parsed Helm releases; today Helm data is parsed/indexed but not used by the heuristic investigators.
+
+Verdict: changes_requested
+Blocking issues:
+- Step 5 assumes replay cassettes can drive the existing AI path end-to-end, but that plumbing does not exist today. `src/ai/recorder.ts` defines `CassetteRecorder`, yet `src/pipeline/analyze.ts` constructs a plain `new LLMClient(aiConfig)` and `src/investigators/ai-investigator.ts` calls `llmClient.investigateSeed(...)` directly with no recorder/replay integration. As written, adding only a replay test and fixture cassettes is not a workable path; the plan needs an explicit implementation step to wire cassette replay/record into the AI execution path (likely via `LLMClient` or an injected wrapper) before the cassette eval can be end-to-end.

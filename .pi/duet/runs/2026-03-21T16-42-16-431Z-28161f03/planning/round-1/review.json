@@ -1,0 +1,6 @@
+{
+  "verdict": "changes_requested",
+  "blockingIssues": [
+    "Step 5 assumes replay cassettes can drive the existing AI path end-to-end, but that plumbing does not exist today. `src/ai/recorder.ts` defines `CassetteRecorder`, yet `src/pipeline/analyze.ts` constructs a plain `new LLMClient(aiConfig)` and `src/investigators/ai-investigator.ts` calls `llmClient.investigateSeed(...)` directly with no recorder/replay integration. As written, adding only a replay test and fixture cassettes is not a workable path; the plan needs an explicit implementation step to wire cassette replay/record into the AI execution path (likely via `LLMClient` or an injected wrapper) before the cassette eval can be end-to-end."
+  ]
+}

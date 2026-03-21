@@ -1,0 +1,34 @@
+{
+  "stepId": "step-1",
+  "round": 2,
+  "gates": [
+    {
+      "checkId": "lint",
+      "cmd": "npm run lint",
+      "exitCode": 0,
+      "passed": true,
+      "stdoutPath": "/Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/.pi/duet/runs/2026-03-21T16-42-16-431Z-28161f03/steps/1/iteration-2/controller/outputs/lint.stdout.txt",
+      "stderrPath": "/Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/.pi/duet/runs/2026-03-21T16-42-16-431Z-28161f03/steps/1/iteration-2/controller/outputs/lint.stderr.txt",
+      "truncatedPreview": "> support-bundle-investigator@0.1.0 lint\n> eslint \"src/**/*.ts\" \"src/**/*.tsx\" \"test/**/*.ts\" --max-warnings 0"
+    },
+    {
+      "checkId": "typecheck",
+      "cmd": "npm run typecheck",
+      "exitCode": 0,
+      "passed": true,
+      "stdoutPath": "/Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/.pi/duet/runs/2026-03-21T16-42-16-431Z-28161f03/steps/1/iteration-2/controller/outputs/typecheck.stdout.txt",
+      "stderrPath": "/Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/.pi/duet/runs/2026-03-21T16-42-16-431Z-28161f03/steps/1/iteration-2/controller/outputs/typecheck.stderr.txt",
+      "truncatedPreview": "> support-bundle-investigator@0.1.0 typecheck\n> tsc --noEmit"
+    },
+    {
+      "checkId": "unit",
+      "cmd": "npm test",
+      "exitCode": 0,
+      "passed": true,
+      "stdoutPath": "/Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/.pi/duet/runs/2026-03-21T16-42-16-431Z-28161f03/steps/1/iteration-2/controller/outputs/unit.stdout.txt",
+      "stderrPath": "/Users/henrydegrasse/Development/GauntletAi/HPP/Replicated/.pi/duet/runs/2026-03-21T16-42-16-431Z-28161f03/steps/1/iteration-2/controller/outputs/unit.stderr.txt",
+      "truncatedPreview": "> support-bundle-investigator@0.1.0 test\n> vitest run\n\n\n RUN  v2.1.9 /Users/henrydegrasse/Development/GauntletAi/HPP/Replicated\n\n ✓ src/investigators/__tests__/hypothesis-ranker.test.ts (80 tests) 5ms\n ✓ src/ai/__tests__/lexical-search.test.ts (52 tests) 13ms\n ✓ src/investigators/__tests__/config-investigator.test.ts (71 tests) 7ms\n ✓ src/investigators/__tests__/hypothesis-generator.test.ts (105 tests) 11ms\n ✓ src/reporters/__tests__/spec-recommender.test.ts (62 tests) 8ms\n ✓ src/investigators/__tests__/hypothesis-ranking-integration.test.ts (59 tests) 8ms\n ✓ src/investigators/__tests__/hypothesis-evidence-collector.test.ts (139 tests) 18ms\n ✓ src/graph/__tests__/diagnostic-graph.test.ts (84 tests) 21ms\n ✓ src/investigators/__tests__/verifier.test.ts (73 tests) 9ms\n ✓ src/investigators/__tests__/differential-diagnosis.test.ts (70 tests) 5ms\n ✓ src/investigators/__tests__/kubernetes-investigator.test.ts (163 tests) 17ms\n ✓ test/fixtures/__tests__/fixtures.test.ts (84 tests) 84ms\n ✓ src/ai/__tests__/chunk-indexer.test.ts (70 tests) 16ms\n ✓ src/investigators/__tests__/log-investigator.test.ts (100 tests) 16ms\n ✓ src/graph/__tests__/resource-graph.test.ts (41 tests) 10ms\n ✓ src/investigators/__tests__/ai-investigator.test.ts (90 tests) 34ms\n ✓ src/investigators/__tests__/seed-clusterer.test.ts (52 tests) 16ms\n ✓ src/graph/__tests__/traversal.test.ts (36 tests) 11ms\n ✓ src/ai/__tests__/contextual-retrieval.test.ts (54 tests) 57ms\n ✓ src/graph/__tests__/causal-templates.test.ts (89 tests) 14ms\n ✓ src/tui/__tests__/dashboard-state.test.ts (93 tests) 6ms\n ✓ src/reporters/__tests__/html-reporter.test.ts (96 tests) 33ms\n ✓ src/investigators/__tests__/seed-generator.test.ts (51 tests) 12ms\n ✓ src/investigators/__tests__/hypothesis-converter.test.ts (49 tests) 28ms\n ✓ src/investigators/__tests__/network-policy-investigator.test.ts (28 tests) 5ms\n ✓ src/investigators/__tests__/orchestrator.test.ts (61 tests) 59ms\n ✓ src/parsers/__tests__/log-parser.test.ts (39 tests) 23ms\n ✓ src\n...[truncated]"
+    }
+  ],
+  "verdict": "approve"
+}

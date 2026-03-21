@@ -1,7 +1,7 @@
 {
   "version": 1,
   "phase": "completed",
-  "updatedAt": "2026-03-21T14:52:38.146Z",
+  "updatedAt": "2026-03-21T15:14:44.780Z",
   "runId": "2026-03-21T04-43-48-951Z-726f17fc",
   "handoffMode": "none",
   "postPlanMode": "autorun",
@@ -69,10 +69,8 @@
     "persistSessionAcrossSteps": true
   },
   "goal": "implement the missing issues: ### What's genuinely still open from Phase 7 ┌───────────────────────────────────────────────────────────┬───────────────────────────────────────────────────────────────────────────┐ │ Item                                                      │ Status                                                                    │ ├───────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤ │ 7.5 Cross-symptom correlation (cluster-wide DNS)          │ ❌ Open                                                                   │ ├───────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤ │ 7.7 Confidence calibration against ground truth           │ ❌ Open                                                                   │ ├───────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤ │ 7.8 Five dedup/merge layers with overlapping logic        │ ❌ Open                                                                   │ ├───────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤ │ 7.9 Spec recommender ignores AI findings                  │ ✅ Already fixed (both finding:hypothesis: and finding:ai: are processed) │ ├───────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤ │ 7.10 No node resource investigation                       │ ❌ Open                                                                   │ ├───────────────────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────┤ │ 7.11 Hypothesis templates are procedural, not declarative │ ❌ Open                                                                   │ └───────────────────────────────────────────────────────────┴───────────────────. Please do TDD where possible and update documentation",
-  "round": 2,
   "activeSummary": {
-    "stepId": "step-7",
-    "stepTitle": "Update documentation to reflect all Phase 7 implementations",
+    "stepTitle": "All steps complete",
     "gateResults": [
       {
         "id": "lint",
@@ -94,8 +92,7 @@
         "id": "git-diff-check",
         "passed": true
       }
-    ],
-    "lastVerdict": "approve"
+    ]
   },
   "plan": {
     "goal": "Implement 5 open Phase 7 items (7.5 cross-symptom correlation integration, 7.7 confidence calibration tests, 7.8 dedup consolidation tests/docs, 7.10 node resource investigation enhancements, 7.11 wire declarative template evidence rules into evidence collector) with TDD and documentation updates.",

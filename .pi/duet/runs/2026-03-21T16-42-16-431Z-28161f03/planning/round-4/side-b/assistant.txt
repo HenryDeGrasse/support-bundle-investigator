@@ -1,0 +1,10 @@
+Looks workable now.
+
+The previous blocker is resolved: step 9 now correctly places Commander parsing in `src/cli/cli.ts` and only uses `src/cli/runner.ts` for pass-through/runtime behavior.
+
+Non-blocking suggestions:
+- In step 3, prefer a top-level `helm/` fixture path unless you also update `src/ingestion/classifier.ts`; `cluster-resources/helm/...` may still classify as generic `kubernetes-resource`.
+- In step 5, note that `AIInvestigatorDeps.llmClient` is currently typed as the concrete `LLMClient` class. If `ReplayableLLMClient` uses composition, the implementer will likely want to introduce a small shared client interface rather than rely on the concrete class type.
+- In step 12, tighten the prompt-safety wording; “prompt must not contain canary values” and “chunk content is included as-is” point in different directions.
+
+Verdict: approve

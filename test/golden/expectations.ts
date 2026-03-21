@@ -97,6 +97,38 @@ export const GOLDEN_EXPECTATIONS: Record<string, ScenarioExpectation> = {
     mustMentionIdentifiers: ['app-pod', 'app-credentials'],
   },
 
+  'ghost-service': {
+    name: 'Ghost Service (Cross-Namespace DNS Failure)',
+    minFindings: 2,
+    topFindingMustMatch: [
+      /CrashLoopBackOff/i,
+      /dns/i,
+      /api-service\.staging/i,
+      /no such host/i,
+    ],
+    // In heuristic mode the CrashLoop symptom currently sorts above the DNS
+    // hypothesis. If ranking changes later, the namespace-mismatch DNS finding
+    // is still acceptable as the top finding for this scenario.
+    topFindingSeverity: ['critical', 'high'],
+    topFindingMinConfidence: 0.8,
+    mustCiteEvidence: [
+      /pods/i,
+      /events/i,
+      /services/i,
+      /staging/i,
+    ],
+    mustNotHallucinate: [
+      /ImagePullBackOff/i,
+      /persistentvolumeclaim|storageclass/i,
+      /OOMKilled/i,
+    ],
+    rootCauseMustMatch: [
+      /crashloop|backoff|restart/i,
+      /dns|no such host|api-service\.staging|namespace/i,
+    ],
+    mustMentionIdentifiers: ['web-app-pod', 'api-service.staging', 'staging'],
+  },
+
   'wrong-db-endpoint': {
     name: 'Wrong DB Endpoint (DNS Failure)',
     minFindings: 1,
@@ -151,5 +183,41 @@ export const GOLDEN_EXPECTATIONS: Record<string, ScenarioExpectation> = {
       /persistentvolumeclaim|storageclass|storage provisioner|provisioningfailed|pending/i,
     ],
     mustMentionIdentifiers: ['db-pod', 'data-pvc', 'fast-ssd'],
+  },
+
+  'multi-namespace-retrieval': {
+    name: 'Multi-Namespace Retrieval (Cross-Namespace DNS Noise)',
+    minFindings: 4,
+    topFindingMustMatch: [
+      /dns/i,
+      /wrong-host\.internal/i,
+      /migration-pod/i,
+      /cluster-wide/i,
+    ],
+    // Heuristic mode currently ranks the database migration pod's concrete DNS
+    // failure above the broader cluster-wide DNS hypothesis, so either title is
+    // acceptable as long as the root cause remains DNS-related.
+    topFindingSeverity: ['high'],
+    topFindingMinConfidence: 0.8,
+    mustCiteEvidence: [
+      /pods/i,
+      /events/i,
+      /database/i,
+      /monitoring/i,
+    ],
+    mustNotHallucinate: [
+      /ImagePullBackOff/i,
+      /missing.*secret/i,
+    ],
+    rootCauseMustMatch: [
+      /dns|wrong-host\.internal|no such host|hostname/i,
+      /migration-pod|database/i,
+    ],
+    mustMentionIdentifiers: [
+      'migration-pod',
+      'wrong-host.internal',
+      'grafana-pod',
+      'alertmanager-pod',
+    ],
   },
 };

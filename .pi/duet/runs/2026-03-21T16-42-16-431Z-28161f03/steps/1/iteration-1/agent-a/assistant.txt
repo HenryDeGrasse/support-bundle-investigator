@@ -1,0 +1,24 @@
+Reviewed:
+- `test/golden/expectations.ts`
+- heuristic-only pipeline behavior for `ghost-service` and `multi-namespace-retrieval`
+
+Changed:
+- Added a `GOLDEN_EXPECTATIONS` entry for `ghost-service`
+- Added a `GOLDEN_EXPECTATIONS` entry for `multi-namespace-retrieval`
+
+Notes:
+- I first ran the pipeline in heuristic-only mode against both fixtures to see the actual finding shapes.
+- `ghost-service` currently ranks a `CrashLoopBackOff` symptom first, with the cross-namespace DNS/service mismatch as a strong secondary finding, so the expectation allows either top-title pattern while still requiring the `api-service.staging`/`staging` evidence.
+- `multi-namespace-retrieval` currently ranks the concrete DNS failure from `migration-pod` first, so the expectation is anchored on DNS/wrong-host/migration patterns and requires evidence/identifiers spanning the `database` and `monitoring` namespaces.
+- I used a temporary scratch test to inspect findings, then removed it.
+
+Checks run:
+- `npm run lint` ✅
+- `npm run typecheck` ✅
+- `npm run unit` ✅
+
+Assessment:
+- Step 1 is complete.
+- The new expectations match current heuristic behavior and the existing golden eval suite passes with them.
+
+Verdict: changes_made
