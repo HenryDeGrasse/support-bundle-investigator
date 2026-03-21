@@ -86,6 +86,8 @@ export interface PipelineOptions {
   format?: 'json' | 'text' | 'summary' | 'markdown' | 'html';
   verbose?: boolean;
   trace?: boolean;
+  /** When true, include debug-oriented fields such as finding provenance in machine-readable outputs. */
+  debug?: boolean;
   /** When true, AI features are disabled regardless of API key presence. */
   noAi?: boolean;
   /** Optional explicit cassette directory override for AI record/replay mode. */
@@ -117,6 +119,8 @@ export interface PipelineResult {
   trace: InvestigationTrace;
   /** How the AI layer was configured: 'cloud', 'local', or 'off'. */
   aiMode: AIMode;
+  /** Whether debug-oriented output fields should be preserved in downstream report serialization. */
+  debug?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -802,6 +806,7 @@ export async function analyzeBundlePipeline(
     graph,
     trace,
     aiMode,
+    debug: options.debug,
   };
 }
 

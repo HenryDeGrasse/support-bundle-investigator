@@ -1,0 +1,54 @@
+Reviewed:
+- `src/types/finding.ts`
+- `src/investigators/finding-provenance.ts`
+- `src/investigators/kubernetes-investigator.ts`
+- `src/investigators/log-investigator.ts`
+- `src/investigators/config-investigator.ts`
+- `src/investigators/service-investigator.ts`
+- `src/investigators/network-policy-investigator.ts`
+- `src/investigators/hypothesis-converter.ts`
+- `src/investigators/ai-investigator.ts`
+- `src/investigators/verifier.ts`
+- `src/investigators/orchestrator.ts`
+- `src/pipeline/analyze.ts`
+- `src/cli/cli.ts`
+- `src/cli/output.ts`
+- `src/cli/runner.ts`
+- `src/reporters/json-reporter.ts`
+- `src/investigators/__tests__/finding-provenance.test.ts`
+- `src/reporters/__tests__/json-reporter.test.ts`
+- `src/cli/__tests__/cli.test.ts`
+- `src/cli/__tests__/runner.test.ts`
+- `test/integration/__tests__/pipeline.test.ts`
+
+What I changed
+- No further code changes needed.
+
+What I verified
+- `Finding` now supports optional `provenance`
+- provenance is stamped across:
+  - kubernetes
+  - log
+  - config
+  - service
+  - network-policy
+  - hypothesis
+  - ai
+  - graph-causal paths
+- verifier sets `confidenceDelta`
+- merge passes preserve and extend `mergedFrom`
+- JSON output omits provenance by default
+- JSON output includes provenance when debug is enabled
+- CLI plumbing for `--debug` is present and covered by tests
+
+Checks run
+- `npx vitest run src/investigators/__tests__/finding-provenance.test.ts src/reporters/__tests__/json-reporter.test.ts src/cli/__tests__/cli.test.ts src/cli/__tests__/runner.test.ts test/integration/__tests__/pipeline.test.ts` ✅
+- `npm run lint` ✅
+- `npm run typecheck` ✅
+- `npm run unit` ✅
+
+Assessment
+- Step 8 is complete and correct.
+- I did not find any regressions or missing wiring in the current implementation.
+
+Verdict: approve

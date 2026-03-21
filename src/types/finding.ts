@@ -15,6 +15,26 @@ export type FindingSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
  */
 export type ConfidenceQuality = 'strong' | 'moderate' | 'weak';
 
+export type FindingInvestigator =
+  | 'kubernetes'
+  | 'log'
+  | 'config'
+  | 'service'
+  | 'network-policy'
+  | 'hypothesis'
+  | 'ai'
+  | 'graph-causal';
+
+export interface FindingProvenance {
+  investigator: FindingInvestigator;
+  seedId?: string;
+  seedSource?: string;
+  generatedAt: string;
+  mergedFrom?: string[];
+  hypothesisFamily?: string;
+  confidenceDelta?: number;
+}
+
 export interface Evidence {
   path: string;
   note: string;
@@ -40,4 +60,6 @@ export interface Finding {
    * finding has not yet been through the verification pass.
    */
   confidenceQuality?: ConfidenceQuality;
+  /** Optional structured provenance for debugging, evals, and traceability. */
+  provenance?: FindingProvenance;
 }

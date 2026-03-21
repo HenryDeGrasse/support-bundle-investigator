@@ -1,6 +1,10 @@
 import type { Finding, Evidence, FindingSeverity, ConfidenceQuality } from '../types/index.js';
 import type { InvestigatorContext } from './types.js';
 import { extractPodStatus, isWorkloadReady } from '../parsers/index.js';
+import {
+  applyFindingProvenance,
+  collectMergedFindingIds,
+} from './finding-provenance.js';
 
 // ---------------------------------------------------------------------------
 // Contradiction-detection helpers
@@ -578,7 +582,7 @@ function mergeFindings(group: Finding[]): Finding {
     return result;
   }
 
-  return {
+  return applyFindingProvenance({
     ...base,
     severity: highestSeverity,
     confidence: maxConfidence,
@@ -586,7 +590,9 @@ function mergeFindings(group: Finding[]): Finding {
     affectedComponents: unionStrings(...group.map((f) => f.affectedComponents)),
     contradictionsChecked: unionStrings(...group.map((f) => f.contradictionsChecked)),
     missingEvidence: unionStrings(...group.map((f) => f.missingEvidence)),
-  };
+  }, {
+    mergedFrom: collectMergedFindingIds(sorted.slice(1)),
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -670,10 +676,12 @@ export function verifyFindings(
       missingEvidence: allMissing,
     };
 
-    return {
+    return applyFindingProvenance({
       ...updatedFinding,
       confidenceQuality: computeConfidenceQuality(updatedFinding),
-    };
+    }, {
+      confidenceDelta: roundConfidence(delta),
+    });
   });
 
   // ── Step 4: deduplication ────────────────────────────────────────────────

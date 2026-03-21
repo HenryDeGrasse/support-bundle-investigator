@@ -39,6 +39,11 @@ describe('parseArgs()', () => {
     expect(result.trace).toBe(false);
   });
 
+  it('defaults debug to false when --debug is omitted', () => {
+    const result = parseArgs(argv('analyze', 'bundle.tar.gz'));
+    expect(result.debug).toBe(false);
+  });
+
   it('accepts --output-dir flag', () => {
     const result = parseArgs(argv('analyze', 'bundle.tar.gz', '--output-dir', '/tmp/out'));
     expect(result.outputDir).toBe('/tmp/out');
@@ -79,6 +84,11 @@ describe('parseArgs()', () => {
     expect(result.trace).toBe(true);
   });
 
+  it('accepts --debug flag', () => {
+    const result = parseArgs(argv('analyze', 'bundle.tar.gz', '--debug'));
+    expect(result.debug).toBe(true);
+  });
+
   it('accepts all flags together', () => {
     const result = parseArgs(
       argv(
@@ -90,6 +100,7 @@ describe('parseArgs()', () => {
         'json',
         '--verbose',
         '--trace',
+        '--debug',
       ),
     );
     expect(result.bundlePath).toBe('bundle.tar.gz');
@@ -97,6 +108,7 @@ describe('parseArgs()', () => {
     expect(result.format).toBe('json');
     expect(result.verbose).toBe(true);
     expect(result.trace).toBe(true);
+    expect(result.debug).toBe(true);
   });
 
   it('defaults noAi to false when --no-ai is omitted', () => {

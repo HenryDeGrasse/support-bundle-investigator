@@ -19,6 +19,7 @@ export interface OutputOptions {
   format: 'json' | 'text' | 'summary' | 'markdown' | 'html';
   outputDir?: string;
   verbose?: boolean;
+  debug?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +136,7 @@ export async function writePipelineResult(
   options: OutputOptions,
 ): Promise<void> {
   const { format, outputDir } = options;
+  const includeProvenance = options.debug === true || result.debug === true;
 
   if (outputDir) {
     // Always write all three report files when an output directory is provided.
@@ -143,7 +145,7 @@ export async function writePipelineResult(
 
     const report = buildReport(result);
 
-    await writeJsonReport(report, resolvedDir);
+    await writeJsonReport(report, resolvedDir, { includeProvenance });
 
     const mdPath = path.join(resolvedDir, 'report.md');
     await fsp.writeFile(mdPath, generateMarkdownReport(report), 'utf-8');
@@ -164,7 +166,7 @@ export async function writePipelineResult(
   const report = buildReport(result);
 
   if (format === 'json') {
-    console.log(generateJsonReport(report));
+    console.log(generateJsonReport(report, { includeProvenance }));
   } else if (format === 'html') {
     console.log(generateHtmlReport(report));
   } else {

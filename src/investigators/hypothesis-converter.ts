@@ -1,6 +1,7 @@
 import type { Evidence, Finding, FindingSeverity } from '../types/index.js';
 import type { HypothesisCategory, Hypothesis, HypothesisSet } from './hypothesis-types.js';
 import { computeConfidenceQuality } from './verifier.js';
+import { applyFindingProvenance } from './finding-provenance.js';
 
 // ---------------------------------------------------------------------------
 // Severity mapping
@@ -426,7 +427,7 @@ export function convertHypothesisToFinding(hypothesis: Hypothesis, rank: number)
   const recommendedAction =
     crossNamespaceAction ?? RECOMMENDED_ACTION_BY_CATEGORY[hypothesis.category];
 
-  const finding: Finding = {
+  const finding: Finding = applyFindingProvenance({
     id: `finding:hypothesis:${hypothesis.category}:${rank}`,
     title: hypothesis.rootCause,
     severity: deriveSeverity(hypothesis.category, hypothesis.confidence),
@@ -440,7 +441,10 @@ export function convertHypothesisToFinding(hypothesis: Hypothesis, rank: number)
       ...hypothesis.specGapRecommendations,
     ]),
     recommendedAction,
-  };
+  }, {
+    investigator: 'hypothesis',
+    hypothesisFamily: hypothesis.category,
+  });
   finding.confidenceQuality = computeConfidenceQuality(finding);
   return finding;
 }

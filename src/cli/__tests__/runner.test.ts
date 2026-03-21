@@ -91,6 +91,7 @@ describe('runCli()', () => {
       outputDir: '/tmp/out',
       verbose: false,
       trace: true,
+      debug: false,
       noAi: false,
       tui: false,
     });
@@ -105,6 +106,7 @@ describe('runCli()', () => {
       format: 'markdown',
       outputDir: '/tmp/out',
       verbose: false,
+      debug: false,
     });
     expect(writeTraceFileMock).toHaveBeenCalledWith(result.trace, '/tmp/out');
     expect(cleanupPipelineResultMock).toHaveBeenCalledWith(result);
@@ -119,6 +121,7 @@ describe('runCli()', () => {
       outputDir: undefined,
       verbose: false,
       trace: false,
+      debug: false,
       noAi: true,
       tui: false,
     });
@@ -132,6 +135,7 @@ describe('runCli()', () => {
       outputDir: undefined,
       verbose: false,
       trace: false,
+      debug: false,
       noAi: true,
     });
   });
@@ -145,6 +149,7 @@ describe('runCli()', () => {
       outputDir: '/tmp/out',
       verbose: true,
       trace: false,
+      debug: false,
       noAi: false,
       tui: false,
     });
@@ -183,6 +188,7 @@ describe('runCli()', () => {
       outputDir: '/tmp/out',
       verbose: false,
       trace: false,
+      debug: false,
       noAi: false,
       tui: true,
     });
@@ -195,6 +201,7 @@ describe('runCli()', () => {
       verbose: false,
       noAi: false,
       trace: false,
+      debug: false,
     });
     // Pipeline should NOT run in TUI mode
     expect(analyzeBundlePipelineMock).not.toHaveBeenCalled();
@@ -208,6 +215,7 @@ describe('runCli()', () => {
       outputDir: undefined,
       verbose: false,
       trace: false,
+      debug: false,
       noAi: false,
       tui: true,
     });
@@ -230,6 +238,7 @@ describe('runCli()', () => {
       outputDir: '/tmp/out',
       verbose: true,
       trace: true,
+      debug: false,
       noAi: true,
       tui: true,
     });
@@ -244,6 +253,7 @@ describe('runCli()', () => {
       verbose: true,
       noAi: true,
       trace: true,
+      debug: false,
     });
     expect(console.error).toHaveBeenCalledWith('Error:', 'tui failed');
     expect(analyzeBundlePipelineMock).not.toHaveBeenCalled();
@@ -263,6 +273,7 @@ describe('runCli()', () => {
       outputDir: undefined,
       verbose: false,
       trace: false,
+      debug: false,
       noAi: false,
       tui: false,
     });

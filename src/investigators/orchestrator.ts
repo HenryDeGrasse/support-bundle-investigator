@@ -18,6 +18,10 @@ import { convertHypothesisSetsToFindings } from './hypothesis-converter.js';
 import { matchCausalTemplate } from '../graph/causal-templates.js';
 import type { CausalTemplateInstance } from '../graph/causal-templates.js';
 import type { K8sEvent } from '../types/index.js';
+import {
+  applyFindingProvenance,
+  collectMergedFindingIds,
+} from './finding-provenance.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -316,14 +320,17 @@ function absorbIntoWinner(winner: Finding, absorbedFindings: Finding[]): Finding
     return arrays.flat().filter((s) => (seen.has(s) ? false : seen.add(s)));
   };
 
-  return {
+  return applyFindingProvenance({
     ...winner,
     confidence: boostedConfidence,
     evidence: Array.from(evidenceMap.values()),
     affectedComponents: unionStrings(...group.map((f) => f.affectedComponents)),
     contradictionsChecked: unionStrings(...group.map((f) => f.contradictionsChecked)),
     missingEvidence: unionStrings(...group.map((f) => f.missingEvidence)),
-  };
+  }, {
+    mergedFrom: collectMergedFindingIds(absorbedFindings),
+    hypothesisFamily: normalizeIssueFamilyForPass1(winner),
+  });
 }
 
 function mergeComponentGroup(group: Finding[]): Finding {
@@ -531,15 +538,28 @@ function pass2TitleDedup(findings: Finding[]): Finding[] {
     const existing = seenTitles.get(normTitle);
 
     if (existing == null) {
-      seenTitles.set(normTitle, finding);
-      result.push(finding);
+      seenTitles.set(normTitle, applyFindingProvenance(finding, {
+        hypothesisFamily: normalizeIssueFamilyForPass1(finding),
+      }));
+      result.push(seenTitles.get(normTitle)!);
     } else if (finding.confidence > existing.confidence) {
       // Replace the lower-confidence duplicate in-place
+      const replacement = applyFindingProvenance(finding, {
+        mergedFrom: collectMergedFindingIds([existing]),
+        hypothesisFamily: normalizeIssueFamilyForPass1(finding),
+      });
       const idx = result.indexOf(existing);
-      if (idx !== -1) result[idx] = finding;
-      seenTitles.set(normTitle, finding);
+      if (idx !== -1) result[idx] = replacement;
+      seenTitles.set(normTitle, replacement);
+    } else {
+      const retained = applyFindingProvenance(existing, {
+        mergedFrom: collectMergedFindingIds([finding]),
+        hypothesisFamily: normalizeIssueFamilyForPass1(existing),
+      });
+      const idx = result.indexOf(existing);
+      if (idx !== -1) result[idx] = retained;
+      seenTitles.set(normTitle, retained);
     }
-    // else: skip the lower-confidence duplicate
   }
 
   return result;
@@ -835,7 +855,7 @@ function buildGraphRootCauseFinding(
       const evidence = buildMissingSecretEvidence(
         name, namespace, podName, events, instance.templateId, instance.templateName,
       );
-      return {
+      return applyFindingProvenance({
         id,
         title: `Missing Secret '${name}'`,
         severity: 'critical' as FindingSeverity,
@@ -850,14 +870,17 @@ function buildGraphRootCauseFinding(
           `Create the missing secret '${name}' in namespace '${namespace}'. ` +
           `Run: kubectl create secret generic ${name} -n ${namespace} --from-literal=<key>=<value>`,
         missingEvidence: [],
-      };
+      }, {
+        investigator: 'graph-causal',
+        hypothesisFamily: 'missing-secret',
+      });
     }
 
     case 'bad-image-tag': {
       const evidence = buildBadImageTagEvidence(
         name, namespace, podName, events, instance.templateId, instance.templateName,
       );
-      return {
+      return applyFindingProvenance({
         id,
         title: `Bad Image Tag: ${name}`,
         severity: 'critical' as FindingSeverity,
@@ -870,14 +893,17 @@ function buildGraphRootCauseFinding(
         contradictionsChecked: [`Image '${name}' in container registry`],
         recommendedAction: `Update the pod spec to use a valid, existing image tag.`,
         missingEvidence: [],
-      };
+      }, {
+        investigator: 'graph-causal',
+        hypothesisFamily: 'image-pull-failure',
+      });
     }
 
     case 'missing-storage-class': {
       const evidence = buildMissingStorageClassEvidence(
         name, namespace, events, instance.templateId, instance.templateName,
       );
-      return {
+      return applyFindingProvenance({
         id,
         title: `Missing StorageClass '${name}'`,
         severity: 'critical' as FindingSeverity,
@@ -891,7 +917,10 @@ function buildGraphRootCauseFinding(
         recommendedAction:
           `Create StorageClass '${name}' or update the PVC spec to reference an existing storage class.`,
         missingEvidence: [],
-      };
+      }, {
+        investigator: 'graph-causal',
+        hypothesisFamily: 'volume-mount-failure',
+      });
     }
 
     default:

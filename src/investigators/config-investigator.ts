@@ -1,6 +1,7 @@
 import type { Finding, FindingSeverity, Evidence, GraphEdge } from '../types/index.js';
 import type { InvestigatorContext, InvestigatorResult, InvestigationSeed } from './types.js';
 import type { K8sResource } from '../types/index.js';
+import { applyBatchFindingProvenance } from './finding-provenance.js';
 
 // ---------------------------------------------------------------------------
 // Internal utilities
@@ -988,12 +989,19 @@ export function investigateConfig(
   const secretResult = investigateMissingSecrets(context, counter);
   const imageMismatchResult = investigateImageTagMismatches(context, counter);
 
-  return {
-    findings: [
+  const findings = applyBatchFindingProvenance(
+    [
       ...envServiceResult.findings,
       ...secretResult.findings,
       ...imageMismatchResult.findings,
     ],
+    {
+      investigator: 'config',
+    },
+  );
+
+  return {
+    findings,
     edges: [
       ...envServiceResult.edges,
       ...secretResult.edges,

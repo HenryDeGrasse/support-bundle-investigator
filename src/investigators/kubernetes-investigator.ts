@@ -7,6 +7,7 @@ import {
   isWorkloadReady,
   filterEventsByObject,
 } from '../parsers/index.js';
+import { applyBatchFindingProvenance } from './finding-provenance.js';
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -1712,6 +1713,42 @@ function investigateNodeConditions(
 // Public API
 // ---------------------------------------------------------------------------
 
+function resolveSeedForKubernetesFinding(
+  finding: Finding,
+  seeds: InvestigationSeed[],
+): InvestigationSeed | undefined {
+  const podComponents = finding.affectedComponents.filter((component) => component.startsWith('Pod/'));
+  for (const component of podComponents) {
+    const [, namespace, name] = component.split('/');
+    if (!namespace || !name) {
+      continue;
+    }
+
+    const exactPodSeed = seeds.find((seed) => seed.source === `pod:${namespace}/${name}`);
+    if (exactPodSeed !== undefined) {
+      return exactPodSeed;
+    }
+
+    const relatedEventSeed = seeds.find((seed) => seed.source.endsWith(`:${name}`));
+    if (relatedEventSeed !== undefined) {
+      return relatedEventSeed;
+    }
+  }
+
+  const nodeComponent = finding.affectedComponents.find((component) => component.startsWith('Node/'));
+  if (nodeComponent !== undefined) {
+    const nodeName = nodeComponent.split('/')[1];
+    if (nodeName) {
+      const nodeSeed = seeds.find((seed) => seed.source === `node:${nodeName}`);
+      if (nodeSeed !== undefined) {
+        return nodeSeed;
+      }
+    }
+  }
+
+  return undefined;
+}
+
 /**
  * Targeted Kubernetes investigator.
  *
@@ -1736,9 +1773,6 @@ export function investigateKubernetes(
   context: InvestigatorContext,
   seeds: InvestigationSeed[],
 ): InvestigatorResult {
-  // Seeds are available for future prioritisation; all resources are examined
-  void seeds;
-
   const counter: Counter = { value: 0 };
 
   // Run CrashLoopBackOff first so the OOM detector can link to its findings
@@ -1765,8 +1799,8 @@ export function investigateKubernetes(
   const nodeResources = investigateNodeResources(context, counter);
   const nodeHealth = investigateNodeConditions(context, counter, oom.findingIdsByNode);
 
-  return {
-    findings: [
+  const findings = applyBatchFindingProvenance(
+    [
       ...crashLoop.findings,
       ...imagePull.findings,
       ...notReady.findings,
@@ -1776,6 +1810,14 @@ export function investigateKubernetes(
       ...nodeResources.findings,
       ...nodeHealth.findings,
     ],
+    {
+      investigator: 'kubernetes',
+      resolveSeed: (finding) => resolveSeedForKubernetesFinding(finding, seeds),
+    },
+  );
+
+  return {
+    findings,
     edges: [
       ...crashLoop.edges,
       ...imagePull.edges,

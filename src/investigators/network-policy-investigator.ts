@@ -1,6 +1,7 @@
 import type { Finding, FindingSeverity, Evidence, GraphEdge } from '../types/index.js';
 import type { InvestigatorContext, InvestigatorResult, InvestigationSeed } from './types.js';
 import type { K8sResource } from '../types/index.js';
+import { applyBatchFindingProvenance } from './finding-provenance.js';
 
 // ---------------------------------------------------------------------------
 // Internal utilities
@@ -754,5 +755,8 @@ export function investigateNetworkPolicies(
     }
   }
 
-  return { findings, edges };
+  return {
+    findings: applyBatchFindingProvenance(findings, { investigator: 'network-policy' }),
+    edges,
+  };
 }

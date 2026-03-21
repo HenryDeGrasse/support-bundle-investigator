@@ -34,6 +34,7 @@ import { traverseForChunks, RETRIEVAL_EDGE_TYPES, isDiagnosticGraph } from '../g
 import { buildInvestigationPrompt } from '../ai/prompts.js';
 import { estimateTokens } from '../ai/chunk-indexer.js';
 import { generateHypotheticalDocument } from '../ai/hyde.js';
+import { applyFindingProvenance } from './finding-provenance.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -765,7 +766,7 @@ function convertAIFindings(
     // ── 7.3: Normalize affectedComponents to canonical Kind/ns/name format ──
     const normalizedComponents = aiF.affectedComponents.map(normalizeAffectedComponent);
 
-    const finding: Finding = {
+    const finding: Finding = applyFindingProvenance({
       id: findingId,
       title: aiF.title,
       severity: aiF.severity,
@@ -776,7 +777,10 @@ function convertAIFindings(
       contradictionsChecked: aiF.contradictionsChecked,
       recommendedAction: aiF.recommendedAction,
       missingEvidence: aiF.missingEvidence,
-    };
+    }, {
+      investigator: 'ai',
+      seed,
+    });
 
     findings.push(finding);
 

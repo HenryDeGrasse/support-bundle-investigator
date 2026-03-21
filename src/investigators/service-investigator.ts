@@ -2,6 +2,7 @@ import type { Finding, FindingSeverity, Evidence, GraphEdge } from '../types/ind
 import type { InvestigatorContext, InvestigatorResult, InvestigationSeed } from './types.js';
 import type { K8sResource } from '../types/index.js';
 import type { LogFile } from '../parsers/index.js';
+import { applyBatchFindingProvenance } from './finding-provenance.js';
 
 // ---------------------------------------------------------------------------
 // Internal utilities
@@ -546,5 +547,8 @@ export function investigateServices(
     }
   }
 
-  return { findings, edges };
+  return {
+    findings: applyBatchFindingProvenance(findings, { investigator: 'service' }),
+    edges,
+  };
 }

@@ -5,6 +5,7 @@ import type { LogClassification } from '../parsers/index.js';
 import { extractErrorWindows, classifyLogs, correlateEventsWithPod, getEventWindow } from '../parsers/index.js';
 import type { K8sResource, K8sEvent } from '../types/index.js';
 import { cleanEvidencePath } from '../reporters/display-helpers.js';
+import { applyBatchFindingProvenance } from './finding-provenance.js';
 
 // ---------------------------------------------------------------------------
 // Internal types
@@ -901,13 +902,28 @@ function investigateImagePullInLogs(
  * @param seeds   - Investigation seeds (available for future prioritisation;
  *                  all log files are examined regardless of seed content).
  */
+function resolveSeedForLogFinding(
+  finding: Finding,
+  seeds: InvestigationSeed[],
+): InvestigationSeed | undefined {
+  const logPaths = finding.evidence
+    .filter((evidence) => evidence.artifactType === 'log' || evidence.path.includes('.log'))
+    .map((evidence) => evidence.path);
+
+  for (const logPath of logPaths) {
+    const exact = seeds.find((seed) => seed.source === `log:${logPath}`);
+    if (exact !== undefined) {
+      return exact;
+    }
+  }
+
+  return undefined;
+}
+
 export function investigateLog(
   context: InvestigatorContext,
   seeds: InvestigationSeed[],
 ): InvestigatorResult {
-  // Seeds are available for future prioritisation
-  void seeds;
-
   if (context.logs.length === 0) {
     return { findings: [], edges: [] };
   }
@@ -974,13 +990,21 @@ export function investigateLog(
     }
   }
 
-  return {
-    findings: [
+  const findings = applyBatchFindingProvenance(
+    [
       ...dnsResult.findings,
       ...connResult.findings,
       ...missingResult.findings,
       ...imagePullResult.findings,
     ],
+    {
+      investigator: 'log',
+      resolveSeed: (finding) => resolveSeedForLogFinding(finding, seeds),
+    },
+  );
+
+  return {
+    findings,
     edges: [
       ...dnsResult.edges,
       ...connResult.edges,

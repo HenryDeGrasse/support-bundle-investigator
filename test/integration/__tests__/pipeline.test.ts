@@ -340,6 +340,47 @@ describe('Pipeline Integration', () => {
       }
     });
 
+    it('findings.json omits provenance by default', async () => {
+      const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sbi-output-json-default-'));
+
+      try {
+        const result = await analyzeBundlePipeline(wrongDbBundlePath, {
+          outputDir,
+          format: 'json',
+        });
+
+        await writePipelineResult(result, { format: 'json', outputDir });
+        await cleanupPipelineResult(result);
+
+        const findingsJson = fs.readFileSync(path.join(outputDir, 'findings.json'), 'utf-8');
+        const parsed = JSON.parse(findingsJson) as { findings: Array<Record<string, unknown>> };
+        expect(parsed.findings[0]?.['provenance']).toBeUndefined();
+      } finally {
+        fs.rmSync(outputDir, { recursive: true, force: true });
+      }
+    });
+
+    it('findings.json includes provenance when pipeline debug mode is enabled', async () => {
+      const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sbi-output-json-debug-'));
+
+      try {
+        const result = await analyzeBundlePipeline(wrongDbBundlePath, {
+          outputDir,
+          format: 'json',
+          debug: true,
+        });
+
+        await writePipelineResult(result, { format: 'json', outputDir });
+        await cleanupPipelineResult(result);
+
+        const findingsJson = fs.readFileSync(path.join(outputDir, 'findings.json'), 'utf-8');
+        const parsed = JSON.parse(findingsJson) as { findings: Array<Record<string, unknown>> };
+        expect(parsed.findings[0]?.['provenance']).toBeDefined();
+      } finally {
+        fs.rmSync(outputDir, { recursive: true, force: true });
+      }
+    });
+
     it('report.md written to outputDir contains expected Markdown sections', async () => {
       const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sbi-output-md-'));
 

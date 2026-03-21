@@ -212,6 +212,54 @@ describe('generateJsonReport — finding field presence', () => {
   it('finding has missingEvidence array', () => {
     expect(Array.isArray(getParsedFinding()['missingEvidence'])).toBe(true);
   });
+
+  it('omits provenance by default', () => {
+    const report = makeReport({
+      findings: [
+        makeFinding({
+          provenance: {
+            investigator: 'log',
+            generatedAt: '2024-01-01T00:00:00.000Z',
+            seedId: 'seed:log:0',
+          },
+        }),
+      ],
+    });
+
+    const parsed = JSON.parse(generateJsonReport(report)) as Record<string, unknown>;
+    const finding = (parsed['findings'] as Record<string, unknown>[])[0]!;
+    expect(finding['provenance']).toBeUndefined();
+  });
+
+  it('includes provenance when includeProvenance is true', () => {
+    const report = makeReport({
+      findings: [
+        makeFinding({
+          provenance: {
+            investigator: 'ai',
+            generatedAt: '2024-01-01T00:00:00.000Z',
+            seedId: 'seed:merged:3',
+            seedSource: 'pod:default/app-pod',
+            mergedFrom: ['finding:config:0'],
+            hypothesisFamily: 'missing-secret',
+            confidenceDelta: -0.05,
+          },
+        }),
+      ],
+    });
+
+    const parsed = JSON.parse(generateJsonReport(report, { includeProvenance: true })) as Record<string, unknown>;
+    const finding = (parsed['findings'] as Record<string, unknown>[])[0]!;
+    expect(finding['provenance']).toEqual({
+      investigator: 'ai',
+      generatedAt: '2024-01-01T00:00:00.000Z',
+      seedId: 'seed:merged:3',
+      seedSource: 'pod:default/app-pod',
+      mergedFrom: ['finding:config:0'],
+      hypothesisFamily: 'missing-secret',
+      confidenceDelta: -0.05,
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

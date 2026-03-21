@@ -14,6 +14,10 @@ const REPORT_SCHEMA_VERSION = '1.0.0';
 // Public API
 // ---------------------------------------------------------------------------
 
+export interface JsonReportOptions {
+  includeProvenance?: boolean;
+}
+
 /**
  * Serializes an {@link InvestigationReport} to a well-structured JSON string.
  *
@@ -34,7 +38,10 @@ const REPORT_SCHEMA_VERSION = '1.0.0';
  * @param report - The investigation report to serialize.
  * @returns A JSON string representing the full investigation report.
  */
-export function generateJsonReport(report: InvestigationReport): string {
+export function generateJsonReport(
+  report: InvestigationReport,
+  options: JsonReportOptions = {},
+): string {
   const output = {
     schemaVersion: REPORT_SCHEMA_VERSION,
     generatedAt: new Date().toISOString(),
@@ -67,6 +74,9 @@ export function generateJsonReport(report: InvestigationReport): string {
         ...(finding.confidenceQuality !== undefined
           ? { confidenceQuality: finding.confidenceQuality }
           : {}),
+        ...(options.includeProvenance === true && finding.provenance !== undefined
+          ? { provenance: finding.provenance }
+          : {}),
       };
       return base;
     }),
@@ -96,10 +106,11 @@ export function generateJsonReport(report: InvestigationReport): string {
 export async function writeJsonReport(
   report: InvestigationReport,
   outputDir: string,
+  options: JsonReportOptions = {},
 ): Promise<string> {
   const resolvedOutputDir = path.resolve(outputDir);
   await fsp.mkdir(resolvedOutputDir, { recursive: true });
   const outFile = path.join(resolvedOutputDir, 'findings.json');
-  await fsp.writeFile(outFile, generateJsonReport(report), 'utf-8');
+  await fsp.writeFile(outFile, generateJsonReport(report, options), 'utf-8');
   return outFile;
 }

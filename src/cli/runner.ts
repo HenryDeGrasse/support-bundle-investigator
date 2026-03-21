@@ -62,6 +62,7 @@ export async function runCli(
         verbose: args.verbose,
         noAi: args.noAi,
         trace: args.trace,
+        debug: args.debug,
       });
       return 0;
     } catch (err) {
@@ -76,6 +77,7 @@ export async function runCli(
       outputDir: args.outputDir,
       verbose: args.verbose,
       trace: args.trace,
+      debug: args.debug,
       noAi: args.noAi,
     });
 
@@ -83,6 +85,7 @@ export async function runCli(
       format: args.format,
       outputDir: args.outputDir,
       verbose: args.verbose,
+      debug: args.debug,
     });
 
     if (args.trace && args.outputDir) {
