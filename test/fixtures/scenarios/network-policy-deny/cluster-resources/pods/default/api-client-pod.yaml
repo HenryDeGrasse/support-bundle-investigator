@@ -1,0 +1,52 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: api-client-pod
+  namespace: default
+  labels:
+    app: api-client
+    tier: frontend
+  creationTimestamp: "2024-03-21T11:58:00Z"
+spec:
+  containers:
+    - name: app
+      image: ghcr.io/example/api-client:v1.4.0
+      env:
+        - name: PAYMENTS_SERVICE_HOST
+          value: "http://payments-api:8443"
+        - name: REQUEST_TIMEOUT_MS
+          value: "3000"
+      ports:
+        - containerPort: 8080
+          protocol: TCP
+      readinessProbe:
+        httpGet:
+          path: /readyz
+          port: 8080
+        initialDelaySeconds: 3
+        periodSeconds: 10
+status:
+  phase: Running
+  podIP: 10.244.1.25
+  hostIP: 192.168.1.25
+  conditions:
+    - type: Ready
+      status: "False"
+      reason: ContainersNotReady
+      message: "containers with unready status: [app]"
+    - type: ContainersReady
+      status: "False"
+      reason: ContainersNotReady
+      message: "containers with unready status: [app]"
+    - type: PodScheduled
+      status: "True"
+    - type: Initialized
+      status: "True"
+  containerStatuses:
+    - name: app
+      ready: false
+      restartCount: 0
+      image: ghcr.io/example/api-client:v1.4.0
+      state:
+        running:
+          startedAt: "2024-03-21T11:58:15Z"

@@ -1,0 +1,56 @@
+[
+  {
+    "type": "Normal",
+    "reason": "Scheduled",
+    "message": "Successfully assigned default/api-client-pod to worker-node-a",
+    "involvedObject": { "kind": "Pod", "name": "api-client-pod", "namespace": "default" },
+    "count": 1,
+    "firstTimestamp": "2024-03-21T11:58:05Z",
+    "lastTimestamp": "2024-03-21T11:58:05Z"
+  },
+  {
+    "type": "Normal",
+    "reason": "Pulled",
+    "message": "Successfully pulled image \"ghcr.io/example/api-client:v1.4.0\"",
+    "involvedObject": { "kind": "Pod", "name": "api-client-pod", "namespace": "default" },
+    "count": 1,
+    "firstTimestamp": "2024-03-21T11:58:10Z",
+    "lastTimestamp": "2024-03-21T11:58:10Z"
+  },
+  {
+    "type": "Normal",
+    "reason": "Started",
+    "message": "Started container app",
+    "involvedObject": { "kind": "Pod", "name": "api-client-pod", "namespace": "default" },
+    "count": 1,
+    "firstTimestamp": "2024-03-21T11:58:15Z",
+    "lastTimestamp": "2024-03-21T11:58:15Z"
+  },
+  {
+    "type": "Warning",
+    "reason": "Unhealthy",
+    "message": "Readiness probe failed: upstream request to payments-api.default.svc.cluster.local:8443 timed out",
+    "involvedObject": { "kind": "Pod", "name": "api-client-pod", "namespace": "default" },
+    "count": 8,
+    "firstTimestamp": "2024-03-21T11:59:00Z",
+    "lastTimestamp": "2024-03-21T12:05:00Z"
+  },
+  {
+    "type": "Warning",
+    "reason": "Failed",
+    "message": "Request to payments-api.default.svc.cluster.local:8443 failed: connection refused",
+    "involvedObject": { "kind": "Pod", "name": "api-client-pod", "namespace": "default" },
+    "count": 6,
+    "firstTimestamp": "2024-03-21T11:59:10Z",
+    "lastTimestamp": "2024-03-21T12:05:10Z"
+  },
+  {
+    "type": "Normal",
+    "reason": "Scheduled",
+    "message": "Successfully assigned default/payments-api-pod to worker-node-b",
+    "involvedObject": { "kind": "Pod", "name": "payments-api-pod", "namespace": "default" },
+    "count": 1,
+    "firstTimestamp": "2024-03-21T11:55:05Z",
+    "lastTimestamp": "2024-03-21T11:55:05Z"
+  }
+]

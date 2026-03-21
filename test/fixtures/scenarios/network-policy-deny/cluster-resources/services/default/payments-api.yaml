@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: payments-api
+  namespace: default
+  labels:
+    app: payments-api
+spec:
+  selector:
+    app: payments-api
+  ports:
+    - name: https
+      protocol: TCP
+      port: 8443
+      targetPort: 8443
+  type: ClusterIP
+  clusterIP: 10.96.22.40
+status:
+  loadBalancer: {}

@@ -1041,3 +1041,241 @@ describe("Scenario 5: multi-namespace-retrieval", () => {
     }
   });
 });
+
+  // ---------------------------------------------------------------------------
+  // Scenario 6: network-policy-deny
+  // ---------------------------------------------------------------------------
+
+  describe("Scenario 6: network-policy-deny", () => {
+    const dir = getFixturePath("network-policy-deny");
+
+    it("fixture directory exists", () => {
+      expect(exists(dir)).toBe(true);
+    });
+
+    it("has version.yaml with SupportBundle kind", () => {
+      const versionPath = path.join(dir, "version.yaml");
+      expect(exists(versionPath)).toBe(true);
+      const content = fs.readFileSync(versionPath, "utf8");
+      expect(content).toContain("SupportBundle");
+    });
+
+    it("has cluster_version.json", () => {
+      expect(exists(path.join(dir, "cluster-info", "cluster_version.json"))).toBe(true);
+    });
+
+    it("analysis.json contains a connectivity warning and a healthy service pass", () => {
+      const raw = fs.readFileSync(path.join(dir, "analysis.json"), "utf8");
+      const results = parseAnalyzerJson(raw);
+      expect(results.some((r) => r.severity === "warn")).toBe(true);
+      expect(results.some((r) => r.severity === "pass")).toBe(true);
+      expect(raw).toContain("blocked");
+      expect(raw).toContain("payments-api");
+    });
+
+    it("contains a deny-all egress NetworkPolicy that targets api-client pods", () => {
+      const policyPath = path.join(
+        dir,
+        "cluster-resources",
+        "networkpolicies",
+        "default",
+        "deny-all-egress.yaml",
+      );
+      expect(exists(policyPath)).toBe(true);
+      const raw = fs.readFileSync(policyPath, "utf8");
+      expect(raw).toContain("kind: NetworkPolicy");
+      expect(raw).toContain("name: deny-all-egress");
+      expect(raw).toContain("- Egress");
+      expect(raw).toContain("egress: []");
+      expect(raw).toContain("app: api-client");
+    });
+
+    it("contains api-client pod YAML with labels matching the NetworkPolicy", () => {
+      const podPath = path.join(
+        dir,
+        "cluster-resources",
+        "pods",
+        "default",
+        "api-client-pod.yaml",
+      );
+      expect(exists(podPath)).toBe(true);
+      const raw = fs.readFileSync(podPath, "utf8");
+      expect(raw).toContain("name: api-client-pod");
+      expect(raw).toContain("namespace: default");
+      expect(raw).toContain("app: api-client");
+      expect(raw).toContain("Ready");
+      expect(raw).toContain("status: \"False\"");
+    });
+
+    it("includes a healthy payments service and endpoint manifest", () => {
+      const servicePath = path.join(
+        dir,
+        "cluster-resources",
+        "services",
+        "default",
+        "payments-api.yaml",
+      );
+      const endpointPath = path.join(
+        dir,
+        "cluster-resources",
+        "endpoints",
+        "default",
+        "payments-api.yaml",
+      );
+      expect(exists(servicePath)).toBe(true);
+      expect(exists(endpointPath)).toBe(true);
+      expect(fs.readFileSync(servicePath, "utf8")).toContain("name: payments-api");
+      const endpointRaw = fs.readFileSync(endpointPath, "utf8");
+      expect(endpointRaw).toContain("addresses:");
+      expect(endpointRaw).toContain("10.244.2.40");
+    });
+
+    it("events include connection timeout failures for api-client-pod", () => {
+      const eventsPath = path.join(dir, "cluster-resources", "events", "default.json");
+      expect(exists(eventsPath)).toBe(true);
+      const events = parseEventsJson(fs.readFileSync(eventsPath, "utf8"));
+      expect(events.some((e) => e.reason === "Unhealthy")).toBe(true);
+      expect(events.some((e) => e.message.includes("timed out"))).toBe(true);
+      expect(events.some((e) => e.involvedObject.name === "api-client-pod")).toBe(true);
+    });
+
+    it("api-client log shows connection refused and timeout errors", async () => {
+      const logPath = path.join(
+        dir,
+        "cluster-resources",
+        "pods",
+        "logs",
+        "default",
+        "api-client-pod",
+        "app.log",
+      );
+      expect(exists(logPath)).toBe(true);
+      const content = fs.readFileSync(logPath, "utf8");
+      expect(content).toContain("ECONNREFUSED");
+      expect(content).toContain("connection refused");
+      expect(content).toContain("request timeout");
+
+      const logFile = await parseLogFile(logPath);
+      expect(logFile.lines.length).toBeGreaterThan(0);
+      expect(logFile.errorCount).toBeGreaterThan(0);
+    });
+
+    it("createTestBundle works with network-policy-deny scenario", async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sbi-netpol-"));
+      const outPath = path.join(tmpDir, "network-policy-deny.tar.gz");
+      try {
+        const result = await createTestBundle(dir, outPath);
+        expect(exists(result)).toBe(true);
+        expect(fs.statSync(result).size).toBeGreaterThan(0);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Scenario 7: node-taint-memory-pressure
+  // ---------------------------------------------------------------------------
+
+  describe("Scenario 7: node-taint-memory-pressure", () => {
+    const dir = getFixturePath("node-taint-memory-pressure");
+
+    it("fixture directory exists", () => {
+      expect(exists(dir)).toBe(true);
+    });
+
+    it("has version.yaml with SupportBundle kind", () => {
+      const versionPath = path.join(dir, "version.yaml");
+      expect(exists(versionPath)).toBe(true);
+      expect(fs.readFileSync(versionPath, "utf8")).toContain("SupportBundle");
+    });
+
+    it("has cluster_version.json", () => {
+      expect(exists(path.join(dir, "cluster-info", "cluster_version.json"))).toBe(true);
+    });
+
+    it("analysis.json contains scheduling failure and MemoryPressure insights", () => {
+      const raw = fs.readFileSync(path.join(dir, "analysis.json"), "utf8");
+      const results = parseAnalyzerJson(raw);
+      expect(results.some((r) => r.severity === "error")).toBe(true);
+      expect(raw).toContain("ml-worker-pod");
+      expect(raw).toContain("node.kubernetes.io/memory-pressure");
+      expect(raw).toContain("worker-node-1");
+    });
+
+    it("contains a pending pod without tolerations", () => {
+      const podPath = path.join(
+        dir,
+        "cluster-resources",
+        "pods",
+        "default",
+        "ml-worker-pod.yaml",
+      );
+      expect(exists(podPath)).toBe(true);
+      const raw = fs.readFileSync(podPath, "utf8");
+      expect(raw).toContain("name: ml-worker-pod");
+      expect(raw).toContain("phase: Pending");
+      expect(raw).toContain("untolerated taint");
+      expect(raw.toLowerCase()).not.toContain("tolerations:");
+    });
+
+    it("contains a node YAML with the MemoryPressure taint", () => {
+      const nodePath = path.join(
+        dir,
+        "cluster-resources",
+        "nodes",
+        "worker-node-1.yaml",
+      );
+      expect(exists(nodePath)).toBe(true);
+      const raw = fs.readFileSync(nodePath, "utf8");
+      expect(raw).toContain("kind: Node");
+      expect(raw).toContain("name: worker-node-1");
+      expect(raw).toContain("node.kubernetes.io/memory-pressure");
+      expect(raw).toContain("effect: NoSchedule");
+      expect(raw).toContain("type: MemoryPressure");
+      expect(raw).toContain("status: \"True\"");
+    });
+
+    it("events include FailedScheduling due to the untolerated memory-pressure taint", () => {
+      const eventsPath = path.join(dir, "cluster-resources", "events", "default.json");
+      expect(exists(eventsPath)).toBe(true);
+      const events = parseEventsJson(fs.readFileSync(eventsPath, "utf8"));
+      const failedScheduling = events.filter((e) => e.reason === "FailedScheduling");
+      expect(failedScheduling.length).toBeGreaterThan(0);
+      expect(failedScheduling.some((e) => e.message.includes("memory-pressure"))).toBe(true);
+      expect(failedScheduling.some((e) => e.involvedObject.name === "ml-worker-pod")).toBe(true);
+    });
+
+    it("scheduler log contains scheduling warnings tied to MemoryPressure", async () => {
+      const logPath = path.join(
+        dir,
+        "cluster-resources",
+        "pods",
+        "logs",
+        "default",
+        "ml-worker-pod",
+        "scheduler.log",
+      );
+      expect(exists(logPath)).toBe(true);
+      const content = fs.readFileSync(logPath, "utf8");
+      expect(content).toContain("pending scheduling");
+      expect(content).toContain("worker-node-1");
+      expect(content).toContain("memory-pressure");
+
+      const logFile = await parseLogFile(logPath);
+      expect(logFile.lines.length).toBeGreaterThan(0);
+      expect(logFile.errorCount).toBeGreaterThan(0);
+    });
+
+    it("createTestBundle works with node-taint-memory-pressure scenario", async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sbi-taint-"));
+      const outPath = path.join(tmpDir, "node-taint-memory-pressure.tar.gz");
+      try {
+        const result = await createTestBundle(dir, outPath);
+        expect(exists(result)).toBe(true);
+        expect(fs.statSync(result).size).toBeGreaterThan(0);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+  });

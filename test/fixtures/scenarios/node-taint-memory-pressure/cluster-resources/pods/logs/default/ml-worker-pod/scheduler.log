@@ -1,0 +1,4 @@
+2024-03-21T12:08:15Z WARN  pod ml-worker-pod is still pending scheduling
+2024-03-21T12:08:20Z WARN  scheduler rejected worker-node-1 because of untolerated taint node.kubernetes.io/memory-pressure:NoSchedule
+2024-03-21T12:08:25Z WARN  cluster has no alternate nodes without memory-pressure taint
+2024-03-21T12:08:30Z ERROR pod ml-worker-pod remains unschedulable due to memory pressure on worker-node-1

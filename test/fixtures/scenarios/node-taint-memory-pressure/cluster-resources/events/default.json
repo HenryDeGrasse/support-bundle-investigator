@@ -1,0 +1,29 @@
+[
+  {
+    "type": "Normal",
+    "reason": "Scheduled",
+    "message": "Successfully assigned default/placeholder-pod to worker-node-1",
+    "involvedObject": { "kind": "Pod", "name": "placeholder-pod", "namespace": "default" },
+    "count": 1,
+    "firstTimestamp": "2024-03-21T12:00:00Z",
+    "lastTimestamp": "2024-03-21T12:00:00Z"
+  },
+  {
+    "type": "Warning",
+    "reason": "FailedScheduling",
+    "message": "0/1 nodes are available: 1 node(s) had untolerated taint {node.kubernetes.io/memory-pressure: }. preemption: 0/1 nodes are available: 1 Preemption is not helpful for scheduling.",
+    "involvedObject": { "kind": "Pod", "name": "ml-worker-pod", "namespace": "default" },
+    "count": 7,
+    "firstTimestamp": "2024-03-21T12:08:15Z",
+    "lastTimestamp": "2024-03-21T12:14:30Z"
+  },
+  {
+    "type": "Warning",
+    "reason": "FailedScheduling",
+    "message": "0/1 nodes are available: 1 node(s) had untolerated taint {node.kubernetes.io/memory-pressure: }. Pod did not trigger scale-up because all nodes are under memory pressure.",
+    "involvedObject": { "kind": "Pod", "name": "ml-worker-pod", "namespace": "default" },
+    "count": 3,
+    "firstTimestamp": "2024-03-21T12:15:00Z",
+    "lastTimestamp": "2024-03-21T12:18:00Z"
+  }
+]

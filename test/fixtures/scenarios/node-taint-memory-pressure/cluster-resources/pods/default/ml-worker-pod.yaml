@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ml-worker-pod
+  namespace: default
+  labels:
+    app: ml-worker
+    workload: batch
+  creationTimestamp: "2024-03-21T12:08:00Z"
+spec:
+  containers:
+    - name: worker
+      image: ghcr.io/example/ml-worker:v0.9.1
+      resources:
+        requests:
+          cpu: "500m"
+          memory: "2Gi"
+        limits:
+          cpu: "1"
+          memory: "4Gi"
+  nodeSelector:
+    kubernetes.io/os: linux
+status:
+  phase: Pending
+  conditions:
+    - type: PodScheduled
+      status: "False"
+      reason: Unschedulable
+      message: '0/1 nodes are available: 1 node(s) had untolerated taint {node.kubernetes.io/memory-pressure: }.'
+  containerStatuses: []

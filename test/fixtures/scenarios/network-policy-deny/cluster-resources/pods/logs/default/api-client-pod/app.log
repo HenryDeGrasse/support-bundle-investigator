@@ -1,0 +1,8 @@
+2024-03-21T11:58:40Z INFO  Booting api-client service
+2024-03-21T11:58:42Z INFO  Loaded PAYMENTS_SERVICE_HOST=http://payments-api:8443
+2024-03-21T11:58:50Z INFO  Attempting TLS connection to payments-api.default.svc.cluster.local:8443
+2024-03-21T11:58:53Z ERROR upstream request failed: connect ECONNREFUSED 10.96.22.40:8443
+2024-03-21T11:58:58Z WARN  retrying outbound request to payments-api.default.svc.cluster.local:8443 after timeout
+2024-03-21T11:59:01Z ERROR request timeout while dialing payments-api.default.svc.cluster.local:8443
+2024-03-21T11:59:06Z ERROR outbound request failed: connection refused for payments-api.default.svc.cluster.local:8443
+2024-03-21T11:59:12Z ERROR readiness check failed because downstream dependency payments-api is unreachable

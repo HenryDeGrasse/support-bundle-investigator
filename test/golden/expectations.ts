@@ -129,6 +129,35 @@ export const GOLDEN_EXPECTATIONS: Record<string, ScenarioExpectation> = {
     mustMentionIdentifiers: ['web-app-pod', 'api-service.staging', 'staging'],
   },
 
+  'network-policy-deny': {
+    name: 'NetworkPolicy Deny-All Egress',
+    minFindings: 3,
+    topFindingMustMatch: [
+      /NetworkPolicy/i,
+      /deny-all-egress/i,
+      /egress/i,
+      /payments-api/i,
+    ],
+    topFindingSeverity: ['high'],
+    topFindingMinConfidence: 0.9,
+    mustCiteEvidence: [
+      /networkpolicies/i,
+      /pods/i,
+      /services/i,
+      /logs/i,
+    ],
+    mustNotHallucinate: [
+      /ImagePullBackOff/i,
+      /CrashLoopBackOff/i,
+      /missing.*secret/i,
+    ],
+    rootCauseMustMatch: [
+      /networkpolicy|deny|egress|outbound/i,
+      /payments-api|service|port 8443/i,
+    ],
+    mustMentionIdentifiers: ['api-client-pod', 'deny-all-egress', 'payments-api'],
+  },
+
   'wrong-db-endpoint': {
     name: 'Wrong DB Endpoint (DNS Failure)',
     minFindings: 1,
@@ -218,6 +247,38 @@ export const GOLDEN_EXPECTATIONS: Record<string, ScenarioExpectation> = {
       'wrong-host.internal',
       'grafana-pod',
       'alertmanager-pod',
+    ],
+  },
+
+  'node-taint-memory-pressure': {
+    name: 'Node Taint + MemoryPressure Scheduling Failure',
+    minFindings: 3,
+    topFindingMustMatch: [
+      /Pending Pod/i,
+      /scheduling failure/i,
+      /ml-worker-pod/i,
+      /memory-pressure|taint/i,
+    ],
+    topFindingSeverity: ['critical'],
+    topFindingMinConfidence: 0.85,
+    mustCiteEvidence: [
+      /pods/i,
+      /events/i,
+      /nodes/i,
+    ],
+    mustNotHallucinate: [
+      /ImagePullBackOff/i,
+      /CrashLoopBackOff/i,
+      /NetworkPolicy/i,
+    ],
+    rootCauseMustMatch: [
+      /pending|failedscheduling|scheduled/i,
+      /taint|untolerated|memory-pressure/i,
+    ],
+    mustMentionIdentifiers: [
+      'ml-worker-pod',
+      'worker-node-1',
+      'node.kubernetes.io/memory-pressure',
     ],
   },
 };

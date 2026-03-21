@@ -1,0 +1,18 @@
+[
+  {
+    "name": "payments-connectivity",
+    "insight": {
+      "severity": "warn",
+      "primary": "Outbound connectivity to payments-api is blocked",
+      "detail": "Pod 'api-client-pod' in namespace 'default' cannot establish outbound connections to Service 'payments-api' on port 8443. Requests are timing out while the service itself still has healthy endpoints."
+    }
+  },
+  {
+    "name": "payments-service-endpoints",
+    "insight": {
+      "severity": "pass",
+      "primary": "payments-api has healthy endpoints",
+      "detail": "Service 'payments-api' in namespace 'default' has a ready backend endpoint. The service backend is healthy, so the connectivity failure is likely caused by policy or network path restrictions."
+    }
+  }
+]
