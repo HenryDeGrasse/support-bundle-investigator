@@ -1,0 +1,53 @@
+Reviewed:
+- `src/ai/config.ts`
+- `src/ai/replayable-llm-client.ts`
+- `src/pipeline/analyze.ts`
+- `src/investigators/seed-generator.ts`
+- `test/golden/evaluate.ts`
+- `test/golden/expectations.ts`
+- fixture layouts for:
+  - `bad-image-tag`
+  - `missing-secret-crashloop`
+
+Changed:
+- Added cassette fixture store:
+  - `test/fixtures/cassettes/cassettes.json`
+- Added replayed AI golden test:
+  - `test/golden/__tests__/cassette-eval.test.ts`
+
+What I implemented:
+- Built an end-to-end replay-based golden test that:
+  - sets `SBI_AI_MODE=replay`
+  - sets `SBI_CASSETTE_DIR` to the fixture cassette directory
+  - deletes `OPENAI_API_KEY`
+  - runs the real `analyzeBundlePipeline(...)` without `noAi: true`
+- Verified for replayed scenarios:
+  - `result.aiMode === 'cloud'`
+  - at least one final finding is AI-sourced (`finding:ai:`)
+  - cassette payloads pass `validateAIFindings(...)`
+  - combined heuristic + replayed-AI findings still pass golden expectations
+  - `LLMClient.prototype.investigateSeed` is never called
+  - `LLMClient.prototype.generateText` is never called
+- Verified graceful degradation for a no-cassette scenario:
+  - `wrong-db-endpoint` completes successfully
+  - produces heuristic-only findings
+  - still passes its golden expectation
+
+Important implementation detail:
+- I had to target the actual replayed seed identities used by the AI path, not just raw generated seeds.
+- Because the AI investigator merges overlapping seeds before LLM calls, the usable cassette keys for these scenarios are merged-seed keys:
+  - `bad-image-tag` → `seed:merged:3`
+  - `missing-secret-crashloop` → `seed:merged:5`
+- I also had to cite the exact artifact IDs seen by the chunk index during real bundle extraction (including scenario-prefixed resource paths like `bad-image-tag/cluster-resources/...` and event artifact IDs like `events/default`) so grounding checks would retain the replayed AI findings.
+
+Checks run:
+- `npx vitest run test/golden/__tests__/cassette-eval.test.ts test/golden/__tests__/golden-eval.test.ts` ✅
+- `npm run lint` ✅
+- `npm run typecheck` ✅
+- `npm run unit` ✅
+
+Assessment:
+- Step 6 is complete and working through the real pipeline path.
+- This now proves replay-mode AI evals run without credentials and without invoking the underlying network-backed LLM methods.
+
+Verdict: changes_made

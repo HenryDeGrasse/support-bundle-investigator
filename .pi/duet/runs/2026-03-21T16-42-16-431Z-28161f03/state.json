@@ -1,7 +1,7 @@
 {
   "version": 1,
   "phase": "plan_approved",
-  "updatedAt": "2026-03-21T18:20:16.082Z",
+  "updatedAt": "2026-03-21T18:31:15.441Z",
   "runId": "2026-03-21T16-42-16-431Z-28161f03",
   "handoffMode": "summary",
   "postPlanMode": "review",
@@ -72,8 +72,8 @@
   "round": 3,
   "resumeAction": "run",
   "activeSummary": {
-    "stepId": "step-5",
-    "stepTitle": "Wire CassetteRecorder into the LLM execution path for record/replay",
+    "stepId": "step-5b",
+    "stepTitle": "AI cassette eval test: replay-based golden eval using wired path",
     "gateResults": [
       {
         "id": "lint",
@@ -261,5 +261,5 @@
       }
     ]
   },
-  "stepIndex": 5
+  "stepIndex": 6
 }

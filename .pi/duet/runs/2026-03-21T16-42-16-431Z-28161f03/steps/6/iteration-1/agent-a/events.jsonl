@@ -1,0 +1,270 @@
+{"t":466,"type":"message_end","role":"user"}
+{"t":2391,"type":"thinking_start"}
+{"t":11109,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":11154,"type":"tool_start","toolName":"grep","toolArgs":"src/investigators"}
+{"t":11154,"type":"tool_start","toolName":"read","toolArgs":"src/investigators/seed-generator.ts"}
+{"t":11154,"type":"tool_start","toolName":"read","toolArgs":"test/helpers/create-test-bundle.ts"}
+{"t":11154,"type":"tool_start","toolName":"read","toolArgs":"test/golden/evaluate.ts"}
+{"t":11154,"type":"tool_start","toolName":"read","toolArgs":"test/golden/expectations.ts"}
+{"t":11154,"type":"tool_start","toolName":"read","toolArgs":"src/ai/recorder.ts"}
+{"t":11242,"type":"tool_end","toolName":"grep"}
+{"t":11285,"type":"message_end","role":"toolResult"}
+{"t":11373,"type":"tool_end","toolName":"read"}
+{"t":11417,"type":"message_end","role":"toolResult"}
+{"t":11505,"type":"tool_end","toolName":"read"}
+{"t":11505,"type":"message_end","role":"toolResult"}
+{"t":11549,"type":"tool_end","toolName":"read"}
+{"t":11644,"type":"message_end","role":"toolResult"}
+{"t":11686,"type":"tool_end","toolName":"read"}
+{"t":11773,"type":"message_end","role":"toolResult"}
+{"t":11816,"type":"tool_end","toolName":"read"}
+{"t":11905,"type":"message_end","role":"toolResult"}
+{"t":11949,"type":"turn_end","toolCount":6,"thinkingLength":454,"textLength":0}
+{"t":16026,"type":"thinking_start"}
+{"t":20365,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":20365,"type":"tool_start","toolName":"read","toolArgs":"package.json"}
+{"t":20365,"type":"tool_end","toolName":"read"}
+{"t":20409,"type":"message_end","role":"toolResult"}
+{"t":20409,"type":"turn_end","toolCount":7,"thinkingLength":946,"textLength":0}
+{"t":22070,"type":"thinking_start"}
+{"t":44431,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":44521,"type":"tool_start","toolName":"write","toolArgs":"test/golden/__tests__/scratch-cassette-seeds.test.ts"}
+{"t":44521,"type":"tool_end","toolName":"write"}
+{"t":44521,"type":"message_end","role":"toolResult"}
+{"t":44565,"type":"turn_end","toolCount":8,"thinkingLength":1440,"textLength":0}
+{"t":47754,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":47851,"type":"tool_start","toolName":"bash","toolArgs":"npx vitest run test/golden/__tests__/scratch-cassette-seeds.…"}
+{"t":48339,"type":"tool_end","toolName":"bash"}
+{"t":48383,"type":"message_end","role":"toolResult"}
+{"t":48470,"type":"turn_end","toolCount":9,"thinkingLength":1440,"textLength":0}
+{"t":50168,"type":"thinking_start"}
+{"t":57296,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":57389,"type":"tool_start","toolName":"grep","toolArgs":"src/investigators/orchestrator.ts"}
+{"t":57434,"type":"tool_end","toolName":"grep"}
+{"t":57522,"type":"message_end","role":"toolResult"}
+{"t":57566,"type":"turn_end","toolCount":10,"thinkingLength":1986,"textLength":0}
+{"t":60625,"type":"thinking_start"}
+{"t":75059,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":75150,"type":"tool_start","toolName":"bash","toolArgs":"node - <<'NODE'\nconst crypto = require('crypto');\nfor (const…"}
+{"t":75150,"type":"tool_end","toolName":"bash"}
+{"t":75150,"type":"message_end","role":"toolResult"}
+{"t":75196,"type":"turn_end","toolCount":11,"thinkingLength":1986,"textLength":0}
+{"t":76865,"type":"thinking_start"}
+{"t":120164,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":120164,"type":"tool_start","toolName":"find","toolArgs":"test/fixtures/scenarios/bad-image-tag"}
+{"t":120164,"type":"tool_start","toolName":"find","toolArgs":"test/fixtures/scenarios/missing-secret-crashloop"}
+{"t":120164,"type":"tool_end","toolName":"find"}
+{"t":120164,"type":"message_end","role":"toolResult"}
+{"t":120164,"type":"tool_end","toolName":"find"}
+{"t":120269,"type":"message_end","role":"toolResult"}
+{"t":120315,"type":"turn_end","toolCount":13,"thinkingLength":5930,"textLength":0}
+{"t":120315,"type":"thinking_start"}
+{"t":170815,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":170815,"type":"tool_start","toolName":"bash","toolArgs":"node - <<'NODE'\nconst fs = require('fs');\nconst path = requi…"}
+{"t":170871,"type":"tool_end","toolName":"bash"}
+{"t":170871,"type":"message_end","role":"toolResult"}
+{"t":170965,"type":"turn_end","toolCount":14,"thinkingLength":7422,"textLength":0}
+{"t":172837,"type":"thinking_start"}
+{"t":215445,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":215492,"type":"tool_start","toolName":"write","toolArgs":"test/golden/__tests__/cassette-eval.test.ts"}
+{"t":215492,"type":"tool_end","toolName":"write"}
+{"t":215492,"type":"message_end","role":"toolResult"}
+{"t":215597,"type":"turn_end","toolCount":15,"thinkingLength":7844,"textLength":0}
+{"t":217407,"type":"thinking_start"}
+{"t":220068,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":220069,"type":"tool_start","toolName":"bash","toolArgs":"npx vitest run test/golden/__tests__/cassette-eval.test.ts"}
+{"t":220801,"type":"tool_end","toolName":"bash"}
+{"t":220848,"type":"message_end","role":"toolResult"}
+{"t":220944,"type":"turn_end","toolCount":16,"thinkingLength":8239,"textLength":0}
+{"t":222756,"type":"thinking_start"}
+{"t":225414,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":225414,"type":"tool_start","toolName":"grep","toolArgs":"src/investigators"}
+{"t":225414,"type":"tool_end","toolName":"grep"}
+{"t":225462,"type":"message_end","role":"toolResult"}
+{"t":225564,"type":"turn_end","toolCount":17,"thinkingLength":8239,"textLength":0}
+{"t":227639,"type":"thinking_start"}
+{"t":243878,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":243972,"type":"tool_start","toolName":"write","toolArgs":"test/golden/__tests__/scratch-cassette-results.test.ts"}
+{"t":243972,"type":"tool_end","toolName":"write"}
+{"t":243972,"type":"message_end","role":"toolResult"}
+{"t":244019,"type":"turn_end","toolCount":18,"thinkingLength":8729,"textLength":0}
+{"t":247019,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":247067,"type":"tool_start","toolName":"bash","toolArgs":"npx vitest run test/golden/__tests__/scratch-cassette-result…"}
+{"t":247773,"type":"tool_end","toolName":"bash"}
+{"t":247820,"type":"message_end","role":"toolResult"}
+{"t":247913,"type":"turn_end","toolCount":19,"thinkingLength":8729,"textLength":0}
+{"t":249853,"type":"thinking_start"}
+{"t":264782,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":264782,"type":"tool_start","toolName":"read","toolArgs":"test/fixtures/scenarios/bad-image-tag/cluster-resources/depl…"}
+{"t":264782,"type":"tool_start","toolName":"read","toolArgs":"test/fixtures/scenarios/missing-secret-crashloop/cluster-res…"}
+{"t":264829,"type":"tool_end","toolName":"read"}
+{"t":264829,"type":"message_end","role":"toolResult"}
+{"t":264829,"type":"tool_end","toolName":"read"}
+{"t":264935,"type":"message_end","role":"toolResult"}
+{"t":264983,"type":"turn_end","toolCount":21,"thinkingLength":9298,"textLength":0}
+{"t":268502,"type":"thinking_start"}
+{"t":301310,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":301406,"type":"tool_start","toolName":"bash","toolArgs":"node - <<'NODE'\nconst crypto=require('crypto');\nfor (const […"}
+{"t":301406,"type":"tool_end","toolName":"bash"}
+{"t":301406,"type":"message_end","role":"toolResult"}
+{"t":301455,"type":"turn_end","toolCount":22,"thinkingLength":9298,"textLength":0}
+{"t":303027,"type":"thinking_start"}
+{"t":332975,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":333072,"type":"tool_start","toolName":"bash","toolArgs":"node - <<'NODE'\nconst fs = require('fs');\nconst path = requi…"}
+{"t":333072,"type":"tool_end","toolName":"bash"}
+{"t":333120,"type":"message_end","role":"toolResult"}
+{"t":333215,"type":"turn_end","toolCount":23,"thinkingLength":9766,"textLength":0}
+{"t":334672,"type":"thinking_start"}
+{"t":338952,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":339055,"type":"tool_start","toolName":"edit","toolArgs":"test/golden/__tests__/cassette-eval.test.ts"}
+{"t":339055,"type":"tool_end","toolName":"edit"}
+{"t":339055,"type":"message_end","role":"toolResult"}
+{"t":339055,"type":"turn_end","toolCount":24,"thinkingLength":10225,"textLength":0}
+{"t":340694,"type":"thinking_start"}
+{"t":341813,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":341913,"type":"tool_start","toolName":"bash","toolArgs":"npx vitest run test/golden/__tests__/scratch-cassette-result…"}
+{"t":342523,"type":"tool_end","toolName":"bash"}
+{"t":342570,"type":"message_end","role":"toolResult"}
+{"t":342664,"type":"turn_end","toolCount":25,"thinkingLength":10225,"textLength":0}
+{"t":344605,"type":"thinking_start"}
+{"t":356851,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":356851,"type":"tool_start","toolName":"grep","toolArgs":"src/investigators/ai-investigator.ts"}
+{"t":356899,"type":"tool_end","toolName":"grep"}
+{"t":356994,"type":"message_end","role":"toolResult"}
+{"t":357042,"type":"turn_end","toolCount":26,"thinkingLength":10683,"textLength":0}
+{"t":358987,"type":"thinking_start"}
+{"t":360294,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":360294,"type":"tool_start","toolName":"read","toolArgs":"src/investigators/ai-investigator.ts"}
+{"t":360343,"type":"tool_end","toolName":"read"}
+{"t":360437,"type":"message_end","role":"toolResult"}
+{"t":360437,"type":"turn_end","toolCount":27,"thinkingLength":10683,"textLength":0}
+{"t":365281,"type":"thinking_start"}
+{"t":387989,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":388035,"type":"tool_start","toolName":"write","toolArgs":"test/golden/__tests__/scratch-ai-prompt-paths.test.ts"}
+{"t":388035,"type":"tool_end","toolName":"write"}
+{"t":388035,"type":"message_end","role":"toolResult"}
+{"t":388133,"type":"turn_end","toolCount":28,"thinkingLength":10683,"textLength":0}
+{"t":392367,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":392367,"type":"tool_start","toolName":"bash","toolArgs":"npx vitest run test/golden/__tests__/scratch-ai-prompt-paths…"}
+{"t":392974,"type":"tool_end","toolName":"bash"}
+{"t":392974,"type":"message_end","role":"toolResult"}
+{"t":392974,"type":"turn_end","toolCount":29,"thinkingLength":10683,"textLength":0}
+{"t":394919,"type":"thinking_start"}
+{"t":398551,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":398649,"type":"tool_start","toolName":"edit","toolArgs":"test/golden/__tests__/scratch-ai-prompt-paths.test.ts"}
+{"t":398649,"type":"tool_end","toolName":"edit"}
+{"t":398649,"type":"message_end","role":"toolResult"}
+{"t":398649,"type":"turn_end","toolCount":30,"thinkingLength":11099,"textLength":0}
+{"t":401441,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":401441,"type":"tool_start","toolName":"bash","toolArgs":"npx vitest run test/golden/__tests__/scratch-ai-prompt-paths…"}
+{"t":402037,"type":"tool_end","toolName":"bash"}
+{"t":402084,"type":"message_end","role":"toolResult"}
+{"t":402179,"type":"turn_end","toolCount":31,"thinkingLength":11099,"textLength":0}
+{"t":407781,"type":"thinking_start"}
+{"t":415985,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":415985,"type":"tool_start","toolName":"grep","toolArgs":"src/ai/chunk-indexer.ts"}
+{"t":415985,"type":"tool_end","toolName":"grep"}
+{"t":415985,"type":"message_end","role":"toolResult"}
+{"t":416035,"type":"turn_end","toolCount":32,"thinkingLength":11099,"textLength":0}
+{"t":418918,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":418918,"type":"tool_start","toolName":"read","toolArgs":"src/ai/chunk-indexer.ts"}
+{"t":418918,"type":"tool_end","toolName":"read"}
+{"t":418967,"type":"message_end","role":"toolResult"}
+{"t":419072,"type":"turn_end","toolCount":33,"thinkingLength":11099,"textLength":0}
+{"t":423551,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":423551,"type":"tool_start","toolName":"grep","toolArgs":"src/ai/chunk-indexer.ts"}
+{"t":423551,"type":"tool_end","toolName":"grep"}
+{"t":423674,"type":"message_end","role":"toolResult"}
+{"t":423674,"type":"turn_end","toolCount":34,"thinkingLength":11099,"textLength":0}
+{"t":428157,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":428206,"type":"tool_start","toolName":"read","toolArgs":"src/ai/chunk-indexer.ts"}
+{"t":428206,"type":"tool_end","toolName":"read"}
+{"t":428305,"type":"message_end","role":"toolResult"}
+{"t":428354,"type":"turn_end","toolCount":35,"thinkingLength":11099,"textLength":0}
+{"t":430155,"type":"thinking_start"}
+{"t":444794,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":444898,"type":"tool_start","toolName":"bash","toolArgs":"node - <<'NODE'\nconst fs = require('fs');\nconst path = requi…"}
+{"t":444898,"type":"tool_end","toolName":"bash"}
+{"t":444898,"type":"message_end","role":"toolResult"}
+{"t":444948,"type":"turn_end","toolCount":36,"thinkingLength":11099,"textLength":0}
+{"t":447394,"type":"thinking_start"}
+{"t":451154,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":451254,"type":"tool_start","toolName":"bash","toolArgs":"npx vitest run test/golden/__tests__/scratch-cassette-result…"}
+{"t":451870,"type":"tool_end","toolName":"bash"}
+{"t":451918,"type":"message_end","role":"toolResult"}
+{"t":451918,"type":"turn_end","toolCount":37,"thinkingLength":11099,"textLength":0}
+{"t":454085,"type":"thinking_start"}
+{"t":457711,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":457711,"type":"tool_start","toolName":"bash","toolArgs":"npx vitest run test/golden/__tests__/cassette-eval.test.ts"}
+{"t":458440,"type":"tool_end","toolName":"bash"}
+{"t":458440,"type":"message_end","role":"toolResult"}
+{"t":458487,"type":"turn_end","toolCount":38,"thinkingLength":11099,"textLength":0}
+{"t":462336,"type":"thinking_start"}
+{"t":463735,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":463838,"type":"tool_start","toolName":"bash","toolArgs":"rm test/golden/__tests__/scratch-cassette-seeds.test.ts test…"}
+{"t":463838,"type":"tool_end","toolName":"bash"}
+{"t":463838,"type":"message_end","role":"toolResult"}
+{"t":463838,"type":"turn_end","toolCount":39,"thinkingLength":11099,"textLength":0}
+{"t":467591,"type":"thinking_start"}
+{"t":470450,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":470450,"type":"tool_start","toolName":"bash","toolArgs":"npx vitest run test/golden/__tests__/cassette-eval.test.ts t…"}
+{"t":470450,"type":"tool_start","toolName":"bash","toolArgs":"npm run lint"}
+{"t":470489,"type":"tool_start","toolName":"bash","toolArgs":"npm run typecheck"}
+{"t":471489,"type":"tool_end","toolName":"bash"}
+{"t":471489,"type":"message_end","role":"toolResult"}
+{"t":473290,"type":"tool_end","toolName":"bash"}
+{"t":473324,"type":"message_end","role":"toolResult"}
+{"t":473324,"type":"tool_end","toolName":"bash"}
+{"t":473324,"type":"message_end","role":"toolResult"}
+{"t":473324,"type":"turn_end","toolCount":42,"thinkingLength":11506,"textLength":0}
+{"t":476229,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":476299,"type":"tool_start","toolName":"bash","toolArgs":"npm run unit"}
+{"t":478248,"type":"tool_end","toolName":"bash"}
+{"t":478283,"type":"message_end","role":"toolResult"}
+{"t":478317,"type":"turn_end","toolCount":43,"thinkingLength":11506,"textLength":0}
+{"t":480700,"type":"thinking_start"}
+{"t":484594,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":484666,"type":"tool_start","toolName":"bash","toolArgs":"git status --short test/golden/__tests__/cassette-eval.test.…"}
+{"t":484666,"type":"tool_start","toolName":"bash","toolArgs":"git diff -- test/golden/__tests__/cassette-eval.test.ts test…"}
+{"t":484666,"type":"tool_end","toolName":"bash"}
+{"t":484666,"type":"message_end","role":"toolResult"}
+{"t":484666,"type":"tool_end","toolName":"bash"}
+{"t":484666,"type":"message_end","role":"toolResult"}
+{"t":484666,"type":"turn_end","toolCount":45,"thinkingLength":11956,"textLength":0}
+{"t":492678,"type":"thinking_start"}
+{"t":494654,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":494723,"type":"tool_start","toolName":"read","toolArgs":"test/golden/__tests__/cassette-eval.test.ts"}
+{"t":494723,"type":"tool_start","toolName":"read","toolArgs":"test/fixtures/cassettes/cassettes.json"}
+{"t":494723,"type":"tool_end","toolName":"read"}
+{"t":494759,"type":"message_end","role":"toolResult"}
+{"t":494794,"type":"tool_end","toolName":"read"}
+{"t":494863,"type":"message_end","role":"toolResult"}
+{"t":494897,"type":"turn_end","toolCount":47,"thinkingLength":11956,"textLength":0}
+{"t":496443,"type":"thinking_start"}
+{"t":502159,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":502159,"type":"tool_start","toolName":"bash","toolArgs":"node - <<'NODE'\nconst fs = require('fs');\nconst path = requi…"}
+{"t":502196,"type":"tool_end","toolName":"bash"}
+{"t":502196,"type":"message_end","role":"toolResult"}
+{"t":502196,"type":"turn_end","toolCount":48,"thinkingLength":12401,"textLength":0}
+{"t":504150,"type":"thinking_start"}
+{"t":507014,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":507051,"type":"tool_start","toolName":"bash","toolArgs":"npx vitest run test/golden/__tests__/cassette-eval.test.ts"}
+{"t":507051,"type":"tool_start","toolName":"bash","toolArgs":"npm run lint"}
+{"t":507051,"type":"tool_start","toolName":"bash","toolArgs":"npm run typecheck"}
+{"t":507913,"type":"tool_end","toolName":"bash"}
+{"t":507991,"type":"message_end","role":"toolResult"}
+{"t":509704,"type":"tool_end","toolName":"bash"}
+{"t":509739,"type":"message_end","role":"toolResult"}
+{"t":509739,"type":"tool_end","toolName":"bash"}
+{"t":509739,"type":"message_end","role":"toolResult"}
+{"t":509739,"type":"turn_end","toolCount":51,"thinkingLength":12808,"textLength":0}
+{"t":511514,"type":"thinking_start"}
+{"t":514148,"type":"message_end","role":"assistant","stopReason":"toolUse","textLength":0,"textPreview":""}
+{"t":514188,"type":"tool_start","toolName":"bash","toolArgs":"npm run unit"}
+{"t":516222,"type":"tool_end","toolName":"bash"}
+{"t":516258,"type":"message_end","role":"toolResult"}
+{"t":516327,"type":"turn_end","toolCount":52,"thinkingLength":13211,"textLength":0}
+{"t":519848,"type":"thinking_start"}
+{"t":547542,"type":"message_end","role":"assistant","stopReason":"stop","textLength":2322,"textPreview":"Reviewed: - `src/ai/config.ts` - `src/ai/replayable-llm-client.ts` - `src/pipeline/analyze.ts` - `src/investigators/seed-generator.ts` - `test/golden/evaluate.ts` - `test/golden/expectations.ts` - fixture layouts for: - `bad-image-tag` - `missing-secret-crashloop` Changed: - Added cassette fixture store: - `test/fixtures/cassettes/cassettes.json` - Added replayed AI golden test: - `test/golden/__t…"}
+{"t":547577,"type":"turn_end","toolCount":52,"thinkingLength":13655,"textLength":2322}
+{"t":547666,"type":"agent_end","messageCount":93,"toolCount":52,"thinkingLength":13655,"textLength":2322}

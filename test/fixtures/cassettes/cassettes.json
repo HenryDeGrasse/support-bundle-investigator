@@ -1,0 +1,91 @@
+{
+  "version": "1",
+  "cassettes": {
+    "kubernetes:b6a9355b38ea7fa1": {
+      "seedKey": "kubernetes:b6a9355b38ea7fa1",
+      "seedId": "seed:merged:3",
+      "seedCategory": "kubernetes",
+      "request": {
+        "system": "synthetic system prompt for bad-image-tag merged seed",
+        "user": "synthetic user prompt for bad-image-tag merged seed"
+      },
+      "response": {
+        "findings": [
+          {
+            "title": "AI corroboration: Deployment app-deployment references invalid image tag myapp:v999.99.99",
+            "severity": "high",
+            "confidence": 0.96,
+            "affectedComponents": [
+              "Deployment/default/app-deployment"
+            ],
+            "reasoningSummary": "Deployment app-deployment in namespace default references image myapp:v999.99.99, and related Failed and ErrImagePull events on pod app-pod confirm the tag cannot be pulled from the registry.",
+            "evidence": [
+              {
+                "path": "bad-image-tag/cluster-resources/deployments/default.json",
+                "note": "Deployment app-deployment specifies image myapp:v999.99.99 for container app"
+              },
+              {
+                "path": "events/default",
+                "note": "Failed and ErrImagePull events for pod app-pod show the image tag cannot be pulled"
+              }
+            ],
+            "contradictionsChecked": [
+              "Deployment app-deployment does not reference a valid alternate image tag in the captured manifest",
+              "Failed and ErrImagePull events corroborate the invalid image tag diagnosis"
+            ],
+            "recommendedAction": "Change app-deployment to a valid image tag and roll out the Deployment again.",
+            "missingEvidence": []
+          }
+        ],
+        "rawResponse": "{\"findings\":[{\"title\":\"AI corroboration: Deployment app-deployment references invalid image tag myapp:v999.99.99\",\"severity\":\"high\",\"confidence\":0.96,\"affectedComponents\":[\"Deployment/default/app-deployment\"],\"reasoningSummary\":\"Deployment app-deployment in namespace default references image myapp:v999.99.99, and related Failed and ErrImagePull events on pod app-pod confirm the tag cannot be pulled from the registry.\",\"evidence\":[{\"path\":\"bad-image-tag/cluster-resources/deployments/default.json\",\"note\":\"Deployment app-deployment specifies image myapp:v999.99.99 for container app\"},{\"path\":\"events/default\",\"note\":\"Failed and ErrImagePull events for pod app-pod show the image tag cannot be pulled\"}],\"contradictionsChecked\":[\"Deployment app-deployment does not reference a valid alternate image tag in the captured manifest\",\"Failed and ErrImagePull events corroborate the invalid image tag diagnosis\"],\"recommendedAction\":\"Change app-deployment to a valid image tag and roll out the Deployment again.\",\"missingEvidence\":[]}]}"
+      },
+      "model": "gpt-4o",
+      "timestamp": "2026-03-21T18:05:00.000Z"
+    },
+    "kubernetes:a8c090a62fa36d5e": {
+      "seedKey": "kubernetes:a8c090a62fa36d5e",
+      "seedId": "seed:merged:5",
+      "seedCategory": "kubernetes",
+      "request": {
+        "system": "synthetic system prompt for missing-secret-crashloop merged seed",
+        "user": "synthetic user prompt for missing-secret-crashloop merged seed"
+      },
+      "response": {
+        "findings": [
+          {
+            "title": "AI corroboration: Deployment app-deployment references missing Secret app-credentials",
+            "severity": "high",
+            "confidence": 0.97,
+            "affectedComponents": [
+              "Deployment/default/app-deployment"
+            ],
+            "reasoningSummary": "Deployment app-deployment references Secret app-credentials via envFrom, but the secret is absent from the captured SecretList and related FailedMount events show pods cannot mount it.",
+            "evidence": [
+              {
+                "path": "missing-secret-crashloop/cluster-resources/deployments/default.json",
+                "note": "Deployment app-deployment uses envFrom secretRef app-credentials"
+              },
+              {
+                "path": "missing-secret-crashloop/cluster-resources/secrets/default.json",
+                "note": "Secret app-credentials is absent from the captured SecretList in namespace default"
+              },
+              {
+                "path": "events/default",
+                "note": "FailedMount events for app-pod mention secret app-credentials not found"
+              }
+            ],
+            "contradictionsChecked": [
+              "Secret app-credentials is not present anywhere in the captured SecretList",
+              "FailedMount events explicitly mention secret app-credentials not found"
+            ],
+            "recommendedAction": "Create or restore Secret app-credentials before restarting the Deployment.",
+            "missingEvidence": []
+          }
+        ],
+        "rawResponse": "{\"findings\":[{\"title\":\"AI corroboration: Deployment app-deployment references missing Secret app-credentials\",\"severity\":\"high\",\"confidence\":0.97,\"affectedComponents\":[\"Deployment/default/app-deployment\"],\"reasoningSummary\":\"Deployment app-deployment references Secret app-credentials via envFrom, but the secret is absent from the captured SecretList and related FailedMount events show pods cannot mount it.\",\"evidence\":[{\"path\":\"missing-secret-crashloop/cluster-resources/deployments/default.json\",\"note\":\"Deployment app-deployment uses envFrom secretRef app-credentials\"},{\"path\":\"missing-secret-crashloop/cluster-resources/secrets/default.json\",\"note\":\"Secret app-credentials is absent from the captured SecretList in namespace default\"},{\"path\":\"events/default\",\"note\":\"FailedMount events for app-pod mention secret app-credentials not found\"}],\"contradictionsChecked\":[\"Secret app-credentials is not present anywhere in the captured SecretList\",\"FailedMount events explicitly mention secret app-credentials not found\"],\"recommendedAction\":\"Create or restore Secret app-credentials before restarting the Deployment.\",\"missingEvidence\":[]}]}"
+      },
+      "model": "gpt-4o",
+      "timestamp": "2026-03-21T18:05:00.000Z"
+    }
+  }
+}
