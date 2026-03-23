@@ -505,8 +505,9 @@ support-bundle-investigator/
 |   +-- benchmark-hypotheses.mjs    # Diagnosis quality benchmark
 |   +-- benchmark-retrieval.mjs     # Retrieval precision/recall benchmark
 +-- docs/
-|   +-- findings-and-improvements.md   # 700+ line improvement roadmap (7 tiers)
-|   +-- support_bundle_investigator_prd_v2.md
+|   +-- support_bundle_investigator_prd_v2.md  # Product requirements doc
+|   +-- evals.md                               # Evaluation and testing reference
+|   +-- ghost-service-bundle-spec.yaml         # Example Troubleshoot bundle spec
 +-- .env                      # API keys and embedding config (gitignored)
 +-- bundles/                  # Support bundles (gitignored)
 ```
