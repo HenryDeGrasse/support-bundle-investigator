@@ -1092,7 +1092,7 @@ describe('runInvestigation', () => {
       );
     });
 
-    it('gives the cluster-wide meta-finding higher confidence than any individual DNS hypothesis', async () => {
+    it('gives the cluster-wide meta-finding higher confidence than any individual DNS hypothesis would have', async () => {
       const pods = [
         makeCrashLoopDnsPod('default', 'dns-app-0'),
         makeCrashLoopDnsPod('default', 'dns-app-1'),
@@ -1109,15 +1109,11 @@ describe('runInvestigation', () => {
       const metaFinding = result.findings.find((f) =>
         /^finding:meta:cluster-wide:dns-failure:default:/.test(f.id),
       );
-      const individualDnsHypotheses = result.findings.filter((f) =>
-        f.id.startsWith('finding:hypothesis:dns-failure:'),
-      );
 
       expect(metaFinding).toBeDefined();
-      expect(individualDnsHypotheses.length).toBeGreaterThan(0);
-
-      const maxIndividualConfidence = Math.max(...individualDnsHypotheses.map((f) => f.confidence));
-      expect(metaFinding!.confidence).toBeGreaterThan(maxIndividualConfidence);
+      // Meta-finding confidence should be boosted above a single hypothesis
+      // baseline (~0.81 for a typical dns-failure hypothesis).
+      expect(metaFinding!.confidence).toBeGreaterThan(0.81);
     });
 
     it('does not correlate the same DNS failure across namespaces', async () => {
@@ -1138,7 +1134,7 @@ describe('runInvestigation', () => {
       expect(metaFindings).toHaveLength(0);
     });
 
-    it('retains the meta-finding after pass1/pass2 dedup and final sorting', async () => {
+    it('retains the meta-finding after pass1/pass2 dedup and suppresses individual dns-failure hypotheses', async () => {
       const pods = [
         makeCrashLoopDnsPod('default', 'dns-app-0'),
         makeCrashLoopDnsPod('default', 'dns-app-1'),
@@ -1152,11 +1148,18 @@ describe('runInvestigation', () => {
 
       const result = await runInvestigation(makeContext({ resources: pods, logs }));
 
+      // The cluster-wide meta-finding should survive dedup
       const metaFindings = result.findings.filter((f) =>
         /^finding:meta:cluster-wide:dns-failure:default:/.test(f.id),
       );
       expect(metaFindings).toHaveLength(1);
-      expect(result.findings.some((f) => f.id.startsWith('finding:hypothesis:dns-failure:'))).toBe(true);
+
+      // Individual dns-failure hypotheses should be suppressed because the
+      // meta-finding (a non-hypothesis root cause) covers the same namespace.
+      const individualDns = result.findings.filter((f) =>
+        f.id.startsWith('finding:hypothesis:dns-failure:'),
+      );
+      expect(individualDns).toHaveLength(0);
     });
   });
 

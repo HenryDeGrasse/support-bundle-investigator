@@ -2,7 +2,7 @@
 
 > CLI-first, local-first tool that takes a [Troubleshoot](https://troubleshoot.sh/) support bundle `.tar.gz` and produces evidence-backed diagnosis.
 
-**Status: Complete** — full investigation pipeline with differential diagnosis, AI-augmented analysis, interactive TUI, and fixture scenarios verified by **3637+ tests across 86 files**.
+**Status: Complete** — full investigation pipeline with differential diagnosis, AI-augmented analysis, interactive TUI, and fixture scenarios verified by **3800+ tests across 97 files**.
 
 ---
 
@@ -295,31 +295,42 @@ Choosing TEI will start the Docker container and write the settings to `.env`. C
 ## Testing
 
 ```bash
-npm run unit          # 3637+ tests across 86 files
-npm run lint          # zero-warning ESLint
-npm run typecheck     # tsc --noEmit
+npm run unit               # 3800+ tests across 97 files
+npm run lint               # zero-warning ESLint
+npm run typecheck          # tsc --noEmit
 ```
 
-### Benchmark diagnosis quality
+### Evaluation and benchmarks
 
 ```bash
 npm run build
-npm run benchmark:hypotheses    # heuristic diagnosis across all scenarios
-node scripts/benchmark-retrieval.mjs   # P@5, R@5, MRR for graph + lexical retrieval
+npm run eval:golden               # golden eval scorecard across all 9 scenarios
+npm run eval:cassette             # AI replay eval using recorded LLM cassettes
+npm run audit                     # full self-test: dedup invariants + confidence quality
+npm run benchmark:hypotheses      # heuristic diagnosis quality across all scenarios
+npm run benchmark:retrieval       # P@5, R@5, MRR for graph + lexical retrieval
+npm run test:robustness           # corrupt/truncated/oversized/partial bundle tests
+npm run test:sensitive            # sensitive-data leakage protection tests
+npm run test:perf                 # per-scenario throughput benchmarks
 ```
 
 ### Fixture scenarios
 
-Six realistic failure scenarios in `test/fixtures/scenarios/`:
+Nine failure scenarios in `test/fixtures/scenarios/`:
 
 | Scenario | Root Cause | Top Diagnosis | Confidence |
 |---|---|---|---|
-| **wrong-db-endpoint** | `DB_HOST` points to non-existent DNS name | dns-failure | 0.81 |
-| **missing-secret-crashloop** | `app-credentials` Secret absent | missing-secret | 1.00 |
-| **bad-image-tag** | Image tag `myapp:v999.99.99` doesn't exist | image-pull-failure | 0.90 |
-| **pvc-pending** | PVC references non-existent StorageClass | volume-mount-failure | 0.90 |
-| **realistic-bundle-format** | Real Troubleshoot bundle structure | format validation | — |
-| **multi-namespace-retrieval** | Multi-namespace cluster | retrieval precision/recall testing | — |
+| **wrong-db-endpoint** | `DB_HOST` points to non-existent DNS name | dns-failure | 1.00 (strong) |
+| **missing-secret-crashloop** | `app-credentials` Secret absent | missing-secret | 1.00 (strong) |
+| **bad-image-tag** | Image tag `myapp:v999.99.99` doesn't exist | image-pull-failure | 0.95 (strong) |
+| **pvc-pending** | PVC references non-existent StorageClass | volume-mount-failure | 0.95 (strong) |
+| **ghost-service** | Cross-namespace DNS failure (staging Service) | crashloop | 1.00 (moderate) |
+| **network-policy-deny** | NetworkPolicy blocks all egress | network-policy-block | 0.98 (moderate) |
+| **node-taint-memory-pressure** | NoSchedule taint + MemoryPressure | scheduling-failure | 0.90 (moderate) |
+| **helm-release-failure** | Failed Helm hook CrashLoopBackOff | crashloop | 1.00 (moderate) |
+| **multi-namespace-retrieval** | Multi-namespace DNS + auth failures | dns-failure | 0.90 (moderate) |
+
+`realistic-bundle-format/` is additionally used as a format-validation fixture.
 
 Try them manually:
 
@@ -330,10 +341,12 @@ tar czf /tmp/wrong-db.tar.gz wrong-db-endpoint/
 tar czf /tmp/missing-secret.tar.gz missing-secret-crashloop/
 tar czf /tmp/bad-image.tar.gz bad-image-tag/
 tar czf /tmp/pvc.tar.gz pvc-pending/
+tar czf /tmp/ghost-service.tar.gz ghost-service/
+tar czf /tmp/netpol.tar.gz network-policy-deny/
 
 npx sbi analyze /tmp/wrong-db.tar.gz --no-ai
 npx sbi analyze /tmp/missing-secret.tar.gz --format json --output-dir ./out
-npx sbi analyze /tmp/bad-image.tar.gz --tui --no-ai
+npx sbi analyze /tmp/netpol.tar.gz --no-ai --debug --output-dir ./debug-out
 ```
 
 ---
@@ -344,14 +357,20 @@ When `--output-dir` is set, all three report files are written:
 
 | File | Format | Contents |
 |---|---|---|
-| `findings.json` | JSON | Schema-versioned structured report. Each finding includes `confidenceQuality: "strong" | "moderate" | "weak"` indicating how well-supported the confidence score is. |
-| `report.md` | Markdown | Executive summary, ranked findings with severity badges and confidence (`81% (weak)`, `100% (strong)`), evidence tables, spec recommendations. |
+| `findings.json` | JSON | Schema-versioned structured report. Each finding includes `confidenceQuality: "strong" | "moderate" | "weak"` indicating how well-supported the confidence score is. In `--debug` mode, each finding also includes a `provenance` object showing which investigator produced it, the originating seed, confidence deltas from verification, and merge history. |
+| `report.md` | Markdown | Executive summary, ranked findings with severity badges and confidence (`81% (weak)`, `100% (strong)`), evidence tables, spec recommendations. Includes AI summary (model, latency, tokens, estimated cost) when AI mode was active. |
 | `report.html` | HTML | Self-contained (no CDN), severity colour-coding, collapsible sections, print-friendly. |
+| `trace.json` | JSON | Investigation trace with per-step timing, seed counts/categories, retrieval stats (graph/lexical/semantic/merged chunk counts), confidence distribution (min/max/mean/median), hypothesis stats, and AI run summary (calls, latency, tokens, cost). |
+| `provenance.json` | JSON | Per-finding provenance metadata (only in `--debug` mode). Maps each finding to its originating investigator, seed, confidence adjustments, and merge lineage. |
 
 ```bash
 npx sbi analyze bundle.tar.gz --output-dir ./reports --trace
 ls reports/
 # findings.json  report.md  report.html  trace.json
+
+npx sbi analyze bundle.tar.gz --output-dir ./reports --debug
+ls reports/
+# findings.json  report.md  report.html  trace.json  provenance.json
 ```
 
 ### Confidence quality
@@ -434,6 +453,9 @@ support-bundle-investigator/
 |   |   +-- prompts.ts              # Category-specific investigation playbooks
 |   |   +-- schemas.ts              # AIFinding validation
 |   |   +-- config.ts               # AI config from env vars (LLM backend, token budget)
+|   |   +-- telemetry.ts            # AI call metrics aggregation (latency, tokens, cost)
+|   |   +-- recorder.ts             # Cassette record/replay for AI LLM calls
+|   |   +-- replayable-llm-client.ts # LLM client wrapper with cassette support
 |   +-- cli/
 |   |   +-- rat.ts                  # RAT launcher (auto-build, embedding setup, TUI)
 |   |   +-- run.ts                  # sbi binary entry point
@@ -463,17 +485,21 @@ support-bundle-investigator/
 |   |   +-- hypothesis-evidence-collector.ts
 |   |   +-- hypothesis-ranker.ts
 |   |   +-- hypothesis-converter.ts
+|   |   +-- finding-provenance.ts   # Per-finding provenance stamping
 |   |   +-- verifier.ts             # Contradiction checks, confidenceQuality
 |   +-- parsers/                    # K8s resources, events, logs, Helm, timeline
 |   +-- pipeline/analyze.ts         # Main pipeline (8 steps)
 |   +-- reporters/                  # JSON/Markdown/HTML reporters, spec recommender
 |   +-- tui/                        # Ink-based interactive terminal UI
 |   +-- types/                      # TypeScript domain types
+|   +-- utils/
+|   |   +-- sensitive-data.ts       # Secret/password/token redaction for prompts and reports
 +-- test/
-|   +-- fixtures/scenarios/         # 6 failure scenarios (real Troubleshoot format)
+|   +-- fixtures/scenarios/         # 9 failure scenarios (real Troubleshoot format)
+|   +-- fixtures/cassettes/         # Recorded AI LLM responses for deterministic replay
 |   +-- retrieval/                  # Retrieval quality tests (P@K, R@K, MRR)
-|   +-- golden/                     # CI/CD eval framework
-|   +-- integration/                # Full pipeline integration tests
+|   +-- golden/                     # Golden eval scorecard + cassette replay evals
+|   +-- integration/                # Pipeline, robustness, sensitive-data, perf tests
 |   +-- e2e/                        # End-to-end scenario tests
 +-- scripts/
 |   +-- benchmark-hypotheses.mjs    # Diagnosis quality benchmark
@@ -500,10 +526,13 @@ Options:
   --format <format>   Output format: json | text | summary | markdown | html (default: text)
   --verbose           Enable verbose logging (shows per-seed AI retrieval stats)
   --trace             Write trace.json to --output-dir
+  --debug             Emit enriched trace with per-finding provenance and diagnostics
   --no-ai             Disable AI features (heuristic-only, offline-safe)
   --tui               Launch interactive terminal UI
   -h, --help          Help
 ```
+
+`--debug` implies `--verbose` and `--trace`. It additionally writes `provenance.json` alongside the other report files, includes full provenance metadata in `findings.json`, and prints a per-finding provenance summary table to stderr.
 
 ```
 Usage: rat [options] [path]
@@ -541,5 +570,15 @@ Options:
 **Late chunking with TEI.** When TEI is running, each log chunk gets an embedding that encodes full-document context via token-level average pooling. A log error at line 3000 implicitly encodes `DB_HOST=db.internal` from line 12 because the transformer saw the entire document.
 
 **Spec recommendations.** When confidence is limited by missing bundle data, the system recommends specific collectors, analyzers, or redaction rules to improve future bundles.
+
+**Per-finding provenance.** Every finding carries optional structured metadata: which investigator produced it, the originating seed, confidence deltas from verification, merge lineage, and hypothesis family. Available via `--debug` and in `provenance.json`.
+
+**AI telemetry.** Every LLM call records latency, prompt/completion tokens, model name, and estimated cost (for OpenAI models). Aggregates are surfaced in `trace.json` and in the Markdown/HTML report footer so operators can audit AI usage per bundle.
+
+**Cassette record/replay.** AI investigation calls can be recorded to disk (`SBI_AI_MODE=record`) and replayed deterministically (`SBI_AI_MODE=replay`). This enables cost-free CI regression testing of the AI path without API credentials.
+
+**Sensitive-data protection.** Prompts and report output are sanitized to prevent leakage of base64 secret values, passwords, API keys, and tokens from bundle data. Integration tests verify that canary values planted in fixtures never appear in findings, reports, or prompts.
+
+**Robustness.** The pipeline is tested against corrupt archives, truncated gzip streams, empty bundles, partial bundles (missing entire artifact categories), malformed YAML/JSON resources, oversized archives, and bundles with 500+ tiny files. The system either fails with a clear error message or degrades gracefully with partial results — it never crashes silently.
 
 **No emoji.** Text symbols, ANSI colors, box-drawing characters, ASCII art only.

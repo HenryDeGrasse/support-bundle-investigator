@@ -68,6 +68,13 @@ export function evaluateScenario(
     detail: `Expected >= ${expectation.minFindings}, got ${findings.length}`,
   });
 
+  // 1b. Maximum findings count (catches dedup regressions)
+  checks.push({
+    check: 'maxFindings',
+    pass: findings.length <= expectation.maxFindings,
+    detail: `Expected <= ${expectation.maxFindings}, got ${findings.length}`,
+  });
+
   // 2. Top finding title matches
   const topTitleMatch =
     top !== undefined &&

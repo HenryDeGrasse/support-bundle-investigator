@@ -1,9 +1,0 @@
-The plan now has 16 steps with the new `step-5` (wiring CassetteRecorder into the LLM execution path) inserted before `step-5b` (the replay-based eval test that depends on it).
-
-**Summary of changes:**
-
-1. **Replaced old step-5** (which assumed replay worked end-to-end) with **two steps**:
-
-   - **step-5**: "Wire CassetteRecorder into the LLM execution path for record/replay" — This is the missing implementation step. It creates a `ReplayableLLMClient` wrapper that intercepts `investigateSeed()` calls, routing them through the `CassetteRecorder` based on mode (record/replay/live). It wires this into `analyzeBundlePipeline` by checking `getRecorderMode()` and wrapping the `LLMClient` when appropriate. It also updates `investigateWithAI` to pass seed identity so the wrapper can correctly key cassettes via `cassetteSeedKey`. Includes unit tests for the wrapper itself.
-
-   - **step-5b**: "AI cassette eval test: replay-based golden eval using wired path" — The actual test, now explicitly depending on step-5's wiring. The test runs `analyzeBundlePipeline` with `SBI_AI_MODE=replay` and pre-crafted cassettes, verifying that AI findings flow through the real pipeline end-to-end without API keys. The key difference from the original step-5 is that it exercises the full wired path (pipeline → LLMClient → ReplayableLLMClient → CassetteRecorder) rather than testing the recorder in isolation.

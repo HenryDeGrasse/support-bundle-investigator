@@ -16,6 +16,13 @@
     "unit": "vitest run",
     "build": "tsup",
     "benchmark:hypotheses": "node scripts/benchmark-hypotheses.mjs",
+    "audit": "node scripts/audit-findings.mjs",
+    "benchmark:retrieval": "node scripts/benchmark-retrieval.mjs",
+    "eval:golden": "vitest run test/golden/__tests__/golden-eval.test.ts test/golden/__tests__/scorecard.test.ts test/golden/__tests__/dedup-invariant.test.ts",
+    "eval:cassette": "vitest run test/golden/__tests__/cassette-eval.test.ts",
+    "test:robustness": "vitest run test/integration/__tests__/robustness.test.ts",
+    "test:sensitive": "vitest run test/integration/__tests__/sensitive-data.test.ts",
+    "test:perf": "vitest run test/integration/__tests__/perf-benchmark.test.ts",
     "rat": "npm run build && node dist/cli/rat.mjs"
   },
   "devDependencies": {

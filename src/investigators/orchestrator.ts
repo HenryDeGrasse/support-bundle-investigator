@@ -115,6 +115,28 @@ const SEVERITY_ORDER: Record<FindingSeverity, number> = {
   info: 0,
 };
 
+/**
+ * Issue families that represent specific diagnostic categories rather than
+ * generic fallback slugs. Used for namespace-level group coalescing in Pass 1
+ * and for generic-crash suppression in the post-dedup filter.
+ */
+const SPECIFIC_FAMILIES = new Set([
+  'missing-secret',
+  'dns-failure',
+  'image-pull-failure',
+  'crashloop',
+  'oom-kill',
+  'volume-mount-failure',
+  'notready',
+  'unhealthy',
+  'connectivity-failure',
+  'missing-service',
+  'pending',
+  'config-error',
+  'readiness-failure',
+  'generic-crash',
+]);
+
 function buildHypothesisSupportEdges(findings: Finding[]): GraphEdge[] {
   const edges: GraphEdge[] = [];
 
@@ -189,7 +211,10 @@ export function normalizeIssueFamilyForPass1(finding: Finding): string {
     lower.includes('errimagepull') ||
     lower.includes('image pull') ||
     lower.includes('pull image') ||
-    lower.includes('failed to pull')
+    lower.includes('failed to pull') ||
+    lower.includes('bad image tag') ||
+    lower.includes('invalid image tag') ||
+    lower.includes('image tag')
   ) {
     return 'image-pull-failure';
   }
@@ -207,8 +232,8 @@ export function normalizeIssueFamilyForPass1(finding: Finding): string {
   }
   // Volume / PVC mount failures
   if (
-    (lower.includes('volume') || lower.includes('pvc') || lower.includes('persistentvolume')) &&
-    (lower.includes('fail') || lower.includes('pending') || lower.includes('provision'))
+    (lower.includes('volume') || lower.includes('pvc') || lower.includes('persistentvolume') || lower.includes('storageclass')) &&
+    (lower.includes('fail') || lower.includes('pending') || lower.includes('provision') || lower.includes('missing'))
   ) {
     return 'volume-mount-failure';
   }
@@ -275,6 +300,126 @@ function extractPrimaryComponentForPass1(finding: Finding): string {
     }
   }
   return finding.affectedComponents[0] ?? finding.id;
+}
+
+/**
+ * Known Kubernetes resource kind prefixes used in affectedComponents.
+ * When a 2-part component starts with one of these, the first part is a Kind
+ * (not a namespace) and should not be treated as a namespace.
+ */
+const KNOWN_COMPONENT_KINDS = new Set([
+  'Container', 'Image', 'DNS', 'NetworkPolicy', 'Node',
+]);
+
+/**
+ * Extracts the namespace from a component string.
+ *
+ * Handles three formats:
+ * - `"Kind/namespace/name"` → `namespace`  (e.g. `"Pod/default/app-pod"`)
+ * - `"namespace/name"`      → `namespace`  (e.g. `"default/web-app"`)
+ *   BUT only when the first part is not a known Kind prefix.
+ * - `"name"` or `"Kind/name"` → `''`
+ */
+function extractNamespaceFromComponent(component: string): string {
+  const parts = component.split('/');
+  if (parts.length >= 3) return parts[1] ?? '';
+  if (parts.length === 2) {
+    const first = parts[0] ?? '';
+    // If the first part is a known K8s Kind, this is Kind/name — no namespace
+    if (KNOWN_COMPONENT_KINDS.has(first)) return '';
+    return first;
+  }
+  return '';
+}
+
+/**
+ * Builds the Pass 1 grouping key for a finding.
+ *
+ * Uses the full `component::family` by default (same as before).
+ *
+ * After initial grouping, {@link coalesceRelatedGroups} performs a second
+ * pass to merge groups that share the same namespace + family AND have
+ * overlapping workload names (e.g. a Pod finding and its parent Deployment
+ * finding about the same image-pull-failure).
+ */
+function pass1GroupKey(finding: Finding): string {
+  const component = extractPrimaryComponentForPass1(finding);
+  const family = normalizeIssueFamilyForPass1(finding);
+  return `${component}::${family}`;
+}
+
+/**
+ * Extracts simple resource names from a finding's affected components
+ * (the last `/`-delimited segment of each component string).
+ */
+function extractResourceNames(finding: Finding): Set<string> {
+  const names = new Set<string>();
+  for (const comp of finding.affectedComponents) {
+    const parts = comp.split('/');
+    const name = parts[parts.length - 1];
+    if (name) names.add(name);
+  }
+  return names;
+}
+
+/**
+ * After initial component::family grouping, merges groups that describe the
+ * same issue on related workloads in the same namespace.
+ *
+ * Two groups are merged when they share the same family, the same namespace,
+ * AND at least one overlapping resource name in their affected components
+ * (e.g. `Pod/default/app-pod` and `Deployment/default/app-deployment` don't
+ * share names, but `Pod/default/app-pod` from one finding and the same pod
+ * referenced in another finding's affectedComponents do).
+ *
+ * This catches the common case where an AI finding targets the Deployment
+ * and a heuristic finding targets the Pod for the same failure.
+ */
+function coalesceRelatedGroups(groups: Map<string, Finding[]>): Map<string, Finding[]> {
+  const entries = Array.from(groups.entries());
+  const merged = new Map<string, Finding[]>();
+  const consumed = new Set<number>();
+
+  for (let i = 0; i < entries.length; i++) {
+    if (consumed.has(i)) continue;
+    const [keyA, groupA] = entries[i]!;
+    const familyA = keyA.split('::').pop() ?? '';
+    const nsA = extractNamespaceFromComponent(extractPrimaryComponentForPass1(groupA[0]!));
+    const namesA = new Set<string>();
+    for (const f of groupA) {
+      for (const n of extractResourceNames(f)) namesA.add(n);
+    }
+
+    for (let j = i + 1; j < entries.length; j++) {
+      if (consumed.has(j)) continue;
+      const [keyB, groupB] = entries[j]!;
+      const familyB = keyB.split('::').pop() ?? '';
+      if (familyA !== familyB) continue;
+
+      const nsB = extractNamespaceFromComponent(extractPrimaryComponentForPass1(groupB[0]!));
+      if (nsA !== nsB || nsA === '') continue;
+
+      // Check for overlapping resource names
+      const namesB = new Set<string>();
+      for (const f of groupB) {
+        for (const n of extractResourceNames(f)) namesB.add(n);
+      }
+      let overlap = false;
+      for (const n of namesA) {
+        if (namesB.has(n)) { overlap = true; break; }
+      }
+      if (!overlap) continue;
+
+      // Merge group B into group A
+      groupA.push(...groupB);
+      for (const n of namesB) namesA.add(n);
+      consumed.add(j);
+    }
+
+    merged.set(keyA, groupA);
+  }
+
+  return merged;
 }
 
 /**
@@ -418,18 +563,21 @@ function pass1ComponentMerge(
 
   // ── Step B: Merge heuristic + AI by (component, family) ────────────────────
   // Within each group, AI wins over heuristic (Rule 1).
-  const heuristicGroups = new Map<string, Finding[]>();
+  const rawHeuristicGroups = new Map<string, Finding[]>();
   for (const f of heuristicAndAI) {
-    const key = `${extractPrimaryComponentForPass1(f)}::${normalizeIssueFamilyForPass1(f)}`;
-    const group = heuristicGroups.get(key) ?? [];
+    const key = pass1GroupKey(f);
+    const group = rawHeuristicGroups.get(key) ?? [];
     group.push(f);
-    heuristicGroups.set(key, group);
+    rawHeuristicGroups.set(key, group);
   }
+  // Coalesce groups that describe the same issue on related workloads
+  // (e.g. Pod finding + Deployment finding for the same image-pull-failure).
+  const heuristicGroups = coalesceRelatedGroups(rawHeuristicGroups);
   const mergedPool = Array.from(heuristicGroups.values()).map(mergeComponentGroup);
 
   const hypothesesByPoolKey = new Map<string, Finding[]>();
   for (const hyp of uniqueHypotheses) {
-    const key = `${extractPrimaryComponentForPass1(hyp)}::${normalizeIssueFamilyForPass1(hyp)}`;
+    const key = pass1GroupKey(hyp);
     const group = hypothesesByPoolKey.get(key) ?? [];
     group.push(hyp);
     hypothesesByPoolKey.set(key, group);
@@ -444,8 +592,7 @@ function pass1ComponentMerge(
   const handledPoolKeys = new Set<string>();
 
   for (const poolFinding of mergedPool) {
-    const poolKey =
-      `${extractPrimaryComponentForPass1(poolFinding)}::${normalizeIssueFamilyForPass1(poolFinding)}`;
+    const poolKey = pass1GroupKey(poolFinding);
     const competingHypotheses = hypothesesByPoolKey.get(poolKey) ?? [];
 
     if (competingHypotheses.length === 0) {
@@ -1411,6 +1558,9 @@ export async function runInvestigation(
     (f) =>
       (f.id.startsWith('finding:hypothesis:') && f.confidence >= 0.5) ||
       f.id.startsWith('finding:ai:') ||
+      // Cross-symptom correlation meta-findings confirm cluster-wide root
+      // causes and should suppress individual symptoms in the same namespace.
+      (f.id.startsWith('finding:meta:') && f.confidence >= 0.5) ||
       // Graph root-cause findings (created by the graph-driven phase) are
       // treated as root-cause findings for suppression purposes — they are
       // structural diagnoses produced by causal template matching.
@@ -1428,6 +1578,23 @@ export async function runInvestigation(
         const parts = comp.split('/');
         if (parts[1] != null) rootCausePodNamespaces.add(parts[1]);
       }
+    }
+  }
+
+  // Collect the specific (non-generic) families covered by root-cause findings
+  // so we can suppress generic-crash hypotheses that are just re-describing
+  // an already-diagnosed issue with vaguer language.
+  const rootCauseFamiliesByNamespace = new Map<string, Set<string>>();
+  for (const rcf of rootCauseFindings) {
+    const family = normalizeIssueFamilyForPass1(rcf);
+    // Only count specific families — generic-crash itself should not suppress
+    if (family === 'generic-crash' || !SPECIFIC_FAMILIES.has(family)) continue;
+    for (const comp of rcf.affectedComponents) {
+      const ns = extractNamespaceFromComponent(comp);
+      if (!ns) continue;
+      const families = rootCauseFamiliesByNamespace.get(ns) ?? new Set<string>();
+      families.add(family);
+      rootCauseFamiliesByNamespace.set(ns, families);
     }
   }
 
@@ -1450,6 +1617,62 @@ export async function runInvestigation(
         const ns = parts[1];
         return ns != null && rootCausePodNamespaces.has(ns);
       });
+    }
+
+    // Suppress generic-crash hypotheses and meta-findings when a more specific
+    // root-cause finding (dns-failure, image-pull-failure, missing-secret, etc.)
+    // already covers a pod in the same namespace. The generic-crash finding is
+    // just re-describing the same symptoms with less diagnostic specificity.
+    const isGenericCrash =
+      normalizeIssueFamilyForPass1(f) === 'generic-crash' ||
+      f.id.includes(':generic-crash:');
+    if (isGenericCrash) {
+      for (const comp of f.affectedComponents) {
+        const ns = extractNamespaceFromComponent(comp);
+        if (ns && rootCauseFamiliesByNamespace.has(ns)) {
+          return false; // suppress: a specific root cause covers this namespace
+        }
+      }
+    }
+
+    // Suppress hypothesis findings when a higher-priority root-cause finding
+    // (graph-causal or AI) with the same family already covers the same
+    // namespace. Absorb the hypothesis's evidence into the root cause so
+    // thin graph-causal findings (e.g. 1 event) inherit the hypothesis's
+    // richer evidence set and confidence quality improves.
+    if (f.id.startsWith('finding:hypothesis:')) {
+      const family = normalizeIssueFamilyForPass1(f);
+      if (SPECIFIC_FAMILIES.has(family) && family !== 'generic-crash') {
+        for (const comp of f.affectedComponents) {
+          const ns = extractNamespaceFromComponent(comp);
+          if (!ns) continue;
+          const coveredFamilies = rootCauseFamiliesByNamespace.get(ns);
+          if (coveredFamilies?.has(family)) {
+            const matchingRootCause = rootCauseFindings.find(
+              (rcf) =>
+                !rcf.id.startsWith('finding:hypothesis:') &&
+                normalizeIssueFamilyForPass1(rcf) === family &&
+                rcf.affectedComponents.some(
+                  (c) => extractNamespaceFromComponent(c) === ns,
+                ),
+            );
+            if (matchingRootCause) {
+              // Absorb evidence from the suppressed hypothesis into the root cause
+              const existingPaths = new Set(matchingRootCause.evidence.map(e => `${e.path}|${e.note}`));
+              for (const ev of f.evidence) {
+                const key = `${ev.path}|${ev.note}`;
+                if (!existingPaths.has(key)) {
+                  matchingRootCause.evidence.push(ev);
+                  existingPaths.add(key);
+                }
+              }
+              // Recompute confidence quality after evidence absorption
+              matchingRootCause.confidenceQuality = computeConfidenceQuality(matchingRootCause);
+              return false; // suppress the hypothesis
+            }
+          }
+        }
+      }
     }
 
     return true;

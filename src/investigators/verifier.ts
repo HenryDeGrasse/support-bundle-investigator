@@ -358,7 +358,13 @@ function detectMissingEvidence(
  */
 export function computeConfidenceQuality(finding: Finding): ConfidenceQuality {
   const evidenceCount = finding.evidence.length;
-  const missingDecisiveCount = finding.missingEvidence.length;
+  // Only count genuinely missing evidence, not informational spec-gap
+  // suggestions (which start with "Spec gap [" or describe what "would"
+  // help). Spec gaps are recommendations for future bundles, not indicators
+  // that the current diagnosis is weak.
+  const missingDecisiveCount = finding.missingEvidence.filter(
+    (m) => !m.startsWith('Spec gap [') && !/\bwould\b/.test(m),
+  ).length;
 
   // Count distinct source types present in the evidence
   const sourceTypes = new Set(

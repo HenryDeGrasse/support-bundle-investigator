@@ -3,7 +3,7 @@
 # ===========================================================================
 #
 # Pipeline structure:
-#   1. test:unit     — lint, typecheck, 1500+ unit tests (every push)
+#   1. test:unit     — lint, typecheck, 3800+ unit tests (every push)
 #   2. test:replay   — replay nightly cassettes, verify pipeline output (every PR)
 #   3. nightly:eval  — real LLM calls, record cassettes, score golden set (scheduled)
 
@@ -36,7 +36,7 @@ test:unit:
     - npm run lint
     - npm run typecheck
     - npm run build
-    - npm test
+    - npm run unit
   rules:
     - if: $CI_PIPELINE_SOURCE == "push"
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"

@@ -168,11 +168,16 @@ export function DetailPane({
     for (let i = 0; i < collapsed.length; i++) {
       const ev = collapsed[i]!;
       const cleanPath = cleanEvidencePath(ev.path);
+      const icon = evidenceIcon(ev.artifactType);
       lines.push(
-        <Box key={`ev-${i}`} marginLeft={2} marginBottom={0}>
-          <Text>{evidenceIcon(ev.artifactType)} </Text>
-          <Text color="green">{cleanPath}</Text>
-          <Text color="gray"> — {ev.note}</Text>
+        <Box key={`ev-${i}`} flexDirection="column" marginLeft={2} marginBottom={0}>
+          <Box>
+            <Text color="gray">{icon.padEnd(3)} </Text>
+            <Text color="green" bold>{cleanPath}</Text>
+          </Box>
+          <Box marginLeft={4}>
+            <Text color="gray" wrap="wrap">{ev.note}</Text>
+          </Box>
         </Box>,
       );
     }
@@ -184,14 +189,14 @@ export function DetailPane({
     lines.push(
       <Box key="contra-header" marginBottom={0}>
         <Text bold color="cyan">
-          ── Contradictions Checked ──
+          ── Contradictions Checked ({finding.contradictionsChecked.length}) ──
         </Text>
       </Box>,
     );
     for (let i = 0; i < finding.contradictionsChecked.length; i++) {
       lines.push(
         <Box key={`contra-${i}`} marginLeft={2}>
-          <Text color="gray">• {finding.contradictionsChecked[i]}</Text>
+          <Text color="gray" wrap="wrap">• {finding.contradictionsChecked[i]}</Text>
         </Box>,
       );
     }
@@ -203,14 +208,14 @@ export function DetailPane({
     lines.push(
       <Box key="missing-header" marginBottom={0}>
         <Text bold color="cyan">
-          ── Missing Evidence ──
+          ── Missing Evidence ({finding.missingEvidence.length}) ──
         </Text>
       </Box>,
     );
     for (let i = 0; i < finding.missingEvidence.length; i++) {
       lines.push(
         <Box key={`missing-${i}`} marginLeft={2}>
-          <Text color="yellow">• {finding.missingEvidence[i]}</Text>
+          <Text color="yellow" wrap="wrap">• {finding.missingEvidence[i]}</Text>
         </Box>,
       );
     }
@@ -225,13 +230,12 @@ export function DetailPane({
       borderColor="green"
       paddingX={1}
       marginBottom={1}
+      flexDirection="column"
     >
-      <Text>
-        <Text bold color="green">
-          Recommended Action:{' '}
-        </Text>
-        {finding.recommendedAction}
+      <Text bold color="green">
+        Recommended Action:
       </Text>
+      <Text wrap="wrap">{finding.recommendedAction}</Text>
     </Box>,
   );
 

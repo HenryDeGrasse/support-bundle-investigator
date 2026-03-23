@@ -1,37 +1,33 @@
 # My Approach and Thoughts
 
-## Architecture Decision
+## Architecture
 
-I built SBI as a **hybrid investigation engine** — deterministic heuristics provide the precision floor, AI retrieval adds cross-source correlation on top. The system works fully offline by default; AI is additive, never required.
+I built SBI as a **differential diagnosis engine** for Kubernetes support bundles. The core insight: a support bundle is already curated evidence. The right tool isn't "LLM over a tarball" — it's a system that generates competing root-cause hypotheses, gathers evidence for and against each, and honestly states uncertainty.
 
-The core insight is that a support bundle is already a curated evidence package. The right product is not "LLM over a tarball." It is a **differential diagnosis engine** that generates competing root-cause hypotheses, gathers evidence for and against each, ranks them with calibrated confidence, and honestly states when evidence is insufficient.
+**Pipeline:** Ingest → Profile → Parse (analyzers, K8s resources, events, logs, Helm) → Build DiagnosticGraph → Seed investigation leads → Run six targeted investigators → Generate 3–5 competing hypotheses per symptom → Verify with contradiction checks → Rank with calibrated confidence → Report.
 
-## How It Works
-
-The pipeline runs in layers:
-
-1. **Ingestion** — extract, classify, and profile every artifact in the bundle
-2. **Structured parsing** — analyzers, K8s resources, events, and logs are parsed into typed domain objects
-3. **Seed generation** — analyzer errors, pod health signals, log importance scores, and warning events become investigation seeds
-4. **Targeted investigators** — Kubernetes, Log, and Configuration investigators produce evidence-backed findings with contradiction checks
-5. **Hypothesis verification** — for each symptom, 3–5 competing root-cause hypotheses are generated. Supporting, contradicting, and missing decisive evidence is collected for each. A calibrated scorer ranks them with category-specific decisive bonuses, cross-source rewards, and contradiction/missing-evidence penalties
-6. **AI expansion** (optional) — graph traversal, lexical search, and semantic embeddings retrieve grounded context. An LLM produces structured findings with mandatory citations. Findings without citable evidence are dropped
-7. **Reporting** — Markdown, HTML, and JSON reports include ranked findings, evidence tables, contradiction checks, missing-evidence notes, and spec-gap recommendations
+**Heuristic floor, AI ceiling:** Everything works offline. Five deterministic investigators (Kubernetes, Log, Config, Service, NetworkPolicy) plus graph-causal template matching provide the precision floor. AI (graph traversal + BM25 + semantic retrieval → LLM) adds cross-source correlation on top. No API key → full heuristic analysis. AI failure → graceful fallback.
 
 ## What Makes This Different
 
-Phase 7 pushed the architecture further toward explicit contracts and data-driven diagnostics. The biggest shift was moving the hypothesis layer toward a declarative template registry with co-located evidence rules, so new failure modes increasingly become template/data work instead of more procedural branches. In parallel, I tightened the confidence model by adding monotonicity and scenario-ranking regression tests — calibration should be enforced continuously, not treated as a one-off benchmark exercise. I also consolidated the final finding merge into a documented 2-pass dedup architecture (structural merge first, cosmetic title dedup second, suppression last) because overlapping cleanup layers are where diagnostic systems quietly lose evidence and trust.
+**Falsification, not summarization.** The hypothesis engine doesn't just confirm — it actively searches for contradicting evidence. When top hypotheses are close, the system says so and recommends what evidence would resolve the ambiguity.
 
-**Falsification, not summarization.** The hypothesis layer doesn't just find evidence that supports a conclusion — it actively searches for evidence that weakens it. When the top two hypotheses are close in confidence, the system says so and recommends what evidence would resolve the ambiguity.
+**Evidence absorption.** When a graph-causal root cause (e.g., "Missing StorageClass 'fast-ssd'") confirms a hypothesis, the system absorbs the hypothesis's richer evidence set into the root cause finding. This produces high-confidence, well-evidenced diagnoses without duplicate findings.
 
-**Spec-gap recommendations.** When confidence is limited by missing bundle data, the system recommends specific collectors or analyzers to add. This is the most Replicated-native feature: it improves future bundles, not just the current triage.
+**Spec-gap recommendations.** When confidence is limited by missing bundle data, the system recommends specific collectors or analyzers to improve future bundles — the most Replicated-native feature.
 
-**Graceful degradation.** No API key → heuristic mode. Embedding failure → graph + lexical retrieval only. LLM failure for one seed → other seeds proceed. The system never aborts due to AI failures.
+**Calibrated confidence.** Every finding carries both a numeric score and a quality label (`strong`/`moderate`/`weak`). Calibration is regression-tested with monotonicity assertions and scenario-ranking checks across nine fixture scenarios.
+
+## Evaluation
+
+Nine scenarios cover major Kubernetes failure modes: DNS misconfiguration, missing Secrets, bad image tags, PVC/StorageClass mismatches, cross-namespace DNS failures, NetworkPolicy blocks, node taints with memory pressure, failed Helm hooks, and multi-namespace clusters. Each has golden expectations with structural assertions for correctness, dedup invariants, and hallucination guards.
+
+3,800+ tests across 97 files cover unit, integration, golden eval, retrieval benchmarks, robustness (corrupt/truncated/empty/partial/malformed bundles), sensitive-data leakage protection, and performance regression.
 
 ## Interesting Observations
 
-Real Troubleshoot bundles use flat namespace JSON (`pods/default.json` containing a `PodList`) alongside nested paths. Aligning with both formats required careful classifier work. The hypothesis layer also exposed a subtle bug where numeric environment values like `DB_PORT=5432` were being treated as service hostnames — exactly the kind of false evidence that erodes trust.
+Real Troubleshoot bundles mix flat namespace JSON (`pods/default.json` containing a PodList) with nested paths. Aligning with both required careful classifier work. The hypothesis layer also exposed a subtle bug where numeric `DB_PORT=5432` was treated as a hostname — exactly the false evidence that erodes trust.
 
-## What I'd Do With More Time
+## What I'd Build Next
 
-Add a real-bundle regression corpus from kind/minikube clusters with genuine failures. Expand to storage-class and network-policy scenarios. Add Helm release metadata parsing for configuration drift detection. Build a nightly CI eval pipeline that records LLM responses and replays them in PR checks for cost-controlled regression testing.
+A real-bundle regression corpus from kind clusters with genuine production-like failures. Nightly CI that records fresh AI cassettes and replays them in PR checks. Expanded causal templates for Ingress, RBAC, and certificate-expiry chains.

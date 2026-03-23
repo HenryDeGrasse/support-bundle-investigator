@@ -59,7 +59,7 @@ export function FindingsPane({
     <Pane title="Findings" focused={focused}>
       {/* Column header */}
       <Box marginBottom={1}>
-        <Text bold>
+        <Text bold color="gray">
           {'  '}
           {'SEV       CONF  TAG  TITLE'}
         </Text>

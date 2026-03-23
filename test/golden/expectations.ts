@@ -14,6 +14,8 @@ export interface ScenarioExpectation {
   name: string;
   /** Minimum number of findings the pipeline should produce. */
   minFindings: number;
+  /** Maximum number of findings — catches dedup regressions. */
+  maxFindings: number;
   /** Top finding title must match one of these patterns. */
   topFindingMustMatch: RegExp[];
   /** Acceptable severities for the top finding. */
@@ -45,6 +47,7 @@ export const GOLDEN_EXPECTATIONS: Record<string, ScenarioExpectation> = {
   'bad-image-tag': {
     name: 'Bad Image Tag (ImagePullBackOff)',
     minFindings: 1,
+    maxFindings: 3,
     topFindingMustMatch: [
       /image.*pull/i,
       /ImagePullBackOff/i,
@@ -75,6 +78,7 @@ export const GOLDEN_EXPECTATIONS: Record<string, ScenarioExpectation> = {
   'missing-secret-crashloop': {
     name: 'Missing Secret CrashLoop',
     minFindings: 1,
+    maxFindings: 7,
     topFindingMustMatch: [
       /CrashLoopBackOff/i,
       /missing.*secret/i,
@@ -100,6 +104,7 @@ export const GOLDEN_EXPECTATIONS: Record<string, ScenarioExpectation> = {
   'ghost-service': {
     name: 'Ghost Service (Cross-Namespace DNS Failure)',
     minFindings: 2,
+    maxFindings: 5,
     topFindingMustMatch: [
       /CrashLoopBackOff/i,
       /dns/i,
@@ -132,6 +137,7 @@ export const GOLDEN_EXPECTATIONS: Record<string, ScenarioExpectation> = {
   'network-policy-deny': {
     name: 'NetworkPolicy Deny-All Egress',
     minFindings: 3,
+    maxFindings: 6,
     topFindingMustMatch: [
       /NetworkPolicy/i,
       /deny-all-egress/i,
@@ -161,6 +167,7 @@ export const GOLDEN_EXPECTATIONS: Record<string, ScenarioExpectation> = {
   'helm-release-failure': {
     name: 'Helm Release Failure (Failed Hook CrashLoop)',
     minFindings: 1,
+    maxFindings: 3,
     topFindingMustMatch: [
       /CrashLoopBackOff/i,
       /storefront-hook-pod/i,
@@ -187,6 +194,7 @@ export const GOLDEN_EXPECTATIONS: Record<string, ScenarioExpectation> = {
   'wrong-db-endpoint': {
     name: 'Wrong DB Endpoint (DNS Failure)',
     minFindings: 1,
+    maxFindings: 5,
     topFindingMustMatch: [
       /dns/i,
       /db\.internal/i,
@@ -216,6 +224,7 @@ export const GOLDEN_EXPECTATIONS: Record<string, ScenarioExpectation> = {
   'pvc-pending': {
     name: 'PVC Pending (StorageClass Mismatch)',
     minFindings: 2,
+    maxFindings: 8,
     topFindingMustMatch: [
       /persistentvolumeclaim/i,
       /storageclass/i,
@@ -243,6 +252,7 @@ export const GOLDEN_EXPECTATIONS: Record<string, ScenarioExpectation> = {
   'multi-namespace-retrieval': {
     name: 'Multi-Namespace Retrieval (Cross-Namespace DNS Noise)',
     minFindings: 4,
+    maxFindings: 15,
     topFindingMustMatch: [
       /dns/i,
       /wrong-host\.internal/i,
@@ -279,6 +289,7 @@ export const GOLDEN_EXPECTATIONS: Record<string, ScenarioExpectation> = {
   'node-taint-memory-pressure': {
     name: 'Node Taint + MemoryPressure Scheduling Failure',
     minFindings: 3,
+    maxFindings: 7,
     topFindingMustMatch: [
       /Pending Pod/i,
       /scheduling failure/i,

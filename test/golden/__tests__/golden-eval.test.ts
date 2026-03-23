@@ -73,6 +73,11 @@ describe('Golden Evaluation: heuristic baseline', () => {
         expect(result.findings.length).toBeGreaterThanOrEqual(expectation.minFindings);
       });
 
+      it(`has <= ${expectation.maxFindings} findings (dedup ceiling)`, () => {
+        const result = results[scenario]!;
+        expect(result.findings.length).toBeLessThanOrEqual(expectation.maxFindings);
+      });
+
       it('top finding matches expected pattern', () => {
         const result = results[scenario]!;
         const top = result.findings[0]!;

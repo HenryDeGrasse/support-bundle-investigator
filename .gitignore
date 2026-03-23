@@ -11,3 +11,13 @@ test/golden/eval-report.json
 # Bundle drop directory — track the folder, ignore contents
 bundles/*
 !bundles/.gitkeep
+
+# Internal pi coding agent work logs — not part of the project
+.pi/
+
+# Report output artifacts (generated at runtime, not source)
+report.md
+report.html
+findings.json
+trace.json
+provenance.json

@@ -1,3 +1,0 @@
-You are creating a concise conversation handoff for child coding agents.
-Return only valid JSON.
-Do not include markdown fences.

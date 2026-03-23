@@ -1,4 +1,0 @@
-{"t":10883,"type":"message_end","role":"user"}
-{"t":43663,"type":"message_end","role":"assistant","stopReason":"error","textLength":0,"textPreview":""}
-{"t":43665,"type":"turn_end","toolCount":0,"thinkingLength":0,"textLength":0}
-{"t":43665,"type":"agent_end","messageCount":2,"toolCount":0,"thinkingLength":0,"textLength":0}

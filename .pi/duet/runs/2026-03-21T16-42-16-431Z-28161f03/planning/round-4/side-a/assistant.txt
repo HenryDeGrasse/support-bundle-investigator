@@ -1,8 +1,0 @@
-The edit is clean and valid. Here's what changed:
-
-**Step 9** description was rewritten to correctly target the codebase's actual CLI architecture:
-
-- **`src/cli/cli.ts`** (where Commander parsing lives): Add `debug: boolean` to `ParsedArgs`, add `.option('--debug', ...)` to the `analyzeCmd` chain, and map `capturedOpts.debug` in the return statement of `parseArgs()`.
-- **`src/cli/runner.ts`** (which only consumes parsed args): Pass `args.debug` through to `PipelineOptions.debug`, force `verbose` and `trace` when debug is on, and call `writeProvenanceFile()` after pipeline completion.
-- **`src/cli/output.ts`**: Add `writeProvenanceFile()` function.
-- **Tests**: Parse-level test in `cli.test.ts` (correct file for arg parsing tests), runner-level test in `runner.test.ts` (correct file for pipeline-integration behavior).
