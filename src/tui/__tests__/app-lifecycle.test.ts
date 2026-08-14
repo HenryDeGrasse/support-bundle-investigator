@@ -67,7 +67,6 @@ function makeTerminal(): {
   stdout: NodeJS.WriteStream;
   stderr: NodeJS.WriteStream;
   input: PassThrough;
-  readOutput: () => string;
 } {
   const input = new PassThrough();
   Object.assign(input, {
@@ -79,10 +78,7 @@ function makeTerminal(): {
 
   const output = new PassThrough();
   Object.assign(output, { columns: 120, rows: 40 });
-  let renderedOutput = '';
-  output.on('data', (chunk: Buffer | string) => {
-    renderedOutput += chunk.toString();
-  });
+  output.resume();
 
   const error = new PassThrough();
   error.resume();
@@ -92,7 +88,6 @@ function makeTerminal(): {
     stdout: output as unknown as NodeJS.WriteStream,
     stderr: error as unknown as NodeJS.WriteStream,
     input,
-    readOutput: () => renderedOutput,
   };
 }
 
@@ -180,14 +175,12 @@ describe('App lifecycle', () => {
         { ...terminal, exitOnCtrlC: false, patchConsole: false },
       );
 
-      // Ink rendering shares the Vitest worker with the full integration suite
-      // in CI. Wait for an observable ready frame instead of assuming it will
-      // commit within one second on a contended runner.
-      await waitFor(
-        () =>
-          cleanupPipeline.mock.calls.length === 1 &&
-          terminal.readOutput().includes('Findings'),
-      );
+      // Ink intentionally suppresses intermediate frames when CI=true, so
+      // terminal text is not a portable readiness signal. Cleanup is awaited
+      // immediately before App commits its ready state; yield one event-loop
+      // turn afterward so the state update and input-handler closure settle.
+      await waitFor(() => cleanupPipeline.mock.calls.length === 1);
+      await new Promise<void>((resolve) => setImmediate(resolve));
       terminal.input.write('s');
       await waitFor(() => vi.mocked(writeProvenanceFile).mock.calls.length === 1);
 
