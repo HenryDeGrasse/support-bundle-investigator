@@ -96,7 +96,7 @@ function makeTerminal(): {
   };
 }
 
-async function waitFor(check: () => boolean, timeoutMs = 1_000): Promise<void> {
+async function waitFor(check: () => boolean, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!check()) {
     if (Date.now() >= deadline) throw new Error('Timed out waiting for TUI state');
@@ -163,37 +163,46 @@ describe('App lifecycle', () => {
     await instance.waitUntilExit();
   });
 
-  it('exports trace and provenance artifacts in debug mode', async () => {
-    const terminal = makeTerminal();
-    const result = makePipelineResult();
-    const cleanupPipeline = vi.fn().mockResolvedValue(undefined);
-    const instance = render(
-      React.createElement(App, {
-        bundlePath: '/tmp/bundle.tar.gz',
+  it(
+    'exports trace and provenance artifacts in debug mode',
+    async () => {
+      const terminal = makeTerminal();
+      const result = makePipelineResult();
+      const cleanupPipeline = vi.fn().mockResolvedValue(undefined);
+      const instance = render(
+        React.createElement(App, {
+          bundlePath: '/tmp/bundle.tar.gz',
+          outputDir: '/tmp/tui-output',
+          pipelineOptions: { verbose: true, trace: true, debug: true },
+          runPipeline: vi.fn().mockResolvedValue(result),
+          cleanupPipeline,
+        }),
+        { ...terminal, exitOnCtrlC: false, patchConsole: false },
+      );
+
+      // Ink rendering shares the Vitest worker with the full integration suite
+      // in CI. Wait for an observable ready frame instead of assuming it will
+      // commit within one second on a contended runner.
+      await waitFor(
+        () =>
+          cleanupPipeline.mock.calls.length === 1 &&
+          terminal.readOutput().includes('Findings'),
+      );
+      terminal.input.write('s');
+      await waitFor(() => vi.mocked(writeProvenanceFile).mock.calls.length === 1);
+
+      expect(writePipelineResult).toHaveBeenCalledWith(result, {
+        format: 'json',
         outputDir: '/tmp/tui-output',
-        pipelineOptions: { verbose: true, trace: true, debug: true },
-        runPipeline: vi.fn().mockResolvedValue(result),
-        cleanupPipeline,
-      }),
-      { ...terminal, exitOnCtrlC: false, patchConsole: false },
-    );
+        verbose: false,
+        debug: true,
+      });
+      expect(writeTraceFile).toHaveBeenCalledWith(result.trace, '/tmp/tui-output');
+      expect(writeProvenanceFile).toHaveBeenCalledWith(result.findings, '/tmp/tui-output');
 
-    await waitFor(
-      () => cleanupPipeline.mock.calls.length === 1 && terminal.readOutput().includes('Findings'),
-    );
-    terminal.input.write('s');
-    await waitFor(() => vi.mocked(writeProvenanceFile).mock.calls.length === 1);
-
-    expect(writePipelineResult).toHaveBeenCalledWith(result, {
-      format: 'json',
-      outputDir: '/tmp/tui-output',
-      verbose: false,
-      debug: true,
-    });
-    expect(writeTraceFile).toHaveBeenCalledWith(result.trace, '/tmp/tui-output');
-    expect(writeProvenanceFile).toHaveBeenCalledWith(result.findings, '/tmp/tui-output');
-
-    terminal.input.write('q');
-    await instance.waitUntilExit();
-  });
+      terminal.input.write('q');
+      await instance.waitUntilExit();
+    },
+    15_000,
+  );
 });
