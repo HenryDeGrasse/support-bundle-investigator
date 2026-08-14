@@ -57,8 +57,16 @@ describe('ReplayableLLMClient', () => {
     expect(result.findings).toHaveLength(1);
     expect(recorder.has('seed:k8s:0', 'kubernetes')).toBe(true);
 
-    const cassette = recorder.replay('seed:k8s:0', 'kubernetes');
-    expect(cassette?.seedKey).toBe(cassetteSeedKey('seed:k8s:0', 'kubernetes'));
+    const request = { system: 'system prompt', user: 'user prompt' };
+    const cassette = recorder.replay(
+      'seed:k8s:0',
+      'kubernetes',
+      request,
+      'gpt-4o',
+    );
+    expect(cassette?.seedKey).toBe(
+      cassetteSeedKey('seed:k8s:0', 'kubernetes', request, 'gpt-4o'),
+    );
     expect(cassette?.response.findings[0]?.title).toBe(VALID_FINDING.title);
     expect(cassette?.model).toBe('gpt-4o');
   });
@@ -127,7 +135,7 @@ describe('ReplayableLLMClient', () => {
     });
     expect(inner.investigateSeed).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining(cassetteSeedKey('seed:k8s:missing', 'kubernetes')),
+      expect.stringContaining('seed:k8s:missing'),
     );
   });
 

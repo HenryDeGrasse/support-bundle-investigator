@@ -19,17 +19,24 @@ export interface ExtractOptions {
    */
   outputDir?: string;
 
-  /**
-   * Maximum allowed uncompressed size in bytes across archive entries.
-   */
+  /** Maximum allowed uncompressed size in bytes across archive entries. */
   maxSize?: number;
 
-  /**
-   * When true, perform a full archive validation pass before extraction.
-   * Security validation is always performed.
-   */
-  validateIntegrity?: boolean;
+  /** Maximum number of entries allowed in the archive. */
+  maxEntries?: number;
+
+  /** Maximum uncompressed size in bytes for any individual entry. */
+  maxEntrySize?: number;
+
+  /** Maximum UTF-8 byte length of an entry path or link target. */
+  maxPathLength?: number;
 }
+
+/** Default archive limits. Callers may lower them for constrained environments. */
+export const DEFAULT_MAX_UNCOMPRESSED_SIZE = 5 * 1024 * 1024 * 1024;
+export const DEFAULT_MAX_ENTRY_SIZE = 1024 * 1024 * 1024;
+export const DEFAULT_MAX_ENTRIES = 100_000;
+export const DEFAULT_MAX_PATH_LENGTH = 4_096;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -49,36 +56,126 @@ function isUnsafeArchivePath(entryPath: string): boolean {
   return normalizedPath.split('/').some((segment) => segment === '..');
 }
 
+function resolveLimit(
+  name: keyof Pick<
+    ExtractOptions,
+    'maxSize' | 'maxEntries' | 'maxEntrySize' | 'maxPathLength'
+  >,
+  value: number | undefined,
+  fallback: number,
+): number {
+  const limit = value ?? fallback;
+  if (!Number.isSafeInteger(limit) || limit < 0) {
+    throw new Error(`${name} must be a non-negative safe integer`);
+  }
+  return limit;
+}
+
 async function validateArchive(
   bundlePath: string,
   options: ExtractOptions,
 ): Promise<void> {
+  const maxSize = resolveLimit(
+    'maxSize',
+    options.maxSize,
+    DEFAULT_MAX_UNCOMPRESSED_SIZE,
+  );
+  const maxEntries = resolveLimit(
+    'maxEntries',
+    options.maxEntries,
+    DEFAULT_MAX_ENTRIES,
+  );
+  const maxEntrySize = resolveLimit(
+    'maxEntrySize',
+    options.maxEntrySize,
+    DEFAULT_MAX_ENTRY_SIZE,
+  );
+  const maxPathLength = resolveLimit(
+    'maxPathLength',
+    options.maxPathLength,
+    DEFAULT_MAX_PATH_LENGTH,
+  );
+
   let totalUncompressedSize = 0;
-  let unsafePath: string | undefined;
+  let entryCount = 0;
 
-  await tar.t({
-    file: bundlePath,
-    onentry(entry) {
-      if (!unsafePath && isUnsafeArchivePath(entry.path)) {
-        unsafePath = entry.path;
+  await new Promise<void>((resolve, reject) => {
+    const parser = new tar.Parser({ file: bundlePath, strict: true });
+    const input = fs.createReadStream(bundlePath);
+    let settled = false;
+
+    const fail = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      input.unpipe(parser);
+      input.destroy();
+      reject(error);
+    };
+    const succeed = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+
+    parser.once('error', fail);
+    parser.once('end', succeed);
+    input.once('error', fail);
+    parser.on('entry', (entry) => {
+      try {
+        entryCount += 1;
+        if (entryCount > maxEntries) {
+          throw new Error(
+            `Archive exceeds maxEntries of ${maxEntries}: at least ${entryCount}`,
+          );
+        }
+
+        if (isUnsafeArchivePath(entry.path)) {
+          throw new Error(`Archive contains unsafe path: ${entry.path}`);
+        }
+
+        const pathLength = Buffer.byteLength(entry.path, 'utf8');
+        if (pathLength > maxPathLength) {
+          throw new Error(
+            `Archive entry path exceeds maxPathLength of ${maxPathLength} bytes: ${pathLength}`,
+          );
+        }
+
+        if (entry.linkpath !== undefined) {
+          if (isUnsafeArchivePath(entry.linkpath)) {
+            throw new Error(`Archive contains unsafe link target: ${entry.linkpath}`);
+          }
+          const linkPathLength = Buffer.byteLength(entry.linkpath, 'utf8');
+          if (linkPathLength > maxPathLength) {
+            throw new Error(
+              `Archive link target exceeds maxPathLength of ${maxPathLength} bytes: ${linkPathLength}`,
+            );
+          }
+        }
+
+        if (!Number.isSafeInteger(entry.size) || entry.size < 0) {
+          throw new Error(`Archive entry has an invalid size: ${entry.path}`);
+        }
+        if (entry.size > maxEntrySize) {
+          throw new Error(
+            `Archive entry exceeds maxEntrySize of ${maxEntrySize} bytes: ${entry.path} (${entry.size})`,
+          );
+        }
+        if (entry.size > maxSize - totalUncompressedSize) {
+          throw new Error(
+            `Archive exceeds maxSize of ${maxSize} bytes: more than ${maxSize}`,
+          );
+        }
+        totalUncompressedSize += entry.size;
+        entry.resume();
+      } catch (error) {
+        parser.abort(
+          error instanceof Error ? error : new Error(String(error)),
+        );
       }
+    });
 
-      totalUncompressedSize += entry.size;
-    },
+    input.pipe(parser);
   });
-
-  if (unsafePath) {
-    throw new Error(`Archive contains unsafe path: ${unsafePath}`);
-  }
-
-  if (
-    typeof options.maxSize === 'number' &&
-    totalUncompressedSize > options.maxSize
-  ) {
-    throw new Error(
-      `Archive exceeds maxSize of ${options.maxSize} bytes: ${totalUncompressedSize}`,
-    );
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -94,6 +191,8 @@ async function validateArchive(
  * - Only files with a `.tar.gz` extension are accepted.
  * - The archive is validated before extraction and rejected if any entry path
  *   is absolute or contains `..` path segments.
+ * - Default limits cap aggregate expansion, individual entry size, entry
+ *   count, and path length. Callers may supply stricter limits.
  * - If an auto-created temporary directory is used and extraction fails for
  *   any reason, that directory is removed before the error is re-thrown.
  *
@@ -116,7 +215,7 @@ export async function extractBundle(
   }
 
   // ── 2. Validate extension ─────────────────────────────────────────────────
-  if (!absoluteBundlePath.endsWith('.tar.gz')) {
+  if (!absoluteBundlePath.toLowerCase().endsWith('.tar.gz')) {
     throw new Error(
       `Bundle must be a .tar.gz file, got: ${path.basename(absoluteBundlePath)}`,
     );
@@ -142,6 +241,8 @@ export async function extractBundle(
     await tar.x({
       file: absoluteBundlePath,
       cwd: outputDir,
+      preservePaths: false,
+      strict: true,
     });
 
     return await buildManifest(outputDir, absoluteBundlePath);

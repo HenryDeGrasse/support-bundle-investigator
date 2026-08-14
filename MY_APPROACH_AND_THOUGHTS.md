@@ -22,7 +22,11 @@ I built SBI as a **differential diagnosis engine** for Kubernetes support bundle
 
 Nine scenarios cover major Kubernetes failure modes: DNS misconfiguration, missing Secrets, bad image tags, PVC/StorageClass mismatches, cross-namespace DNS failures, NetworkPolicy blocks, node taints with memory pressure, failed Helm hooks, and multi-namespace clusters. Each has golden expectations with structural assertions for correctness, dedup invariants, and hallucination guards.
 
-3,800+ tests across 97 files cover unit, integration, golden eval, retrieval benchmarks, robustness (corrupt/truncated/empty/partial/malformed bundles), sensitive-data leakage protection, and performance regression.
+Nearly 3,900 tests across 99 files cover unit, integration, golden eval, retrieval benchmarks, robustness (corrupt/truncated/empty/partial/malformed bundles), sensitive-data leakage protection, and performance regression.
+
+## Why I'm Proud of It
+
+I'm proud of this project because I didn't just put an AI model on top of a support bundle. I built a graph from the Kubernetes resources, events, logs, and the relationships between them, then used graph traversal to follow the most useful paths from a symptom toward the evidence that could explain it. On top of that, I used AI techniques like BM25, Reciprocal Rank Fusion, semantic retrieval, HyDE, late chunking, GraphRAG, and grounded LLM analysis to make the diagnosis stronger without giving up the deterministic offline baseline. The part I'm most proud of is that the AI isn't treated like magic: it has to retrieve relevant context, compare competing hypotheses, and tie every conclusion back to evidence in the bundle.
 
 ## Interesting Observations
 
@@ -30,4 +34,4 @@ Real Troubleshoot bundles mix flat namespace JSON (`pods/default.json` containin
 
 ## What I'd Build Next
 
-A real-bundle regression corpus from kind clusters with genuine production-like failures. Nightly CI that records fresh AI cassettes and replays them in PR checks. Expanded causal templates for Ingress, RBAC, and certificate-expiry chains.
+A real-bundle regression corpus from kind clusters with genuine production-like failures. Broader model-quality evaluation across cloud and local LLMs. Expanded causal templates for Ingress, RBAC, and certificate-expiry chains.

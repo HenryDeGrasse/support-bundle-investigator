@@ -75,20 +75,23 @@ const MAX_SUPPORTING_EVIDENCE_ITEMS = 8;
 /**
  * Derives the {@link FindingSeverity} for a hypothesis finding based on:
  * - The category's base severity (worst-case impact if confirmed)
- * - The confidence score (downgrade by 1 level if < 0.2, 2 levels if < 0.1)
+ * - A confidence-based severity ceiling: unconfirmed candidates below 0.5 are
+ *   informational, 0.5–0.69 candidates are at most medium, 0.7–0.84 candidates
+ *   are at most high, and only ≥0.85 evidence can retain critical severity.
  *
  * This ensures that low-confidence hypotheses do not alarm engineers with
  * inflated severity labels.
  */
 function deriveSeverity(category: HypothesisCategory, confidence: number): FindingSeverity {
   const baseIndex = SEVERITY_INDEX[BASE_SEVERITY_BY_CATEGORY[category]] ?? 2;
-  let drop = 0;
-  if (confidence < 0.1) {
-    drop = 2;
-  } else if (confidence < 0.2) {
-    drop = 1;
-  }
-  const finalIndex = Math.max(0, baseIndex - drop);
+  const confidenceCeiling = confidence < 0.5
+    ? SEVERITY_INDEX.info
+    : confidence < 0.7
+      ? SEVERITY_INDEX.medium
+      : confidence < 0.85
+        ? SEVERITY_INDEX.high
+        : SEVERITY_INDEX.critical;
+  const finalIndex = Math.min(baseIndex, confidenceCeiling);
   return SEVERITY_LEVELS[finalIndex] ?? 'info';
 }
 

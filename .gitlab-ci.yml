@@ -3,9 +3,9 @@
 # ===========================================================================
 #
 # Pipeline structure:
-#   1. test:unit     — lint, typecheck, 3800+ unit tests (every push)
-#   2. test:replay   — replay nightly cassettes, verify pipeline output (every PR)
-#   3. nightly:eval  — real LLM calls, record cassettes, score golden set (scheduled)
+#   1. test:unit     — lint, typecheck, 3,800+ tests (every push)
+#   2. test:replay   — replay committed cassettes, verify pipeline output
+#   3. nightly:record — real LLM calls and refreshed cassette artifacts
 
 stages:
   - test
@@ -52,59 +52,42 @@ test:replay:
   needs: [test:unit]
   variables:
     SBI_AI_MODE: replay
+    SBI_CASSETTE_DIR: test/fixtures/cassettes
   script:
     - npm run build
-    # Download latest cassettes from nightly artifacts (if available)
-    - |
-      if [ -f test/cassettes/cassettes.json ]; then
-        echo "Using committed cassettes"
-      else
-        echo "No cassettes found — replay tests will use empty cassettes (warn-only)"
-      fi
-    - npx vitest run test/golden/ --reporter=verbose
+    - test -f test/fixtures/cassettes/cassettes.json
+    - npm run eval:cassette -- --reporter=verbose
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_PIPELINE_SOURCE == "push"
       changes:
         - src/**/*
         - test/**/*
-  allow_failure: true  # Don't block PRs if cassettes are stale
 
 # ===========================================================================
 # Stage 3: Nightly evaluation (scheduled — real LLM calls)
 # ===========================================================================
 
-nightly:eval:
+nightly:record:
   <<: *node_setup
   stage: nightly
   variables:
-    OPENAI_API_KEY: $OPENAI_API_KEY
     SBI_AI_MODE: record
-    SBI_AI_MODEL: gpt-4o
+    SBI_CASSETTE_DIR: test/fixtures/cassettes
+    SBI_EMBEDDING_BACKEND: none
+    SBI_AI_MODEL: gpt-5.6-terra
   script:
     - npm run build
-    # Run golden set evaluation with real LLM calls + recording
-    - npx vitest run test/golden/ --reporter=verbose
-    # Generate eval report artifact
-    - node -e "
-        const fs = require('fs');
-        const report = fs.existsSync('test/golden/eval-report.json')
-          ? JSON.parse(fs.readFileSync('test/golden/eval-report.json', 'utf-8'))
-          : { status: 'no report generated' };
-        console.log(JSON.stringify(report, null, 2));
-        if (!report.overallPass) {
-          console.error('QUALITY REGRESSION DETECTED');
-          process.exit(1);
-        }
-      "
+    - npm run cassettes:record
+    - test -s test/fixtures/cassettes/cassettes.json
   artifacts:
     paths:
-      - test/cassettes/cassettes.json
-      - test/golden/eval-report.json
+      - test/fixtures/cassettes/cassettes.json
+      - test/golden/cassette-record-report.json
     expire_in: 30 days
     when: always
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
-  # Allow manual trigger for testing the nightly pipeline
-  when: manual
+    - if: $CI_PIPELINE_SOURCE == "web"
+      when: manual
   allow_failure: false

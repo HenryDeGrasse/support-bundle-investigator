@@ -25,10 +25,12 @@ runCli(process.argv, {
   loadTUI: () => import('../tui/index.js'),
 }).then(
   (exitCode) => {
-    process.exit(exitCode);
+    // Let Node flush potentially large JSON/HTML output and finish any pending
+    // cleanup rather than truncating stdout with an immediate process.exit().
+    process.exitCode = exitCode;
   },
   (err: unknown) => {
     console.error('Fatal:', err);
-    process.exit(1);
+    process.exitCode = 1;
   },
 );

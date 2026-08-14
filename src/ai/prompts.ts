@@ -220,6 +220,94 @@ const FINDING_JSON_SCHEMA = `{
 // Chunk formatter
 // ---------------------------------------------------------------------------
 
+const MAX_STRUCTURED_EVIDENCE_CHARS = 12_000;
+
+function isSensitiveFieldName(key: string): boolean {
+  const normalized = key.replace(/[^a-z0-9]/gi, '').toLowerCase();
+  if (normalized === 'secret' || normalized === 'secrets') return true;
+  return [
+    'password',
+    'passwd',
+    'pwd',
+    'token',
+    'tokens',
+    'jwt',
+    'apikey',
+    'apikeys',
+    'clientsecret',
+    'clientsecrets',
+    'secretkey',
+    'secretkeys',
+    'credential',
+    'credentials',
+    'accesskey',
+    'privatekey',
+    'authorization',
+    'authtoken',
+    'databaseurl',
+    'connectionstring',
+    'connectionurl',
+  ].some((name) => normalized === name || normalized.endsWith(name));
+}
+
+function redactStructuredValue(value: unknown, secretData = false): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry, index) => {
+      const precedingArgument = value[index - 1];
+      if (
+        typeof precedingArgument === 'string' &&
+        isSensitiveFieldName(precedingArgument.replace(/^--?/, ''))
+      ) {
+        return '[REDACTED]';
+      }
+      return redactStructuredValue(entry, secretData);
+    });
+  }
+
+  if (typeof value !== 'object' || value === null) {
+    if (secretData) return '[REDACTED]';
+    return typeof value === 'string' ? sanitizeSensitiveText(value) : value;
+  }
+
+  const record = value as Record<string, unknown>;
+  const isSecretResource = record['kind'] === 'Secret';
+  const namedValueIsSensitive =
+    typeof record['name'] === 'string' && isSensitiveFieldName(record['name']);
+  return Object.fromEntries(
+    Object.entries(record).map(([key, entry]) => {
+      const isSecretData = isSecretResource && (key === 'data' || key === 'stringData');
+      if (key === 'value' && namedValueIsSensitive) return [key, '[REDACTED]'];
+      if (isSensitiveFieldName(key)) return [key, '[REDACTED]'];
+      return [key, redactStructuredValue(entry, secretData || isSecretData)];
+    }),
+  );
+}
+
+/**
+ * Returns bounded, field-level Kubernetes evidence for the LLM. Resource
+ * chunks use a compact summary for retrieval, while the raw object retained in
+ * metadata contains fields such as selectors, ports, probes, and status that
+ * can be decisive during diagnosis. Secret payloads and sensitive fields are
+ * removed before this representation crosses the AI boundary.
+ */
+function formatStructuredEvidence(chunk: IndexedChunk): string | undefined {
+  const rawContent = chunk.metadata?.['rawContent'];
+  if (typeof rawContent !== 'string' || rawContent.trim().length === 0) return undefined;
+
+  try {
+    const redacted = redactStructuredValue(JSON.parse(rawContent));
+    const serialized = sanitizeSensitiveText(JSON.stringify(redacted, null, 2));
+    if (serialized.length <= MAX_STRUCTURED_EVIDENCE_CHARS) return serialized;
+    return `${serialized.slice(0, MAX_STRUCTURED_EVIDENCE_CHARS)}\n... [structured evidence truncated]`;
+  } catch {
+    // rawContent is expected to be JSON for Kubernetes resources. If a custom
+    // caller supplies something else, retain a safely scrubbed, bounded excerpt.
+    const sanitized = sanitizeSensitiveText(rawContent);
+    if (sanitized.length <= MAX_STRUCTURED_EVIDENCE_CHARS) return sanitized;
+    return `${sanitized.slice(0, MAX_STRUCTURED_EVIDENCE_CHARS)}\n... [structured evidence truncated]`;
+  }
+}
+
 /**
  * Formats a single {@link IndexedChunk} for inclusion in the LLM user prompt.
  *
@@ -233,6 +321,7 @@ const FINDING_JSON_SCHEMA = `{
 function formatChunk(chunk: IndexedChunk, index: number): string {
   const lineRange = `lines ${chunk.startLine}–${chunk.endLine}`;
   const category = chunk.artifactCategory;
+  const structuredEvidence = formatStructuredEvidence(chunk);
 
   return [
     `### Chunk ${index + 1}`,
@@ -243,6 +332,9 @@ function formatChunk(chunk: IndexedChunk, index: number): string {
     '```',
     sanitizeSensitiveText(chunk.content),
     '```',
+    ...(structuredEvidence === undefined
+      ? []
+      : ['', 'Structured resource evidence (sensitive values redacted):', '```json', structuredEvidence, '```']),
   ].join('\n');
 }
 

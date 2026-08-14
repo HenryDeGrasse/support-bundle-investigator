@@ -862,7 +862,7 @@ function eventNodeIdForEvent(event: K8sEvent): string {
 }
 
 /**
- * Extracts the pod name encoded in a log chunk's `artifactId` path.
+ * Extracts the namespace-qualified pod identity encoded in a log chunk.
  *
  * Supports two path conventions:
  * 1. Real Troubleshoot bundle: `cluster-resources/pods/logs/{ns}/{pod}/{container}.log`
@@ -874,17 +874,30 @@ function eventNodeIdForEvent(event: K8sEvent): string {
  * path-based extraction (useful for synthetic chunks in tests or pipelines
  * that record pod provenance separately).
  */
-function podNameFromChunk(chunk: IndexedChunk): string | undefined {
-  // Explicit metadata override
-  if (isRecord(chunk.metadata) && typeof chunk.metadata['podName'] === 'string') {
-    return chunk.metadata['podName'];
-  }
-  // Path-based extraction: logs/{ns}/{pod}/{container}.log
+function podIdentityFromChunk(
+  chunk: IndexedChunk,
+): { podName: string; namespace?: string } | undefined {
+  // Path-based extraction: logs/{ns}/{pod}/{container}.log.  Parse it even
+  // when metadata supplies an override so it can still provide the namespace.
   const normalizedPath = chunk.artifactId.replace(/\\/g, '/');
   const match = normalizedPath.match(
-    /(?:^|\/)logs\/[^/]+\/([^/]+)\/[^/]+\.(?:log|txt)$/,
+    /(?:^|\/)logs\/([^/]+)\/([^/]+)\/[^/]+\.(?:log|txt)$/,
   );
-  return match?.[1];
+
+  const explicitPodName =
+    isRecord(chunk.metadata) && typeof chunk.metadata['podName'] === 'string'
+      ? chunk.metadata['podName']
+      : undefined;
+  const explicitNamespace =
+    isRecord(chunk.metadata) && typeof chunk.metadata['namespace'] === 'string'
+      ? chunk.metadata['namespace']
+      : isRecord(chunk.metadata) && typeof chunk.metadata['podNamespace'] === 'string'
+        ? chunk.metadata['podNamespace']
+        : chunk.namespace;
+
+  const podName = explicitPodName ?? match?.[2];
+  if (!podName) return undefined;
+  return { podName, namespace: explicitNamespace ?? match?.[1] };
 }
 
 /**
@@ -930,12 +943,12 @@ function ensureEventNode(graph: DiagnosticGraph, event: K8sEvent): string {
  *
  * For each `logChunk` that carries a `timestamp`:
  * 1. Parse the chunk timestamp.
- * 2. Determine the pod name from the chunk's `artifactId` path (or
- *    `metadata.podName` override).
+ * 2. Determine the pod name and namespace from the chunk's `artifactId` path
+ *    (or metadata override).
  * 3. Call `getEventWindow(events, T−60s, T+60s)` to find events within the
  *    ±60-second correlation window.
- * 4. Call `correlateEventsWithPod(windowEvents, podName)` to narrow to events
- *    targeting the same pod.
+ * 4. Call `correlateEventsWithPod(windowEvents, podName, namespace)` to narrow
+ *    to events targeting that exact namespaced pod.
  * 5. For each matching event, ensure both the log-chunk node and the event
  *    node exist in the graph, then add a `temporal-correlation` edge.
  *
@@ -964,8 +977,8 @@ export function addTemporalCorrelationEdges(
     const chunkTsMs = Date.parse(chunk.timestamp);
     if (isNaN(chunkTsMs)) continue;
 
-    const podName = podNameFromChunk(chunk);
-    if (!podName) continue;
+    const podIdentity = podIdentityFromChunk(chunk);
+    if (!podIdentity) continue;
 
     const windowStart = new Date(chunkTsMs - TEMPORAL_CORRELATION_WINDOW_MS);
     const windowEnd = new Date(chunkTsMs + TEMPORAL_CORRELATION_WINDOW_MS);
@@ -973,7 +986,11 @@ export function addTemporalCorrelationEdges(
     // Use timeline module to get events in the time window …
     const windowEvents = getEventWindow(sortedEvents, windowStart, windowEnd);
     // … then narrow to events targeting the same pod
-    const podEvents = correlateEventsWithPod(windowEvents, podName);
+    const podEvents = correlateEventsWithPod(
+      windowEvents,
+      podIdentity.podName,
+      podIdentity.namespace,
+    );
 
     if (podEvents.length === 0) continue;
 
@@ -1033,9 +1050,9 @@ export function addTemporalCorrelationEdges(
  * {@link parsers/timeline}):
  *
  * 1. Filter to events whose `involvedObject.kind === 'Pod'`.
- * 2. Collect unique pod names across those events.
- * 3. For each pod, call `correlateEventsWithPod` and `sortEventsByTime` to
- *    get a chronologically-ordered list of that pod's events.
+ * 2. Collect unique namespace/name identities across those events.
+ * 3. For each namespaced pod, call `correlateEventsWithPod` and
+ *    `sortEventsByTime` to get its chronologically-ordered events.
  * 4. For each consecutive pair `(prior, following)` that both have
  *    timestamps, check {@link hasCausalAffinity} — if true, add a
  *    `temporal-sequence` edge from `prior` → `following`.
@@ -1067,12 +1084,18 @@ export function addTemporalSequenceEdges(
   const podEvents = events.filter((e) => e.involvedObject.kind === 'Pod');
   if (podEvents.length < 2) return;
 
-  // Collect unique pod names
-  const podNames = new Set(podEvents.map((e) => e.involvedObject.name));
+  // Collect unique namespace/name identities.  A pod name alone is not a
+  // cluster-wide identity and can otherwise splice events across namespaces.
+  const podIdentities = new Map<string, { podName: string; namespace: string }>();
+  for (const event of podEvents) {
+    const namespace = event.involvedObject.namespace ?? 'default';
+    const podName = event.involvedObject.name;
+    podIdentities.set(`${namespace}/${podName}`, { podName, namespace });
+  }
 
-  for (const podName of podNames) {
+  for (const { podName, namespace } of podIdentities.values()) {
     // Get all events for this specific pod, sorted chronologically
-    const podSpecificEvents = correlateEventsWithPod(podEvents, podName);
+    const podSpecificEvents = correlateEventsWithPod(podEvents, podName, namespace);
     const sortedPodEvents = sortEventsByTime(podSpecificEvents);
 
     // Discard events without a parseable timestamp

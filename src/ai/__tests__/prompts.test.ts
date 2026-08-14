@@ -411,6 +411,87 @@ describe('buildInvestigationPrompt — chunk formatting', () => {
     expect(user).toContain('api-key: [REDACTED]');
     expect(user).toContain('password=[REDACTED]');
   });
+
+  it('includes bounded structured Kubernetes fields retained in chunk metadata', () => {
+    const seed = makeSeed('connectivity', 'Service has no reachable backend');
+    const chunk = makeChunk('service:api', 'services/default/api.json', 'Service: api');
+    chunk.metadata = {
+      rawContent: JSON.stringify({
+        apiVersion: 'v1',
+        kind: 'Service',
+        metadata: { name: 'api', namespace: 'default' },
+        spec: { selector: { app: 'api' }, ports: [{ port: 443, targetPort: 8443 }] },
+      }),
+    };
+
+    const { user } = buildInvestigationPrompt(seed, [chunk]);
+
+    expect(user).toContain('Structured resource evidence');
+    expect(user).toContain('"targetPort": 8443');
+    expect(user).toContain('"app": "api"');
+  });
+
+  it('redacts Secret payloads and sensitive structured fields', () => {
+    const seed = makeSeed('configuration', 'Check database credentials');
+    const chunk = makeChunk('secret:db', 'secrets/default/db.json', 'Secret: db');
+    chunk.metadata = {
+      rawContent: JSON.stringify({
+        apiVersion: 'v1',
+        kind: 'Secret',
+        metadata: { name: 'db', namespace: 'default' },
+        data: { username: 'YWRtaW4=', password: 'aHVudGVyMg==' },
+        stringData: { arbitraryName: 'do-not-leak' },
+      }),
+    };
+
+    const { user } = buildInvestigationPrompt(seed, [chunk]);
+
+    expect(user).not.toContain('YWRtaW4=');
+    expect(user).not.toContain('aHVudGVyMg==');
+    expect(user).not.toContain('do-not-leak');
+    expect(user).toContain('"username": "[REDACTED]"');
+    expect(user).toContain('"arbitraryName": "[REDACTED]"');
+  });
+
+  it('redacts a sensitive Kubernetes env literal based on its variable name', () => {
+    const seed = makeSeed('configuration', 'Check workload configuration');
+    const chunk = makeChunk('pod:api', 'pods/default/api.json', 'Pod: api');
+    chunk.metadata = {
+      rawContent: JSON.stringify({
+        apiVersion: 'v1',
+        kind: 'Pod',
+        metadata: { name: 'api', namespace: 'default' },
+        spec: {
+          containers: [{ name: 'api', env: [{ name: 'DB_PASSWORD', value: 'hunter2' }] }],
+        },
+      }),
+    };
+
+    const { user } = buildInvestigationPrompt(seed, [chunk]);
+
+    expect(user).not.toContain('hunter2');
+    expect(user).toContain('"name": "DB_PASSWORD"');
+    expect(user).toContain('"value": "[REDACTED]"');
+  });
+
+  it('redacts command-line argument values that follow a sensitive flag', () => {
+    const seed = makeSeed('configuration', 'Check workload arguments');
+    const chunk = makeChunk('pod:api', 'pods/default/api.json', 'Pod: api');
+    chunk.metadata = {
+      rawContent: JSON.stringify({
+        apiVersion: 'v1',
+        kind: 'Pod',
+        metadata: { name: 'api', namespace: 'default' },
+        spec: { containers: [{ name: 'api', args: ['--password', 'hunter2'] }] },
+      }),
+    };
+
+    const { user } = buildInvestigationPrompt(seed, [chunk]);
+
+    expect(user).not.toContain('hunter2');
+    expect(user).toContain('"--password"');
+    expect(user).toContain('"[REDACTED]"');
+  });
 });
 
 // ---------------------------------------------------------------------------

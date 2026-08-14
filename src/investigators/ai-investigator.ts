@@ -215,31 +215,57 @@ interface Counter {
  * Resolves a seed to one or more starting node IDs in the DiagnosticGraph.
  *
  * Strategy:
- * 1. Parse `Pod/<ns>/<name>` components from the seed source (from seed.id or
- *    hypothesis text) to get concrete K8s node IDs.
+ * 1. Parse canonical `pod:<ns>/<name>` seed sources (including every source in
+ *    a clustered seed), plus legacy `Pod/<ns>/<name>` component references, to
+ *    get concrete K8s node IDs.
  * 2. Fall back to identifier extraction from the hypothesis text: look for
  *    known resource names that appear as graph nodes.
  * 3. If nothing matches, return an empty array (caller falls back to BFS path).
  *
  * Node ID format in DiagnosticGraph: `{Kind}:{namespace}/{name}`
  */
-function resolveSeedStartNodes(
+export function resolveSeedStartNodes(
   seed: InvestigationSeed,
   graph: DiagnosticGraph,
 ): string[] {
   const nodeIds: string[] = [];
 
-  // Extract Pod/namespace/name patterns from the seed source or hypothesis
-  const combinedText = `${seed.source} ${seed.hypothesis}`;
+  const addPodNode = (namespace: string, name: string): void => {
+    const nodeId = `Pod:${namespace}/${name}`;
+    if (graph.getNode(nodeId) && !nodeIds.includes(nodeId)) {
+      nodeIds.push(nodeId);
+    }
+  };
 
-  // Pattern: Pod/<namespace>/<name> from seed.source (set by seed generator)
+  // Clustered seeds retain only the highest-priority source on the
+  // representative. Include every member source so graph traversal starts at
+  // every concrete resource represented by the cluster.
+  const possibleCluster = seed as InvestigationSeed & {
+    memberSeeds?: InvestigationSeed[];
+  };
+  const sourceSeeds = Array.isArray(possibleCluster.memberSeeds)
+    ? possibleCluster.memberSeeds
+    : [seed];
+
+  for (const sourceSeed of sourceSeeds) {
+    // Canonical source emitted by seed-generator.ts: pod:<namespace>/<name>
+    const canonicalPod = /^pod:([^/\s]+)\/([^/\s]+)$/i.exec(sourceSeed.source.trim());
+    if (canonicalPod !== null) {
+      addPodNode(canonicalPod[1]!, canonicalPod[2]!);
+    }
+
+    // Retain compatibility with component-style sources used by older callers.
+    const componentPod = /^Pod\/([^/\s]+)\/([^/\s]+)$/i.exec(sourceSeed.source.trim());
+    if (componentPod !== null) {
+      addPodNode(componentPod[1]!, componentPod[2]!);
+    }
+  }
+
+  // Also recognize explicit component references embedded in hypothesis text.
   const podPattern = /Pod\/([^/\s]+)\/([^/\s,]+)/g;
   let match: RegExpExecArray | null;
-  while ((match = podPattern.exec(combinedText)) !== null) {
-    const ns = match[1]!;
-    const name = match[2]!;
-    const nodeId = `Pod:${ns}/${name}`;
-    if (graph.getNode(nodeId) && !nodeIds.includes(nodeId)) nodeIds.push(nodeId);
+  while ((match = podPattern.exec(seed.hypothesis)) !== null) {
+    addPodNode(match[1]!, match[2]!);
   }
 
   // Pattern: extract bare resource names from seed hypothesis that match graph node names
@@ -740,13 +766,22 @@ function convertAIFindings(
     let groundedCount = 0;
     let ungroundedCount = 0;
 
-    const evidence: Evidence[] = aiF.evidence.map((aiEv) => {
+    const evidence: Evidence[] = [];
+    for (const aiEv of aiF.evidence) {
       const matchedChunk = matchChunkForEvidence(aiEv, chunksByPath);
       if (matchedChunk !== undefined) {
         groundedCount++;
       } else {
         ungroundedCount++;
       }
+
+      // Once retrieval supplied evidence, an unmatched path is not safe to
+      // surface as a citation or graph source.  We still count it above so the
+      // confidence penalty reflects the model's partially-grounded response.
+      // With no retrieved chunks there is nothing against which to verify the
+      // citation, preserving the existing offline/no-retrieval behaviour.
+      if (matchedChunk === undefined && chunkIndex.length > 0) continue;
+
       const ev: Evidence = {
         path: aiEv.path,
         note: aiEv.note,
@@ -757,8 +792,8 @@ function convertAIFindings(
       if (matchedChunk?.timestamp !== undefined) {
         ev.timestamp = matchedChunk.timestamp;
       }
-      return ev;
-    });
+      evidence.push(ev);
+    }
 
     // ── 7.1 + 7.2: Grounding verification & confidence scoring ─────────────
     // When chunks were retrieved for this seed, every citation must trace back

@@ -1,6 +1,7 @@
 import { parseArgs, CommanderError } from './cli.js';
 import { analyzeBundlePipeline, cleanupPipelineResult } from '../pipeline/analyze.js';
 import { writePipelineResult, writeTraceFile, writeProvenanceFile } from './output.js';
+import type { TUIOutcome } from '../tui/types.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -14,8 +15,33 @@ export interface RunCliOptions {
    * (`src/index.ts`) or from tests.
    */
   loadTUI?: () => Promise<{
-    renderTUI: (bundlePath: string, options: Record<string, unknown>) => Promise<void>;
+    renderTUI: (bundlePath: string, options: Record<string, unknown>) => Promise<TUIOutcome>;
   }>;
+  /** Test seam for terminal capability checks. */
+  isInteractiveTerminal?: () => boolean;
+}
+
+/** Keep machine-readable stdout clean while verbose pipeline diagnostics run. */
+async function runWithDiagnosticsOnStderr<T>(
+  enabled: boolean,
+  operation: () => Promise<T>,
+): Promise<T> {
+  if (!enabled) return operation();
+
+  const originalConsoleLog = console.log;
+  const diagnosticLog: typeof console.log = (...values: unknown[]) => {
+    console.error(...values);
+  };
+  console.log = diagnosticLog;
+  try {
+    return await operation();
+  } finally {
+    // Avoid overwriting a newer owner if another component deliberately
+    // replaced the logger while the operation was in flight.
+    if (console.log === diagnosticLog) {
+      console.log = originalConsoleLog;
+    }
+  }
 }
 
 function formatDebugValue(value: string | number | undefined): string {
@@ -91,15 +117,33 @@ export async function runCli(
       return 1;
     }
 
+    const isInteractive = options.isInteractiveTerminal?.()
+      ?? Boolean(process.stdin.isTTY && process.stdout.isTTY);
+    if (!isInteractive) {
+      console.error('Error: --tui requires an interactive terminal.');
+      console.error('Remove --tui to produce a non-interactive report.');
+      return 1;
+    }
+
     try {
       const { renderTUI } = await options.loadTUI();
-      await renderTUI(args.bundlePath, {
+      const verbose = args.verbose || args.debug;
+      const trace = args.trace || args.debug;
+      const outcome = await renderTUI(args.bundlePath, {
         outputDir: args.outputDir,
-        verbose: args.verbose,
+        verbose,
         noAi: args.noAi,
-        trace: args.trace,
+        trace,
         debug: args.debug,
       });
+      if (!outcome.ok) {
+        if ('cancelled' in outcome && outcome.cancelled) {
+          console.error('Analysis cancelled.');
+          return 130;
+        }
+        console.error('Error:', outcome.error);
+        return 1;
+      }
       return 0;
     } catch (err) {
       console.error('Error:', (err as Error).message);
@@ -112,13 +156,15 @@ export async function runCli(
     const verbose = args.verbose || args.debug;
     const trace = args.trace || args.debug;
 
-    result = await analyzeBundlePipeline(args.bundlePath, {
-      outputDir: args.outputDir,
-      verbose,
-      trace,
-      debug: args.debug,
-      noAi: args.noAi,
-    });
+    result = await runWithDiagnosticsOnStderr(verbose, () =>
+      analyzeBundlePipeline(args.bundlePath, {
+        outputDir: args.outputDir,
+        verbose,
+        trace,
+        debug: args.debug,
+        noAi: args.noAi,
+      }),
+    );
 
     await writePipelineResult(result, {
       format: args.format,

@@ -689,7 +689,6 @@ function matchMissingStorageClassPending(
 export function matchCausalTemplate(
   findings: Finding[],
   events: K8sEvent[],
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   _resources: K8sResource[],
 ): CausalTemplateInstance[] {
   const instances: CausalTemplateInstance[] = [];

@@ -13,6 +13,7 @@
 
 import OpenAI from 'openai';
 import type { AIConfig } from './config.js';
+import { sanitizeSensitiveText } from '../utils/sensitive-data.js';
 
 /** Batch size for embedding API calls. OpenAI allows up to 2048 inputs. */
 const EMBEDDING_BATCH_SIZE = 100;
@@ -95,7 +96,10 @@ export class EmbeddingClient implements EmbeddingClientInterface {
 
     for (let start = 0; start < texts.length; start += EMBEDDING_BATCH_SIZE) {
       const end = Math.min(start + EMBEDDING_BATCH_SIZE, texts.length);
-      const batch = texts.slice(start, end);
+      // OpenAI embeddings are an external-egress boundary just like LLM
+      // prompts. Redact here so every cloud embedding call is protected even
+      // when a caller bypasses the normal prompt-building path.
+      const batch = texts.slice(start, end).map(sanitizeSensitiveText);
 
       try {
         const response = await this.client.embeddings.create({

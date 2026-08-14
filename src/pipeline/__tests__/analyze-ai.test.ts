@@ -13,6 +13,9 @@
 // ---------------------------------------------------------------------------
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as fsp from 'fs/promises';
+import * as os from 'os';
+import * as path from 'path';
 
 // ---------------------------------------------------------------------------
 // Module mocks — must be at top level before imports
@@ -48,11 +51,11 @@ vi.mock('../../graph/index.js', () => {
     toResourceRelationshipGraph: vi.fn().mockReturnValue({ nodes: new Map(), edges: [] }),
   };
   return {
-    InvestigationGraphImpl: vi.fn().mockImplementation(() => ({
+    InvestigationGraphImpl: vi.fn().mockImplementation(function MockInvestigationGraph() { return {
       addNode: vi.fn(),
       addEdge: vi.fn(),
       getNode: vi.fn().mockReturnValue(null),
-    })),
+    }; }),
     buildResourceGraph: vi.fn().mockReturnValue({ nodes: new Map(), edges: [] }),
     buildDiagnosticGraph: vi.fn().mockReturnValue(diagGraph),
     buildWorkloadGroups: vi.fn(),
@@ -81,6 +84,7 @@ vi.mock('../../ai/index.js', () => ({
   EmbeddingClient: vi.fn(),
   createEmbeddingClient: vi.fn(),
   VectorStore: vi.fn(),
+  lateChunkEmbed: vi.fn(),
   zeroAIRunStats: vi.fn((model = 'unknown') => ({
     model,
     totalCalls: 0,
@@ -102,7 +106,7 @@ vi.mock('../../ai/index.js', () => ({
 
 import { analyzeBundlePipeline } from '../analyze.js';
 import { extractBundle, profileBundle } from '../../ingestion/index.js';
-import { mergeAnalyzerResults, identifyLogFiles } from '../../parsers/index.js';
+import { mergeAnalyzerResults, identifyLogFiles, parseLogFile } from '../../parsers/index.js';
 import { runInvestigation } from '../../investigators/index.js';
 import {
   loadAIConfig,
@@ -117,17 +121,18 @@ import {
   EmbeddingClient,
   createEmbeddingClient,
   VectorStore,
+  lateChunkEmbed,
 } from '../../ai/index.js';
-import { buildDiagnosticGraph, buildWorkloadGroups, addTemporalCorrelationEdges, addTemporalSequenceEdges, asResourceRelationshipGraph } from '../../graph/index.js';
+import { InvestigationGraphImpl, buildDiagnosticGraph, buildWorkloadGroups, addTemporalCorrelationEdges, addTemporalSequenceEdges, asResourceRelationshipGraph } from '../../graph/index.js';
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
 // ---------------------------------------------------------------------------
 
-function makeManifest() {
+function makeManifest(extractedPath = '/fake/extracted') {
   return {
     bundlePath: '/fake/bundle.tar.gz',
-    extractedPath: '/fake/extracted',
+    extractedPath,
     files: [],
     totalSize: 0,
     extractedAt: new Date(),
@@ -230,6 +235,7 @@ beforeEach(() => {
 
   // createEmbeddingClient returns undefined by default (no embedding)
   vi.mocked(createEmbeddingClient).mockReturnValue(undefined);
+  vi.mocked(lateChunkEmbed).mockResolvedValue([]);
 
   // Ensure diagnostic graph mocks always return valid values (clearAllMocks may
   // have cleared the implementations set in the vi.mock factory)
@@ -238,10 +244,17 @@ beforeEach(() => {
   vi.mocked(addTemporalCorrelationEdges).mockReturnValue(undefined);
   vi.mocked(addTemporalSequenceEdges).mockReturnValue(undefined);
   vi.mocked(asResourceRelationshipGraph).mockReturnValue({ nodes: new Map(), edges: [] });
+  vi.mocked(InvestigationGraphImpl).mockImplementation(function MockInvestigationGraph() { return {
+    addNode: vi.fn(),
+    addEdge: vi.fn(),
+    getNode: vi.fn().mockReturnValue(null),
+  } as unknown as InstanceType<typeof InvestigationGraphImpl>; });
 
   // LexicalSearchIndex mock instance
   const mockLexInstance = { build: vi.fn(), search: vi.fn().mockReturnValue([]) };
-  vi.mocked(LexicalSearchIndex).mockImplementation(() => mockLexInstance as unknown as InstanceType<typeof LexicalSearchIndex>);
+  vi.mocked(LexicalSearchIndex).mockImplementation(function MockLexicalSearchIndex() {
+    return mockLexInstance as unknown as InstanceType<typeof LexicalSearchIndex>;
+  });
 
   // LLMClient mock instance
   const mockLLMInstance = {
@@ -249,7 +262,9 @@ beforeEach(() => {
     generateText: vi.fn().mockResolvedValue(''),
     getModel: vi.fn().mockReturnValue('gpt-4o'),
   };
-  vi.mocked(LLMClient).mockImplementation(() => mockLLMInstance as unknown as InstanceType<typeof LLMClient>);
+  vi.mocked(LLMClient).mockImplementation(function MockLLMClient() {
+    return mockLLMInstance as unknown as InstanceType<typeof LLMClient>;
+  });
 
   vi.mocked(getRecorderMode).mockReturnValue('live');
   vi.mocked(defaultSeedResolver).mockImplementation(() => ({
@@ -264,7 +279,9 @@ beforeEach(() => {
     clearSeedContext: vi.fn(),
   };
   vi.mocked(ReplayableLLMClient).mockImplementation(
-    () => mockReplayableLLMInstance as unknown as InstanceType<typeof ReplayableLLMClient>,
+    function MockReplayableLLMClient() {
+      return mockReplayableLLMInstance as unknown as InstanceType<typeof ReplayableLLMClient>;
+    },
   );
 
   const mockCassetteRecorderInstance = {
@@ -276,7 +293,7 @@ beforeEach(() => {
     CassetteRecorder as unknown as {
       mockImplementation: (impl: (...args: unknown[]) => unknown) => void;
     }
-  ).mockImplementation(() => mockCassetteRecorderInstance);
+  ).mockImplementation(function MockCassetteRecorder() { return mockCassetteRecorderInstance; });
 
   // EmbeddingClient mock instance (kept for backward compatibility)
   const mockEmbeddingInstance = {
@@ -284,7 +301,9 @@ beforeEach(() => {
     embedSingle: vi.fn().mockResolvedValue([]),
   };
   vi.mocked(EmbeddingClient).mockImplementation(
-    () => mockEmbeddingInstance as unknown as InstanceType<typeof EmbeddingClient>,
+    function MockEmbeddingClient() {
+      return mockEmbeddingInstance as unknown as InstanceType<typeof EmbeddingClient>;
+    },
   );
 
   // VectorStore mock instance
@@ -294,7 +313,9 @@ beforeEach(() => {
     size: 0,
   };
   vi.mocked(VectorStore).mockImplementation(
-    () => mockVectorStoreInstance as unknown as InstanceType<typeof VectorStore>,
+    function MockVectorStore() {
+      return mockVectorStoreInstance as unknown as InstanceType<typeof VectorStore>;
+    },
   );
 });
 
@@ -307,6 +328,26 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('analyzeBundlePipeline — AI conditional path', () => {
+  it('removes its auto-created extraction directory when a later pipeline step fails', async () => {
+    const extractionDir = await fsp.mkdtemp(
+      path.join(os.tmpdir(), 'sbi-bundle-pipeline-failure-'),
+    );
+    await fsp.writeFile(path.join(extractionDir, 'marker.txt'), 'temporary');
+    vi.mocked(extractBundle).mockResolvedValue(
+      makeManifest(extractionDir) as Awaited<ReturnType<typeof extractBundle>>,
+    );
+    vi.mocked(profileBundle).mockRejectedValue(new Error('profile exploded'));
+
+    try {
+      await expect(analyzeBundlePipeline('/fake/bundle.tar.gz')).rejects.toThrow(
+        'profile exploded',
+      );
+      await expect(fsp.access(extractionDir)).rejects.toThrow();
+    } finally {
+      await fsp.rm(extractionDir, { recursive: true, force: true });
+    }
+  });
+
   // ── AI disabled when no API key ──────────────────────────────────────────
 
   it('skips AI index step when isAIEnabled returns false (no API key)', async () => {
@@ -438,7 +479,9 @@ describe('analyzeBundlePipeline — AI conditional path', () => {
       size: 1,
     };
     vi.mocked(VectorStore).mockImplementation(
-      () => mockVectorStoreInstance as unknown as InstanceType<typeof VectorStore>,
+      function MockVectorStore() {
+        return mockVectorStoreInstance as unknown as InstanceType<typeof VectorStore>;
+      },
     );
 
     await analyzeBundlePipeline('/fake/bundle.tar.gz');
@@ -454,6 +497,101 @@ describe('analyzeBundlePipeline — AI conditional path', () => {
         vectorStore: expect.any(Object),
       }),
     );
+  });
+
+  it('late-chunks against the original full log and preserves a source range after line 1000', async () => {
+    vi.mocked(loadAIConfig).mockReturnValue({
+      provider: 'openai',
+      apiKey: 'sk-test',
+      model: 'gpt-4o',
+      embeddingModel: 'text-embedding-3-small',
+      embeddingBackend: 'local',
+      embeddingUrl: 'http://localhost:8080',
+      llmBackend: 'openai',
+      llmUrl: 'https://api.openai.com/v1',
+      tokenBudget: 100000,
+      enabled: true,
+    });
+    vi.mocked(isAIEnabled).mockReturnValue(true);
+
+    const logPath = '/fake/extracted/cluster-resources/pods/logs/default/api/app.log';
+    const logLines = Array.from({ length: 1_200 }, (_, index) => ({
+      lineNumber: index + 1,
+      content: index === 1_049 ? 'ERROR failure after a long healthy prefix' : `line ${index + 1}`,
+      level: index === 1_049 ? 'error' as const : 'info' as const,
+    }));
+    const logFile = {
+      path: logPath,
+      lines: logLines,
+      errorCount: 1,
+      warningCount: 0,
+      importance: 1,
+    };
+    vi.mocked(identifyLogFiles).mockReturnValue([
+      {
+        relativePath: 'cluster-resources/pods/logs/default/api/app.log',
+        absolutePath: logPath,
+        size: 10_000,
+        category: 'log',
+      },
+    ]);
+    vi.mocked(parseLogFile).mockResolvedValue(logFile);
+
+    const preambleChunk = {
+      id: `${logPath}:preamble:1-20`, artifactId: logPath,
+      content: 'line 1\nline 2', startLine: 1, endLine: 20,
+      summary: 'preamble', identifiers: [], artifactCategory: 'log' as const,
+      metadata: { chunkType: 'preamble' },
+    };
+    const lateErrorChunk = {
+      id: `${logPath}:error-cluster:1040-1060`, artifactId: logPath,
+      content: 'ERROR failure after a long healthy prefix', startLine: 1_040, endLine: 1_060,
+      summary: 'late error', identifiers: [], artifactCategory: 'log' as const,
+      metadata: { chunkType: 'error-cluster' },
+    };
+    const summaryChunk = {
+      id: `${logPath}:summary`, artifactId: logPath,
+      content: 'lines 21-1039: healthy\nlines 1061-1200: healthy', startLine: 21, endLine: 1_200,
+      summary: 'healthy regions', identifiers: [], artifactCategory: 'log' as const,
+      metadata: { chunkType: 'summary' },
+    };
+    const fakeChunks = [preambleChunk, lateErrorChunk, summaryChunk];
+    vi.mocked(buildChunkIndex).mockReturnValue(fakeChunks);
+
+    const mockEmbeddingInstance = {
+      embed: vi.fn().mockResolvedValue([[0.7, 0.8]]),
+      embedSingle: vi.fn().mockResolvedValue([0.1, 0.2]),
+      embedTokenLevel: vi.fn().mockResolvedValue([[0.1, 0.2]]),
+    };
+    vi.mocked(createEmbeddingClient).mockReturnValue(mockEmbeddingInstance);
+    vi.mocked(lateChunkEmbed).mockResolvedValue([[0.1, 0.2], [0.3, 0.4]]);
+
+    const mockVectorStoreInstance = {
+      addAll: vi.fn(), query: vi.fn().mockReturnValue([]), size: 3,
+    };
+    vi.mocked(VectorStore).mockImplementation(
+      function MockVectorStore() {
+        return mockVectorStoreInstance as unknown as InstanceType<typeof VectorStore>;
+      },
+    );
+
+    await analyzeBundlePipeline('/fake/bundle.tar.gz');
+
+    expect(lateChunkEmbed).toHaveBeenCalledOnce();
+    const [, document, documentLines, boundaries] = vi.mocked(lateChunkEmbed).mock.calls[0]!;
+    expect(documentLines).toHaveLength(1_200);
+    expect(documentLines[1_049]).toBe('ERROR failure after a long healthy prefix');
+    expect(document).toContain('line 1000\nline 1001');
+    expect(boundaries).toEqual([
+      { startLine: 1, endLine: 20 },
+      { startLine: 1_040, endLine: 1_060 },
+    ]);
+    expect(mockEmbeddingInstance.embed).toHaveBeenCalledWith(['healthy regions']);
+    expect(mockVectorStoreInstance.addAll).toHaveBeenCalledWith(fakeChunks, [
+      [0.1, 0.2],
+      [0.3, 0.4],
+      [0.7, 0.8],
+    ]);
   });
 
   it('adds ai-index step to trace when AI is enabled', async () => {
@@ -505,7 +643,7 @@ describe('analyzeBundlePipeline — AI conditional path', () => {
       CassetteRecorder as unknown as {
         mockImplementation: (impl: (...args: unknown[]) => unknown) => void;
       }
-    ).mockImplementation(() => mockRecorder);
+    ).mockImplementation(function MockCassetteRecorder() { return mockRecorder; });
 
     const mockReplayable = {
       investigateSeed: vi.fn().mockResolvedValue({ findings: [] }),
@@ -514,7 +652,9 @@ describe('analyzeBundlePipeline — AI conditional path', () => {
       clearSeedContext: vi.fn(),
     };
     vi.mocked(ReplayableLLMClient).mockImplementation(
-      () => mockReplayable as unknown as InstanceType<typeof ReplayableLLMClient>,
+      function MockReplayableLLMClient() {
+        return mockReplayable as unknown as InstanceType<typeof ReplayableLLMClient>;
+      },
     );
 
     await analyzeBundlePipeline('/fake/bundle.tar.gz', { outputDir: '/tmp/sbi-output' });
@@ -556,7 +696,7 @@ describe('analyzeBundlePipeline — AI conditional path', () => {
       CassetteRecorder as unknown as {
         mockImplementation: (impl: (...args: unknown[]) => unknown) => void;
       }
-    ).mockImplementation(() => mockRecorder);
+    ).mockImplementation(function MockCassetteRecorder() { return mockRecorder; });
 
     await analyzeBundlePipeline('/fake/bundle.tar.gz', { cassetteDir: '/tmp/explicit-cassettes' });
 
@@ -625,7 +765,7 @@ describe('analyzeBundlePipeline — AI conditional path', () => {
     });
     vi.mocked(isAIEnabled).mockReturnValue(true);
     vi.mocked(buildChunkIndex).mockReturnValue([]);
-    vi.mocked(LLMClient).mockImplementation(() => {
+    vi.mocked(LLMClient).mockImplementation(function MockFailingLLMClient() {
       throw new Error('Invalid API key');
     });
 

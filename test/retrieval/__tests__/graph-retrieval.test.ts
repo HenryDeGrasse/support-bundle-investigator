@@ -2,8 +2,7 @@
  * Graph retrieval precision/recall tests — Phase 2 quality gate.
  *
  * These tests exercise `getRelatedChunks` (and its helpers) against realistic
- * multi-namespace fixture data.  Tests that depend on later Phase 2 steps are
- * marked `it.skip()` with an explicit comment identifying the enabling step.
+ * multi-namespace fixture data, including the completed RRF quality gate.
  *
  * Fixture source: `multi-namespace-retrieval`
  *
@@ -27,6 +26,9 @@ import type { IndexedChunk } from '../../../src/ai/chunk-indexer.js';
 import { parseResourceJson } from '../../../src/parsers/k8s-resource-parser.js';
 import { parseEventsJson } from '../../../src/parsers/event-parser.js';
 import { parseAnalyzerJson } from '../../../src/parsers/analyzer-parser.js';
+import { parseLogFile } from '../../../src/parsers/log-parser.js';
+import { LexicalSearchIndex } from '../../../src/ai/lexical-search.js';
+import { mergeChunks } from '../../../src/investigators/ai-investigator.js';
 import type { K8sResource, K8sEvent } from '../../../src/types/index.js';
 import type { InvestigationSeed } from '../../../src/investigators/types.js';
 import type { BundleProfile } from '../../../src/types/index.js';
@@ -497,9 +499,8 @@ describe('graph retrieval — hop-distance scoring', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Test suite 5: RRF combined retrieval (SKIPPED: needs step-15)
+// Test suite 5: RRF combined retrieval
 //
-// SKIP — depends on step-15 (2.2):
 //   Reciprocal Rank Fusion merges the lexical rank list and graph rank list
 //   into a single ranked result.  Tests will assert that:
 //   - RRF result for 'DNS failure wrong-host.internal' includes BOTH:
@@ -508,17 +509,63 @@ describe('graph retrieval — hop-distance scoring', () => {
 //   - No single high-scoring noise chunk dominates the combined result.
 // ---------------------------------------------------------------------------
 
-describe('graph retrieval — RRF combined result (SKIPPED: needs step-15)', () => {
-  it.skip(
-    // step-15 (2.2): Reciprocal Rank Fusion is not yet implemented.
-    //   After step-15, a combineRanks() (or equivalent) function will merge
-    //   lexical and graph results.  The combined top-5 for 'DNS failure
-    //   wrong-host.internal' should include both the DNS log chunk (lexical
-    //   signal) and the db-config ConfigMap chunk (graph signal).
-    'RRF combined result for DNS query includes log chunk and ConfigMap chunk (needs step-15)',
-    () => {
-      // Placeholder — will be implemented in step-15.
-      expect(true).toBe(false); // force failure if accidentally un-skipped
+describe('graph retrieval — RRF combined result', () => {
+  it(
+    'combines the lexical DNS log with the graph-related db-config ConfigMap',
+    async () => {
+      const webAppLog = await parseLogFile(
+        path.join(
+          MULTI_NS_DIR,
+          'cluster-resources',
+          'pods',
+          'logs',
+          'default',
+          'web-app-pod',
+          'app.log',
+        ),
+      );
+      const combinedChunkIndex = buildChunkIndex({
+        analyzerResults: [],
+        resources: allResources,
+        events: allEvents,
+        logs: [webAppLog],
+        profile: makeMinimalProfile(),
+      });
+      const seed = makeSeed(
+        'pod:default/web-app-pod',
+        'DNS failure wrong-host.internal',
+      );
+      const graphResults = getRelatedChunks(graph, seed, combinedChunkIndex);
+      const lexicalIndex = new LexicalSearchIndex();
+      lexicalIndex.build(combinedChunkIndex);
+      const lexicalResults = lexicalIndex.search(seed.hypothesis, 10);
+
+      const merged = mergeChunks([
+        {
+          chunks: graphResults.map((result) => result.chunk),
+          scores: graphResults.map((result) => result.score),
+        },
+        {
+          chunks: lexicalResults.map((result) => result.chunk),
+          scores: lexicalResults.map((result) => result.score),
+        },
+      ]);
+
+      expect(
+        merged.some(
+          (chunk) =>
+            chunk.artifactCategory === 'log' &&
+            chunk.content.includes('wrong-host.internal'),
+        ),
+      ).toBe(true);
+      expect(
+        merged.some(
+          (chunk) =>
+            chunk.artifactCategory === 'kubernetes-resource' &&
+            (chunk.metadata as Record<string, unknown>)['kind'] === 'ConfigMap' &&
+            (chunk.metadata as Record<string, unknown>)['name'] === 'db-config',
+        ),
+      ).toBe(true);
     },
   );
 });

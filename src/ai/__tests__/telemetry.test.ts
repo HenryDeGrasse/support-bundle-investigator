@@ -69,7 +69,10 @@ describe('AI telemetry aggregation', () => {
   });
 
   it('estimates OpenAI token cost for known models', () => {
-    expect(estimateLLMCostUsd('gpt-4o', 1000, 500, 'openai')).toBeCloseTo(0.0125, 6);
+    expect(estimateLLMCostUsd('gpt-5.6-sol', 1000, 500, 'openai')).toBeCloseTo(0.02, 6);
+    expect(estimateLLMCostUsd('gpt-5.6-terra', 1000, 500, 'openai')).toBeCloseTo(0.008, 6);
+    expect(estimateLLMCostUsd('gpt-5.6-luna', 1000, 500, 'openai')).toBeCloseTo(0.0008, 6);
+    expect(estimateLLMCostUsd('gpt-4o', 1000, 500, 'openai')).toBeCloseTo(0.0075, 6);
     expect(estimateLLMCostUsd('gpt-4o-mini', 1000, 500, 'openai')).toBeCloseTo(0.00045, 6);
   });
 

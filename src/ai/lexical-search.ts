@@ -163,7 +163,13 @@ function tokenizeContent(text: string): string[] {
   return text
     .toLowerCase()
     .split(/[^\w-]+/)
-    .map((t) => t.replace(/^-+|-+$/g, ''))
+    .map((token) => {
+      let start = 0;
+      let end = token.length;
+      while (start < end && token.charCodeAt(start) === 45) start++;
+      while (end > start && token.charCodeAt(end - 1) === 45) end--;
+      return token.slice(start, end);
+    })
     .filter((t) => t.length >= MIN_TOKEN_LEN);
 }
 

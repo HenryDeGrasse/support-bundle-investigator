@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
+import { VERSION } from '../../version.js';
 
 const repoRoot = path.resolve(__dirname, '../../..');
 const cliBin = path.join(repoRoot, 'dist/cli/run.mjs');
@@ -10,19 +11,15 @@ const cliBin = path.join(repoRoot, 'dist/cli/run.mjs');
  * Integration test that spawns the actual CLI binary to verify that:
  * 1. The ESM entry point loads without CJS/ESM compatibility errors.
  * 2. The `--tui` flag is accepted.
- * 3. The TUI module (which imports `ink`) can be dynamically loaded.
+ * 3. Non-interactive invocations fail fast with actionable guidance.
  *
- * We cannot fully render the TUI in a non-interactive test environment
- * (no TTY), so we test that the process starts without the "require()
- * cannot be used on an ESM graph" error. Ink will throw a different
- * error about missing TTY or render immediately — either way, the ESM
- * import chain succeeded.
+ * Full App rendering is covered separately with injected terminal streams.
  */
 describe('TUI CLI binary integration', () => {
   const binExists = fs.existsSync(cliBin);
 
   it.skipIf(!binExists)(
-    'CLI binary loads the TUI module without ESM/CJS errors',
+    'CLI binary rejects --tui cleanly when no TTY is available',
     () => {
       // Use a non-existent bundle path — we only care that ink loads,
       // not that the pipeline runs.
@@ -42,6 +39,8 @@ describe('TUI CLI binary integration', () => {
       // The critical assertion: the old CJS error must not appear
       expect(combined).not.toContain('require() cannot be used on an ESM graph');
       expect(combined).not.toContain('ERR_REQUIRE_ESM');
+      expect(proc.status).toBe(1);
+      expect(proc.stderr).toContain('--tui requires an interactive terminal');
     },
   );
 
@@ -61,6 +60,20 @@ describe('TUI CLI binary integration', () => {
 
       expect(proc.stdout).toContain('sbi');
       expect(proc.stdout).toContain('analyze');
+    },
+  );
+
+  it.skipIf(!binExists)(
+    'the SBI binary reports the shared application version',
+    () => {
+      const proc = spawnSync(process.execPath, [cliBin, '--version'], {
+        cwd: repoRoot,
+        encoding: 'utf-8',
+        timeout: 10_000,
+      });
+
+      expect(proc.status).toBe(0);
+      expect(proc.stdout.trim()).toBe(VERSION);
     },
   );
 
@@ -87,7 +100,15 @@ describe('TUI CLI binary integration', () => {
 
       const proc = spawnSync(
         process.execPath,
-        [cliBin, 'analyze', '/tmp/sbi-tui-test.tar.gz', '--no-ai', '--format', 'json'],
+        [
+          cliBin,
+          'analyze',
+          '/tmp/sbi-tui-test.tar.gz',
+          '--no-ai',
+          '--verbose',
+          '--format',
+          'json',
+        ],
         {
           cwd: repoRoot,
           encoding: 'utf-8',
@@ -98,6 +119,7 @@ describe('TUI CLI binary integration', () => {
       expect(proc.status).toBe(0);
       const report = JSON.parse(proc.stdout);
       expect(report.findings.length).toBeGreaterThan(0);
+      expect(proc.stderr).toContain('[pipeline]');
     },
   );
 });

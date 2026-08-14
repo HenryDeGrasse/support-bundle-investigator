@@ -45,9 +45,9 @@ vi.mock('../../graph/index.js', () => {
     toResourceRelationshipGraph: vi.fn().mockReturnValue({ nodes: new Map(), edges: [] }),
   };
   return {
-    InvestigationGraphImpl: vi.fn().mockImplementation(() => ({
+    InvestigationGraphImpl: vi.fn().mockImplementation(function MockInvestigationGraph() { return {
       addNode: vi.fn(), addEdge: vi.fn(), getNode: vi.fn().mockReturnValue(null),
-    })),
+    }; }),
     buildResourceGraph: vi.fn().mockReturnValue({ nodes: new Map(), edges: [] }),
     buildDiagnosticGraph: vi.fn().mockReturnValue(diagGraph),
     buildWorkloadGroups: vi.fn(),
@@ -217,11 +217,11 @@ beforeEach(() => {
 
   // Re-initialize InvestigationGraphImpl so graph.addNode/addEdge/getNode work
   // even when events/resources are non-empty (clearAllMocks clears the implementation).
-  vi.mocked(InvestigationGraphImpl).mockImplementation(() => ({
+  vi.mocked(InvestigationGraphImpl).mockImplementation(function MockInvestigationGraph() { return {
     addNode: vi.fn(),
     addEdge: vi.fn(),
     getNode: vi.fn().mockReturnValue(null),
-  }) as unknown as InstanceType<typeof InvestigationGraphImpl>);
+  } as unknown as InstanceType<typeof InvestigationGraphImpl>; });
 
   // AI disabled by default
   vi.mocked(loadAIConfig).mockReturnValue({
@@ -244,7 +244,9 @@ beforeEach(() => {
 
   const mockLexInstance = { build: vi.fn(), search: vi.fn().mockReturnValue([]) };
   vi.mocked(LexicalSearchIndex).mockImplementation(
-    () => mockLexInstance as unknown as InstanceType<typeof LexicalSearchIndex>,
+    function MockLexicalSearchIndex() {
+      return mockLexInstance as unknown as InstanceType<typeof LexicalSearchIndex>;
+    },
   );
   const mockLLMInstance = {
     investigateSeed: vi.fn().mockResolvedValue({ findings: [] }),
@@ -252,7 +254,9 @@ beforeEach(() => {
     getModel: vi.fn().mockReturnValue('gpt-4o'),
   };
   vi.mocked(LLMClient).mockImplementation(
-    () => mockLLMInstance as unknown as InstanceType<typeof LLMClient>,
+    function MockLLMClient() {
+      return mockLLMInstance as unknown as InstanceType<typeof LLMClient>;
+    },
   );
 
   vi.mocked(getRecorderMode).mockReturnValue('live');
@@ -268,7 +272,9 @@ beforeEach(() => {
     clearSeedContext: vi.fn(),
   };
   vi.mocked(ReplayableLLMClient).mockImplementation(
-    () => mockReplayableLLMInstance as unknown as InstanceType<typeof ReplayableLLMClient>,
+    function MockReplayableLLMClient() {
+      return mockReplayableLLMInstance as unknown as InstanceType<typeof ReplayableLLMClient>;
+    },
   );
 
   const mockCassetteRecorderInstance = {
@@ -280,14 +286,16 @@ beforeEach(() => {
     CassetteRecorder as unknown as {
       mockImplementation: (impl: (...args: unknown[]) => unknown) => void;
     }
-  ).mockImplementation(() => mockCassetteRecorderInstance);
+  ).mockImplementation(function MockCassetteRecorder() { return mockCassetteRecorderInstance; });
 
   const mockEmbeddingInstance = {
     embed: vi.fn().mockResolvedValue([]),
     embedSingle: vi.fn().mockResolvedValue([]),
   };
   vi.mocked(EmbeddingClient).mockImplementation(
-    () => mockEmbeddingInstance as unknown as InstanceType<typeof EmbeddingClient>,
+    function MockEmbeddingClient() {
+      return mockEmbeddingInstance as unknown as InstanceType<typeof EmbeddingClient>;
+    },
   );
 
   const mockVectorStoreInstance = {
@@ -296,7 +304,9 @@ beforeEach(() => {
     size: 0,
   };
   vi.mocked(VectorStore).mockImplementation(
-    () => mockVectorStoreInstance as unknown as InstanceType<typeof VectorStore>,
+    function MockVectorStore() {
+      return mockVectorStoreInstance as unknown as InstanceType<typeof VectorStore>;
+    },
   );
 });
 

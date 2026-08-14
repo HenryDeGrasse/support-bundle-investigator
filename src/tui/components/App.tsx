@@ -1,8 +1,13 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Box, Text, useInput, useApp, useStdout } from 'ink';
 import type { PipelineOptions, PipelineResult } from '../../pipeline/index.js';
 import { buildReport } from '../../reporters/index.js';
-import { writePipelineResult } from '../../cli/output.js';
+import {
+  writePipelineResult,
+  writeTraceFile,
+  writeProvenanceFile,
+} from '../../cli/output.js';
+import type { TUIOutcome } from '../types.js';
 import {
   initialDashboardState,
   dashboardTransition,
@@ -35,6 +40,10 @@ export interface AppProps {
     bundlePath: string,
     options: PipelineOptions,
   ) => Promise<PipelineResult>;
+  /** Remove the pipeline's temporary extraction directory. */
+  cleanupPipeline?: (result: PipelineResult) => Promise<void>;
+  /** Report completion, cancellation, or failure to the CLI wrapper. */
+  onOutcome?: (outcome: TUIOutcome) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -71,8 +80,11 @@ export function App({
   pipelineOptions = {},
   outputDir,
   runPipeline,
+  cleanupPipeline = async () => {},
+  onOutcome = () => {},
 }: AppProps): React.ReactElement {
   const { exit } = useApp();
+  const { stdout } = useStdout();
 
   // Navigation state (pane-based)
   const [dashState, setDashState] = useState<DashboardState>(initialDashboardState());
@@ -125,8 +137,20 @@ export function App({
       },
     };
 
+    const originalConsoleLog = console.log;
+    const diagnosticLog: typeof console.log = (...values: unknown[]) => {
+      console.error(...values);
+    };
+    if (options.verbose) {
+      console.log = diagnosticLog;
+    }
+
     runPipeline(bundlePath, options)
-      .then((pipelineResult) => {
+      .then(async (pipelineResult) => {
+        // The dashboard/report builders use in-memory data only, so extracted
+        // bundle contents can be removed immediately. This also guarantees
+        // cleanup if the user quits before the next render.
+        await cleanupPipeline(pipelineResult);
         if (cancelled) return;
         setResult(pipelineResult);
         setDashState((prev) =>
@@ -135,11 +159,21 @@ export function App({
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : String(err));
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+        onOutcome({ ok: false, error: message });
+      })
+      .finally(() => {
+        if (console.log === diagnosticLog) {
+          console.log = originalConsoleLog;
+        }
       });
 
     return () => {
       cancelled = true;
+      if (console.log === diagnosticLog) {
+        console.log = originalConsoleLog;
+      }
     };
   }, []); // intentionally empty — run once on mount
 
@@ -172,25 +206,41 @@ export function App({
 
     const dir = outputDir ?? process.cwd();
     const originalConsoleLog = console.log;
+    const suppressedConsoleLog: typeof console.log = () => {};
 
     try {
       // Suppress writePipelineResult's success log so Ink keeps control of the screen.
-      console.log = () => {};
+      console.log = suppressedConsoleLog;
       await writePipelineResult(result, {
         format: 'json',
         outputDir: dir,
         verbose: false,
+        debug: pipelineOptions.debug,
       });
-      showExportStatus(`Saved to ${dir}: findings.json, report.md, report.html`, 2000);
+      const written = ['findings.json', 'report.md', 'report.html'];
+      if (pipelineOptions.trace || pipelineOptions.debug) {
+        await writeTraceFile(result.trace, dir);
+        written.push('trace.json');
+      }
+      if (pipelineOptions.debug) {
+        await writeProvenanceFile(result.findings, dir);
+        written.push('provenance.json');
+      }
+      showExportStatus(`Saved to ${dir}: ${written.join(', ')}`, 2000);
     } catch (err) {
       showExportStatus(
         `Export failed: ${err instanceof Error ? err.message : String(err)}`,
         3000,
       );
     } finally {
-      console.log = originalConsoleLog;
+      if (console.log === suppressedConsoleLog) {
+        console.log = originalConsoleLog;
+      }
     }
-  }, [outputDir, result, showExportStatus]);
+  }, [outputDir, pipelineOptions.debug, pipelineOptions.trace, result, showExportStatus]);
+
+  const findings = result?.findings ?? [];
+  const report = useMemo(() => (result ? buildReport(result) : null), [result]);
 
   // ── Keyboard input ────────────────────────────────────────────────────────
   useInput((input, key) => {
@@ -202,6 +252,15 @@ export function App({
     else if (key.return) keyId = 'return';
     else if (key.escape) keyId = 'escape';
     else if (key.tab) keyId = 'tab';
+
+    const requestedQuit = input === 'q' || (input === 'c' && key.ctrl);
+    if (requestedQuit) {
+      if (dashState.phase === 'loading' && error === null) {
+        onOutcome({ ok: false, cancelled: true });
+      }
+      exit();
+      return;
+    }
 
     // Handle 's' for export (only when not in loading phase)
     if (input === 's' && dashState.phase !== 'loading') {
@@ -218,13 +277,13 @@ export function App({
 
     if (!action) return;
 
-    if (action.type === 'QUIT') {
-      exit();
-      return;
-    }
-
     setDashState((prev) =>
-      dashboardTransition(prev, action, result?.findings.length ?? 0),
+      dashboardTransition(
+        prev,
+        action,
+        findings.length,
+        report?.specRecommendations.length ?? 0,
+      ),
     );
   });
 
@@ -244,13 +303,8 @@ export function App({
   }
 
   // ── Terminal dimensions for fullscreen layout ────────────────────────────
-  const { stdout } = useStdout();
   const termWidth = stdout?.columns ?? 120;
   const termHeight = stdout?.rows ?? 40;
-
-  // ── Derive data for views ─────────────────────────────────────────────────
-  const findings = result?.findings ?? [];
-  const report = result ? buildReport(result) : null;
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (

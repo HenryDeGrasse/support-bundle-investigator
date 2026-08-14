@@ -1,6 +1,6 @@
 import { runCli } from './cli/runner.js';
 
-export const VERSION = "0.1.0";
+export { VERSION } from './version.js';
 
 // Pipeline
 export { analyzeBundlePipeline, cleanupPipelineResult } from './pipeline/index.js';
@@ -11,6 +11,16 @@ export type {
   PipelineStepStatus,
 } from './pipeline/index.js';
 export type { InvestigationTrace, TraceStep } from './pipeline/index.js';
+
+// Archive ingestion
+export {
+  DEFAULT_MAX_ENTRIES,
+  DEFAULT_MAX_ENTRY_SIZE,
+  DEFAULT_MAX_PATH_LENGTH,
+  DEFAULT_MAX_UNCOMPRESSED_SIZE,
+  extractBundle,
+} from './ingestion/index.js';
+export type { ExtractOptions } from './ingestion/index.js';
 
 // CLI helpers
 export { parseArgs, CommanderError } from './cli/index.js';

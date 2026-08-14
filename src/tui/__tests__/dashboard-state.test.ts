@@ -44,6 +44,10 @@ describe('initialDashboardState()', () => {
     expect(initialDashboardState().detailScrollOffset).toBe(0);
   });
 
+  it('returns specsScrollOffset 0', () => {
+    expect(initialDashboardState().specsScrollOffset).toBe(0);
+  });
+
   it('returns specsVisible false', () => {
     expect(initialDashboardState().specsVisible).toBe(false);
   });
@@ -58,6 +62,7 @@ describe('initialDashboardState()', () => {
       activePane: 'findings',
       selectedIndex: 0,
       detailScrollOffset: 0,
+      specsScrollOffset: 0,
       specsVisible: false,
       shouldExit: false,
     });
@@ -121,6 +126,15 @@ describe('dashboardTransition() — SELECT_FINDING', () => {
       5,
     );
     expect(next.selectedIndex).toBe(3);
+  });
+
+  it('resets detail scrolling when a different finding is selected', () => {
+    const next = dashboardTransition(
+      makeState({ phase: 'ready', detailScrollOffset: 12 }),
+      { type: 'SELECT_FINDING', index: 3 },
+      5,
+    );
+    expect(next.detailScrollOffset).toBe(0);
   });
 
   it('works from detail pane (allows re-selection)', () => {
@@ -382,6 +396,16 @@ describe('dashboardTransition() — MOVE_UP', () => {
     expect(next).toBe(state);
   });
 
+  it('scrolls up in the specs pane', () => {
+    const next = dashboardTransition(
+      makeState({ phase: 'ready', activePane: 'specs', specsScrollOffset: 3 }),
+      { type: 'MOVE_UP' },
+      5,
+      6,
+    );
+    expect(next.specsScrollOffset).toBe(2);
+  });
+
   it('is a no-op during loading phase', () => {
     const state = makeState({ phase: 'loading' });
     const next = dashboardTransition(state, { type: 'MOVE_UP' }, 5);
@@ -401,6 +425,20 @@ describe('dashboardTransition() — MOVE_DOWN', () => {
       5,
     );
     expect(next.selectedIndex).toBe(2);
+  });
+
+  it('resets detail scrolling when moving to another finding', () => {
+    const next = dashboardTransition(
+      makeState({
+        phase: 'ready',
+        activePane: 'findings',
+        selectedIndex: 1,
+        detailScrollOffset: 8,
+      }),
+      { type: 'MOVE_DOWN' },
+      5,
+    );
+    expect(next.detailScrollOffset).toBe(0);
   });
 
   it('clamps selectedIndex to findingsCount - 1 in findings pane', () => {
@@ -443,6 +481,19 @@ describe('dashboardTransition() — MOVE_DOWN', () => {
     const state = makeState({ phase: 'ready', activePane: 'specs' });
     const next = dashboardTransition(state, { type: 'MOVE_DOWN' }, 5);
     expect(next).toBe(state);
+  });
+
+  it('scrolls down in the specs pane and clamps to the recommendation count', () => {
+    let next = dashboardTransition(
+      makeState({ phase: 'ready', activePane: 'specs', specsScrollOffset: 1 }),
+      { type: 'MOVE_DOWN' },
+      5,
+      3,
+    );
+    expect(next.specsScrollOffset).toBe(2);
+
+    next = dashboardTransition(next, { type: 'MOVE_DOWN' }, 5, 3);
+    expect(next.specsScrollOffset).toBe(2);
   });
 
   it('is a no-op during loading phase', () => {

@@ -7,7 +7,7 @@
  * - Correct top-1 hypothesis categories
  * - Appropriate finding counts
  * - Correct suppression / preservation of symptom findings
- * - Findings sorted by severity desc then confidence desc
+ * - Findings sorted by severity, diagnostic role, then confidence
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -20,6 +20,7 @@ import {
   type PipelineResult,
 } from '../../../src/pipeline/analyze.js';
 import type { Finding } from '../../../src/types/index.js';
+import { compareFindingsForDisplay } from '../../../src/investigators/orchestrator.js';
 import { createTestBundle, getFixturePath } from '../../helpers/create-test-bundle.js';
 
 // ---------------------------------------------------------------------------
@@ -162,7 +163,7 @@ function assertClean(finding: Finding, label: string): void {
 }
 
 /**
- * Asserts findings are sorted by severity desc then confidence desc.
+ * Asserts findings are sorted by severity, diagnostic role, then confidence.
  */
 function assertSorted(findings: Finding[], label: string): void {
   for (let i = 0; i < findings.length - 1; i++) {
@@ -171,16 +172,15 @@ function assertSorted(findings: Finding[], label: string): void {
     const currentSev = SEVERITY_ORDER[current.severity] ?? 0;
     const nextSev = SEVERITY_ORDER[next.severity] ?? 0;
 
+    expect(
+      currentSev,
+      `${label}: finding[${i}] severity should be >= finding[${i + 1}] severity`,
+    ).toBeGreaterThanOrEqual(nextSev);
     if (currentSev === nextSev) {
       expect(
-        current.confidence,
-        `${label}: finding[${i}] confidence should be >= finding[${i + 1}] confidence when same severity`,
-      ).toBeGreaterThanOrEqual(next.confidence);
-    } else {
-      expect(
-        currentSev,
-        `${label}: finding[${i}] severity should be >= finding[${i + 1}] severity`,
-      ).toBeGreaterThanOrEqual(nextSev);
+        compareFindingsForDisplay(current, next),
+        `${label}: finding[${i}] should precede finding[${i + 1}] in root-aware order`,
+      ).toBeLessThanOrEqual(0);
     }
   }
 }
@@ -247,7 +247,7 @@ describe('output quality per scenario', () => {
       expect(result.findings[0]!.confidence).toBeGreaterThanOrEqual(0.7);
     });
 
-    it('findings are sorted by severity desc then confidence desc', async () => {
+    it('findings are sorted in root-aware diagnostic order', async () => {
       const result = await runPipeline(badImageTagBundlePath);
       assertSorted(result.findings, 'bad-image-tag');
     });
@@ -309,7 +309,7 @@ describe('output quality per scenario', () => {
       expect(result.findings[0]!.confidence).toBeGreaterThanOrEqual(0.7);
     });
 
-    it('findings are sorted by severity desc then confidence desc', async () => {
+    it('findings are sorted in root-aware diagnostic order', async () => {
       const result = await runPipeline(missingSecretBundlePath);
       assertSorted(result.findings, 'missing-secret-crashloop');
     });
@@ -373,7 +373,7 @@ describe('output quality per scenario', () => {
       expect(result.findings[0]!.confidence).toBeGreaterThanOrEqual(0.7);
     });
 
-    it('findings are sorted by severity desc then confidence desc', async () => {
+    it('findings are sorted in root-aware diagnostic order', async () => {
       const result = await runPipeline(wrongDbBundlePath);
       assertSorted(result.findings, 'wrong-db-endpoint');
     });
@@ -434,7 +434,7 @@ describe('output quality per scenario', () => {
       expect(result.findings[0]!.confidence).toBeGreaterThanOrEqual(0.5);
     });
 
-    it('findings are sorted by severity desc then confidence desc', async () => {
+    it('findings are sorted in root-aware diagnostic order', async () => {
       const result = await runPipeline(pvcPendingBundlePath);
       assertSorted(result.findings, 'pvc-pending');
     });
@@ -494,7 +494,7 @@ describe('output quality per scenario', () => {
         }
       });
 
-      it(`${scenario.name}: findings are sorted by severity desc then confidence desc`, async () => {
+      it(`${scenario.name}: findings are sorted in root-aware diagnostic order`, async () => {
         const result = await runPipeline(scenario.getBundlePath());
         assertSorted(result.findings, scenario.name);
       });

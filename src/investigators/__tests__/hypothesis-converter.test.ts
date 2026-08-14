@@ -229,9 +229,8 @@ describe('convertHypothesisToFinding — high-confidence hypothesis produces cor
     expect(finding.confidence).toBe(0.75);
   });
 
-  it('severity is critical for high-confidence missing-secret hypothesis', () => {
-    // missing-secret base severity is critical; confidence 0.75 >= 0.2 → no downgrade
-    expect(finding.severity).toBe('critical');
+  it('severity is capped at high for a 0.75-confidence missing-secret hypothesis', () => {
+    expect(finding.severity).toBe('high');
   });
 
   it('evidence is the supporting evidence from the hypothesis', () => {
@@ -375,57 +374,40 @@ describe('convertHypothesisToFinding — cross-namespace: specific recommendedAc
 // Tests — low-confidence hypothesis produces severity downgrade
 // ---------------------------------------------------------------------------
 
-describe('convertHypothesisToFinding — low-confidence hypothesis produces severity downgrade', () => {
-  it('confidence < 0.2 downgrades severity by one level from base', () => {
-    const hypothesis = makeHypothesis({ category: 'missing-secret', confidence: 0.15 });
+describe('convertHypothesisToFinding — confidence-calibrated severity', () => {
+  it('keeps an unconfirmed hypothesis below 0.5 informational', () => {
+    const hypothesis = makeHypothesis({ category: 'missing-secret', confidence: 0.49 });
     const finding = convertHypothesisToFinding(hypothesis, 1);
-    // missing-secret base is 'critical' (index 4) → drop 1 → 'high' (index 3)
-    expect(finding.severity).toBe('high');
-    expect(finding.confidence).toBe(0.15);
-  });
-
-  it('confidence < 0.1 downgrades severity by two levels from base', () => {
-    const hypothesis = makeHypothesis({ category: 'missing-secret', confidence: 0.05 });
-    const finding = convertHypothesisToFinding(hypothesis, 1);
-    // missing-secret base is 'critical' (index 4) → drop 2 → 'medium' (index 2)
-    expect(finding.severity).toBe('medium');
-    expect(finding.confidence).toBe(0.05);
-  });
-
-  it('confidence < 0.1 for a medium-base category drops to low', () => {
-    const hypothesis = makeHypothesis({
-      id: 'pod-crashloop:default/app-pod:generic-crash',
-      category: 'generic-crash',
-      confidence: 0.05,
-    });
-    const finding = convertHypothesisToFinding(hypothesis, 2);
-    // generic-crash base is 'medium' (index 2) → drop 2 → 'info' (index 0)
     expect(finding.severity).toBe('info');
+    expect(finding.confidence).toBe(0.49);
   });
 
-  it('confidence = 0.2 does NOT downgrade (boundary value)', () => {
-    const hypothesis = makeHypothesis({ category: 'missing-secret', confidence: 0.2 });
+  it('caps a 0.5-confidence critical-base hypothesis at medium', () => {
+    const hypothesis = makeHypothesis({ category: 'missing-secret', confidence: 0.5 });
     const finding = convertHypothesisToFinding(hypothesis, 1);
-    // At exactly 0.2: condition is confidence < 0.2 → false → no downgrade
+    expect(finding.severity).toBe('medium');
+  });
+
+  it('caps a 0.7-confidence critical-base hypothesis at high', () => {
+    const hypothesis = makeHypothesis({ category: 'missing-secret', confidence: 0.7 });
+    const finding = convertHypothesisToFinding(hypothesis, 1);
+    expect(finding.severity).toBe('high');
+  });
+
+  it('allows a critical-base hypothesis at or above 0.85 to remain critical', () => {
+    const hypothesis = makeHypothesis({ category: 'missing-secret', confidence: 0.85 });
+    const finding = convertHypothesisToFinding(hypothesis, 1);
     expect(finding.severity).toBe('critical');
   });
 
-  it('zero confidence produces maximally downgraded severity', () => {
-    const hypothesis = makeHypothesis({ category: 'missing-secret', confidence: 0 });
-    const finding = convertHypothesisToFinding(hypothesis, 1);
-    // 'critical' (4) → drop 2 → 'medium' (2)
-    expect(finding.severity).toBe('medium');
-  });
-
-  it('zero confidence for dns-failure (high base) drops to medium', () => {
+  it('never raises a category above its base severity', () => {
     const hypothesis = makeHypothesis({
-      id: 'pod-not-ready:default/app-pod:dns-failure',
-      category: 'dns-failure',
-      confidence: 0,
+      id: 'pod-crashloop:default/app-pod:generic-crash',
+      category: 'generic-crash',
+      confidence: 0.95,
     });
-    const finding = convertHypothesisToFinding(hypothesis, 3);
-    // 'high' (3) → drop 2 → 'low' (1)
-    expect(finding.severity).toBe('low');
+    const finding = convertHypothesisToFinding(hypothesis, 2);
+    expect(finding.severity).toBe('medium');
   });
 });
 

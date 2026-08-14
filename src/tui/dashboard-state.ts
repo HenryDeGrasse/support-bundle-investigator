@@ -38,6 +38,8 @@ export interface DashboardState {
   selectedIndex: number;
   /** Vertical scroll offset for the detail pane. */
   detailScrollOffset: number;
+  /** Index of the focused recommendation in the scrollable specs pane. */
+  specsScrollOffset: number;
   /** When true, the specs pane is visible and focusable. */
   specsVisible: boolean;
   /** When true the TUI should exit on the next render cycle. */
@@ -58,6 +60,7 @@ export function initialDashboardState(): DashboardState {
     activePane: 'findings',
     selectedIndex: 0,
     detailScrollOffset: 0,
+    specsScrollOffset: 0,
     specsVisible: false,
     shouldExit: false,
   };
@@ -84,6 +87,7 @@ export function dashboardTransition(
   state: DashboardState,
   action: DashboardAction,
   findingsCount: number,
+  recommendationsCount = 0,
 ): DashboardState {
   switch (action.type) {
     case 'PIPELINE_COMPLETE': {
@@ -104,7 +108,7 @@ export function dashboardTransition(
     // The remaining actions are no-ops during the loading phase.
     default: {
       if (state.phase === 'loading') return state;
-      return readyTransition(state, action, findingsCount);
+      return readyTransition(state, action, findingsCount, recommendationsCount);
     }
   }
 }
@@ -117,6 +121,7 @@ function readyTransition(
   state: DashboardState,
   action: Exclude<DashboardAction, { type: 'PIPELINE_COMPLETE' | 'QUIT' | 'BACK' }>,
   findingsCount: number,
+  recommendationsCount: number,
 ): DashboardState {
   switch (action.type) {
     case 'SELECT_FINDING': {
@@ -124,6 +129,7 @@ function readyTransition(
         ...state,
         selectedIndex: action.index,
         activePane: 'detail',
+        detailScrollOffset: 0,
       };
     }
 
@@ -152,6 +158,7 @@ function readyTransition(
         return {
           ...state,
           selectedIndex: Math.max(0, state.selectedIndex - 1),
+          detailScrollOffset: 0,
         };
       }
       if (state.activePane === 'detail') {
@@ -160,8 +167,10 @@ function readyTransition(
           detailScrollOffset: Math.max(0, state.detailScrollOffset - 1),
         };
       }
-      // specs pane — no-op
-      return state;
+      const nextOffset = Math.max(0, state.specsScrollOffset - 1);
+      return nextOffset === state.specsScrollOffset
+        ? state
+        : { ...state, specsScrollOffset: nextOffset };
     }
 
     case 'MOVE_DOWN': {
@@ -170,13 +179,17 @@ function readyTransition(
         return {
           ...state,
           selectedIndex: Math.min(max, state.selectedIndex + 1),
+          detailScrollOffset: 0,
         };
       }
       if (state.activePane === 'detail') {
         return { ...state, detailScrollOffset: state.detailScrollOffset + 1 };
       }
-      // specs pane — no-op
-      return state;
+      const max = Math.max(0, recommendationsCount - 1);
+      const nextOffset = Math.min(max, state.specsScrollOffset + 1);
+      return nextOffset === state.specsScrollOffset
+        ? state
+        : { ...state, specsScrollOffset: nextOffset };
     }
   }
 }

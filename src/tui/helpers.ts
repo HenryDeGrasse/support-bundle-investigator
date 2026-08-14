@@ -91,6 +91,23 @@ export function confidenceBar(confidence: number): string {
 }
 
 /**
+ * Return a stable viewport that keeps the focused item visible while clamping
+ * both ends to the available collection.
+ */
+export function calculateViewport(
+  itemCount: number,
+  focusedIndex: number,
+  capacity: number,
+): { start: number; end: number } {
+  const safeCount = Math.max(0, itemCount);
+  const safeCapacity = Math.max(1, Math.floor(capacity));
+  const maxStart = Math.max(0, safeCount - safeCapacity);
+  const clampedFocus = Math.min(Math.max(0, focusedIndex), Math.max(0, safeCount - 1));
+  const start = Math.min(Math.max(0, clampedFocus - safeCapacity + 1), maxStart);
+  return { start, end: Math.min(safeCount, start + safeCapacity) };
+}
+
+/**
  * Renders a confidence score with an optional qualitative quality indicator.
  *
  * When `quality` is provided the format is `"80% (strong)"`, giving the user

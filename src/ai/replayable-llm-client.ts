@@ -43,9 +43,16 @@ export class ReplayableLLMClient implements SeedAwareInvestigationLLMClient {
     userPrompt: string,
   ): Promise<AIFindingResponse> {
     const seed = this.currentSeed ?? this.seedResolver(systemPrompt, userPrompt);
+    const request = { system: systemPrompt, user: userPrompt };
+    const model = getInnerModel(this.inner);
 
     if (this.recorder.mode === 'replay') {
-      const cassette = this.recorder.replay(seed.seedId, seed.seedCategory);
+      const cassette = this.recorder.replay(
+        seed.seedId,
+        seed.seedCategory,
+        request,
+        model,
+      );
       if (cassette !== undefined) {
         return {
           findings: cassette.response.findings,
@@ -59,13 +66,13 @@ export class ReplayableLLMClient implements SeedAwareInvestigationLLMClient {
       }
 
       console.warn(
-        `[ReplayableLLMClient] Missing cassette for ${cassetteSeedKey(seed.seedId, seed.seedCategory)} (${seed.seedId}, ${seed.seedCategory})`,
+        `[ReplayableLLMClient] Missing cassette for ${cassetteSeedKey(seed.seedId, seed.seedCategory, request, model)} (${seed.seedId}, ${seed.seedCategory})`,
       );
       return {
         findings: [],
         rawResponse: undefined,
         telemetry: {
-          model: getInnerModel(this.inner),
+          model,
           latencyMs: 0,
           success: false,
         },
@@ -78,9 +85,9 @@ export class ReplayableLLMClient implements SeedAwareInvestigationLLMClient {
       this.recorder.record(
         seed.seedId,
         seed.seedCategory,
-        { system: systemPrompt, user: userPrompt },
+        request,
         { findings: response.findings, rawResponse: response.rawResponse ?? '' },
-        getInnerModel(this.inner),
+        model,
       );
     }
 

@@ -23,9 +23,8 @@ import * as readline from 'readline';
 import { execSync, spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { loadDotEnv } from './env-loader.js';
-
-// Load .env before anything reads process.env
-loadDotEnv();
+import { parseRatArgs, resolveRatTarget } from './rat-options.js';
+import { VERSION } from '../version.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -133,6 +132,22 @@ function printBanner(): void {
   console.log('');
 }
 
+function printUsage(): void {
+  console.log(`Usage: rat [options] [path]
+
+Replicated AI Troubleshooting — interactive support-bundle investigation
+
+Arguments:
+  path                    Directory to scan or .tar.gz to analyze
+                          (default: ./bundles/ in the current directory)
+
+Options:
+  --no-build              Skip the development auto-build check
+  --no-embedding-setup    Keep the configured embedding backend
+  -V, --version           Print the version
+  -h, --help              Show this help`);
+}
+
 // ---------------------------------------------------------------------------
 // .env file writing
 // ---------------------------------------------------------------------------
@@ -229,7 +244,6 @@ async function detectRunningServices(): Promise<{ teiRunning: boolean; ollamaRun
  * The currently configured backend is used as the default selection.
  */
 async function promptEmbeddingSetup(
-  projectRoot: string,
   rl: readline.Interface,
   runningServices: { teiRunning: boolean; ollamaRunning: boolean },
 ): Promise<EmbeddingSetupResult> {
@@ -416,7 +430,7 @@ function preDownloadModel(model: string, cacheDir: string): boolean {
  *
  * Returns true if the container started successfully and is reachable.
  */
-async function startTEI(projectRoot: string, rl: readline.Interface): Promise<boolean> {
+async function startTEI(rl: readline.Interface): Promise<boolean> {
   console.log('');
   console.log('  TEI model options:');
   console.log('');
@@ -632,8 +646,8 @@ async function startOllama(): Promise<boolean> {
  * When --no-embedding-setup is passed, auto-selects: use whatever is
  * configured and reachable, or fall back to graph + BM25.
  */
-async function handleEmbeddingSetup(projectRoot: string, skipPrompt: boolean): Promise<void> {
-  const envPath = path.join(projectRoot, '.env');
+async function handleEmbeddingSetup(userRoot: string, skipPrompt: boolean): Promise<void> {
+  const envPath = path.join(userRoot, '.env');
 
   // ── Detect what's running ───────────────────────────────────────────────
   process.stdout.write('  Detecting embedding services... ');
@@ -651,17 +665,36 @@ async function handleEmbeddingSetup(projectRoot: string, skipPrompt: boolean): P
     const backend = process.env['SBI_EMBEDDING_BACKEND'] ?? 'local';
     const embeddingUrl = process.env['SBI_EMBEDDING_URL'] ?? TEI_URL;
     const currentIsOllama = embeddingUrl.includes(String(OLLAMA_PORT));
+    const normalizedUrl = embeddingUrl.replace(/\/+$/, '');
+    const isDefaultOllama = normalizedUrl === OLLAMA_URL;
+    const isDefaultTei = normalizedUrl === TEI_URL;
 
     if (backend === 'none') {
       console.log('  Embeddings: disabled (graph + BM25 only)');
     } else if (backend === 'openai') {
       console.log('  Embeddings: OpenAI API');
-    } else if (currentIsOllama && running.ollamaRunning) {
-      console.log(`  Embeddings: Ollama at ${embeddingUrl}`);
-    } else if (!currentIsOllama && running.teiRunning) {
-      console.log(`  Embeddings: TEI at ${embeddingUrl}`);
     } else {
-      console.log('  No configured embedding service running -- using graph + BM25 only.');
+      const configuredRunning = currentIsOllama
+        ? isDefaultOllama
+          ? running.ollamaRunning
+          : await isReachable(`${normalizedUrl}/api/version`)
+        : isDefaultTei
+          ? running.teiRunning
+          : await isReachable(`${normalizedUrl}/health`);
+
+      if (configuredRunning) {
+        console.log(
+          `  Embeddings: ${currentIsOllama ? 'Ollama' : 'TEI'} at ${embeddingUrl}`,
+        );
+      } else {
+        // Preserve the user's .env while making the promised fallback real for
+        // this invocation; otherwise the pipeline would repeatedly call a dead
+        // endpoint before eventually degrading.
+        process.env['SBI_EMBEDDING_BACKEND'] = 'none';
+        console.log(
+          '  No configured embedding service running -- using graph + BM25 for this run.',
+        );
+      }
     }
     console.log('');
     return;
@@ -670,7 +703,7 @@ async function handleEmbeddingSetup(projectRoot: string, skipPrompt: boolean): P
   // ── Always show the menu ────────────────────────────────────────────────
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
-  const setupResult = await promptEmbeddingSetup(projectRoot, rl, running);
+  const setupResult = await promptEmbeddingSetup(rl, running);
   rl.close();
 
   console.log('');
@@ -698,7 +731,9 @@ async function handleEmbeddingSetup(projectRoot: string, skipPrompt: boolean): P
 
   if (setupResult.backend === 'openai') {
     writeEnvKey(envPath, 'SBI_EMBEDDING_BACKEND', 'openai');
+    writeEnvKey(envPath, 'SBI_EMBEDDING_MODEL', 'text-embedding-3-small');
     process.env['SBI_EMBEDDING_BACKEND'] = 'openai';
+    process.env['SBI_EMBEDDING_MODEL'] = 'text-embedding-3-small';
     console.log('  Set to OpenAI embeddings. Saved to .env');
     console.log('');
     return;
@@ -716,7 +751,7 @@ async function handleEmbeddingSetup(projectRoot: string, skipPrompt: boolean): P
       ready = await startOllama();
     } else {
       const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout });
-      ready = await startTEI(projectRoot, rl2);
+      ready = await startTEI(rl2);
       rl2.close();
     }
   }
@@ -735,8 +770,9 @@ async function handleEmbeddingSetup(projectRoot: string, skipPrompt: boolean): P
     console.log(`    SBI_EMBEDDING_MODEL=${setupResult.model}`);
     console.log('');
   } else {
+    process.env['SBI_EMBEDDING_BACKEND'] = 'none';
     console.log('');
-    console.log('  Setup failed. Continuing with graph + BM25 only.');
+    console.log('  Setup failed. Continuing with graph + BM25 only for this run.');
     console.log('');
   }
 }
@@ -842,27 +878,69 @@ async function selectBundle(bundles: string[]): Promise<string | null> {
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
+  let args;
+  try {
+    args = parseRatArgs(process.argv.slice(2));
+  } catch (error) {
+    console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    console.error('Run `rat --help` for usage.');
+    process.exitCode = 1;
+    return;
+  }
+
+  // Help and version are intentionally handled before .env loading, filesystem
+  // discovery, builds, network probes, or Docker/Ollama commands.
+  if (args.help) {
+    printUsage();
+    return;
+  }
+  if (args.version) {
+    console.log(VERSION);
+    return;
+  }
+
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    console.error('Error: RAT requires an interactive terminal.');
+    console.error('Use `sbi analyze <bundle.tar.gz>` for non-interactive analysis.');
+    process.exitCode = 1;
+    return;
+  }
+
+  // Runtime configuration and user data are rooted in the caller's working
+  // directory. Package-root discovery is only for development build assets.
+  loadDotEnv();
+  const userRoot = process.cwd();
   const projectRoot = findProjectRoot();
-  const args = process.argv.slice(2);
 
-  const noBuild = args.includes('--no-build');
-  const noEmbeddingSetup = args.includes('--no-embedding-setup');
-  const filteredArgs = args.filter(
-    (a) => a !== '--no-build' && a !== '--no-embedding-setup',
-  );
-
-  if (!noBuild) {
+  if (!args.noBuild) {
     ensureBuilt(projectRoot);
   }
 
-  const target = filteredArgs[0] ?? path.join(projectRoot, DEFAULT_BUNDLE_DIR);
+  const target = resolveRatTarget(args.path, userRoot);
+
+  if (args.path !== undefined && !fs.existsSync(target)) {
+    console.error(`Error: Path does not exist: ${path.resolve(target)}`);
+    process.exitCode = 1;
+    return;
+  }
 
   // Direct bundle path — skip setup flow, go straight to TUI
-  if (target.endsWith('.tar.gz') && fs.existsSync(target)) {
+  if (
+    fs.existsSync(target) &&
+    fs.statSync(target).isFile() &&
+    target.toLowerCase().endsWith('.tar.gz')
+  ) {
     const { renderTUI } = await import('../tui/index.js');
-    process.stdout.write('\x1B[2J\x1B[H');
-    await renderTUI(path.resolve(target), {});
-    process.stdout.write('\x1B[2J\x1B[H');
+    const outcome = await renderTUI(path.resolve(target), {});
+    if (!outcome.ok) {
+      process.exitCode = 'cancelled' in outcome && outcome.cancelled ? 130 : 1;
+    }
+    return;
+  }
+
+  if (fs.existsSync(target) && fs.statSync(target).isFile()) {
+    console.error(`Error: Bundle must be a .tar.gz file: ${path.resolve(target)}`);
+    process.exitCode = 1;
     return;
   }
 
@@ -870,23 +948,12 @@ async function main(): Promise<void> {
   printBanner();
 
   // Determine scan directory
-  const userGaveExplicitPath = filteredArgs.length > 0;
-  let scanDir: string;
-  if (userGaveExplicitPath && fs.existsSync(target) && fs.statSync(target).isDirectory()) {
-    scanDir = target;
-  } else if (userGaveExplicitPath && !fs.existsSync(target)) {
-    scanDir = target;
-  } else {
-    scanDir = path.join(projectRoot, DEFAULT_BUNDLE_DIR);
-  }
-
-  // Embedding setup (before bundle selection so user knows AI mode)
-  await handleEmbeddingSetup(projectRoot, noEmbeddingSetup);
+  const scanDir = target;
 
   const bundles = await findBundles(scanDir);
 
   if (bundles.length === 0) {
-    console.log(`  No .tar.gz support bundles found in: ./${DEFAULT_BUNDLE_DIR}/`);
+    console.log(`  No .tar.gz support bundles found in: ${path.resolve(scanDir)}`);
     console.log('');
     console.log('  To get started:');
     console.log(`    1. Place your support bundle .tar.gz file in the ./${DEFAULT_BUNDLE_DIR}/ directory`);
@@ -901,8 +968,14 @@ async function main(): Promise<void> {
     console.log('    rat /path/to/dir             Scan specific directory');
     console.log('    rat /path/to/bundle.tar.gz   Analyze directly');
     console.log('');
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
+
+  // Only probe or offer to install embedding services after confirming there
+  // is work to analyze. An empty bundles directory should remain fast and
+  // side-effect-free.
+  await handleEmbeddingSetup(userRoot, args.noEmbeddingSetup);
 
   // Bundle selection
   let bundlePath: string | null;
@@ -936,12 +1009,13 @@ async function main(): Promise<void> {
   console.log('');
 
   const { renderTUI } = await import('../tui/index.js');
-  process.stdout.write('\x1B[2J\x1B[H');
-  await renderTUI(bundlePath, {});
-  process.stdout.write('\x1B[2J\x1B[H');
+  const outcome = await renderTUI(bundlePath, {});
+  if (!outcome.ok) {
+    process.exitCode = 'cancelled' in outcome && outcome.cancelled ? 130 : 1;
+  }
 }
 
 main().catch((err: unknown) => {
   console.error('Fatal:', err);
-  process.exit(1);
+  process.exitCode = 1;
 });

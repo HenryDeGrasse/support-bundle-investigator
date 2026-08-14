@@ -178,6 +178,13 @@ describe('Cassette Recorder', () => {
     expect(key1).not.toBe(key2);
   });
 
+  it('does not collide when identity fields contain the old delimiter', () => {
+    const request = { system: 'system', user: 'user' };
+    const key1 = cassetteSeedKey('seed::category', 'log', request, 'gpt-4o');
+    const key2 = cassetteSeedKey('seed', 'category::log', request, 'gpt-4o');
+    expect(key1).not.toBe(key2);
+  });
+
   it('getRecorderMode defaults to live', () => {
     const original = process.env['SBI_AI_MODE'];
     delete process.env['SBI_AI_MODE'];
@@ -202,6 +209,38 @@ describe('Cassette Recorder', () => {
     expect(cassette).toBeDefined();
     expect(cassette!.seedId).toBe('seed:pod:0');
     expect(cassette!.model).toBe('gpt-4o');
+  });
+
+  it('keeps distinct prompts for the same seed without overwriting', () => {
+    const recorder = new CassetteRecorder('record', '/tmp/test-cassettes');
+    const requestA = { system: 'system', user: 'scenario A' };
+    const requestB = { system: 'system', user: 'scenario B' };
+
+    recorder.record(
+      'seed:pod:0',
+      'kubernetes',
+      requestA,
+      { findings: [], rawResponse: '{"scenario":"A"}' },
+      'gpt-4o',
+    );
+    recorder.record(
+      'seed:pod:0',
+      'kubernetes',
+      requestB,
+      { findings: [], rawResponse: '{"scenario":"B"}' },
+      'gpt-4o',
+    );
+
+    expect(recorder.size).toBe(2);
+    expect(
+      recorder.replay('seed:pod:0', 'kubernetes', requestA, 'gpt-4o')
+        ?.response.rawResponse,
+    ).toBe('{"scenario":"A"}');
+    expect(
+      recorder.replay('seed:pod:0', 'kubernetes', requestB, 'gpt-4o')
+        ?.response.rawResponse,
+    ).toBe('{"scenario":"B"}');
+    expect(recorder.replay('seed:pod:0', 'kubernetes')).toBeUndefined();
   });
 
   it('returns undefined for missing cassette', () => {
@@ -244,6 +283,73 @@ describe('Cassette Recorder', () => {
     expect(cassette).toBeDefined();
     expect(cassette!.response.findings).toHaveLength(1);
     expect(cassette!.response.findings[0]!.title).toBe('test');
+  });
+
+  it('merges existing recordings and replaces the store atomically', async () => {
+    const cassetteDir = path.join(tmpDir, 'cassettes-merge');
+    const first = new CassetteRecorder('record', cassetteDir);
+    first.record(
+      'seed:first',
+      'log',
+      { system: 'sys', user: 'first' },
+      { findings: [], rawResponse: 'first' },
+      'gpt-4o',
+    );
+    await first.flush();
+
+    const second = new CassetteRecorder('record', cassetteDir);
+    second.record(
+      'seed:second',
+      'kubernetes',
+      { system: 'sys', user: 'second' },
+      { findings: [], rawResponse: 'second' },
+      'gpt-4o',
+    );
+    await second.flush();
+
+    const loader = new CassetteRecorder('replay', cassetteDir);
+    await loader.load();
+    expect(loader.size).toBe(2);
+    expect(loader.has('seed:first', 'log')).toBe(true);
+    expect(loader.has('seed:second', 'kubernetes')).toBe(true);
+    expect(
+      fs.readdirSync(cassetteDir).filter((name) => name.endsWith('.tmp')),
+    ).toHaveLength(0);
+  });
+
+  it('redacts credentials from requests and echoed responses before persistence', async () => {
+    const cassetteDir = path.join(tmpDir, 'cassettes-redacted');
+    const recorder = new CassetteRecorder('record', cassetteDir);
+    const credential = ['sk', 'proj', 'abcdefghijklmnopqrstuvwxyz123456'].join('-');
+
+    recorder.record(
+      'seed:sensitive',
+      'log',
+      { system: 'Investigate safely', user: `api-key=${credential}` },
+      {
+        findings: [{
+          title: `Leaked credential ${credential}`,
+          severity: 'high',
+          confidence: 0.9,
+          affectedComponents: ['Pod/default/app'],
+          reasoningSummary: `The response echoed api-key=${credential}`,
+          evidence: [{ path: 'app.log', note: `token=${credential}` }],
+          contradictionsChecked: [],
+          recommendedAction: `Rotate ${credential}`,
+          missingEvidence: [],
+        }],
+        rawResponse: `{"api-key":"${credential}"}`,
+      },
+      'gpt-4o',
+    );
+    await recorder.flush();
+
+    const persisted = fs.readFileSync(
+      path.join(cassetteDir, 'cassettes.json'),
+      'utf8',
+    );
+    expect(persisted).not.toContain(credential);
+    expect(persisted).toContain('[REDACTED]');
   });
 
   it('load handles missing cassette file gracefully', async () => {

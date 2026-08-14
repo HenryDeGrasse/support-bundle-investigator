@@ -9,6 +9,7 @@ import {
   runInvestigation,
   normalizeIssueFamilyForPass1,
   normalizeTitleForPass2,
+  compareFindingsForDisplay,
   __testOnlyPass1ComponentMerge,
   __testOnlyPass2TitleDedup,
 } from '../orchestrator.js';
@@ -81,6 +82,7 @@ function makeFinding(overrides: Partial<Finding> & Pick<Finding, 'id' | 'title'>
     recommendedAction: overrides.recommendedAction ?? 'Investigate',
     missingEvidence: overrides.missingEvidence ?? [],
     confidenceQuality: overrides.confidenceQuality,
+    provenance: overrides.provenance,
   };
 }
 
@@ -295,7 +297,9 @@ describe('runInvestigation', () => {
       f.title.toLowerCase().includes('secret'),
     );
     expect(secretFinding).toBeDefined();
-    expect(secretFinding?.severity).toBe('critical');
+    // This is rendered as a partially-confirmed hypothesis, so its impact is
+    // capped until confidence is strong enough to justify critical severity.
+    expect(secretFinding?.severity).toBe('medium');
   });
 
   it('collects edges from all three investigators', async () => {
@@ -328,7 +332,7 @@ describe('runInvestigation', () => {
     expect(result.findings).toHaveLength(result.metadata.finalFindingCount);
   });
 
-  it('sorts findings by severity descending, then confidence descending', async () => {
+  it('sorts findings by severity, causal role, then confidence', async () => {
     const context = makeContext({
       resources: [crashLoopPod, missingSecretPod, dummySecret],
       events: [backOffEvent],
@@ -343,6 +347,11 @@ describe('runInvestigation', () => {
       low: 1,
       info: 0,
     };
+    const causalRootIds = new Set(
+      result.edges
+        .filter((edge) => edge.type === 'causes')
+        .map((edge) => edge.source),
+    );
 
     for (let i = 0; i < result.findings.length - 1; i++) {
       const current = result.findings[i]!;
@@ -350,14 +359,32 @@ describe('runInvestigation', () => {
       const currentSev = severityOrder[current.severity] ?? 0;
       const nextSev = severityOrder[next.severity] ?? 0;
 
+      expect(currentSev).toBeGreaterThanOrEqual(nextSev);
       if (currentSev === nextSev) {
-        // Same severity: confidence must be non-increasing
-        expect(current.confidence).toBeGreaterThanOrEqual(next.confidence);
-      } else {
-        // Severity must be non-increasing
-        expect(currentSev).toBeGreaterThanOrEqual(nextSev);
+        expect(compareFindingsForDisplay(current, next, causalRootIds)).toBeLessThanOrEqual(0);
       }
     }
+  });
+
+  it('ranks a causal root above a higher-confidence symptom at the same severity', () => {
+    const root = makeFinding({
+      id: 'finding:root:secret',
+      title: 'Missing Secret',
+      severity: 'critical',
+      confidence: 0.7,
+      provenance: {
+        investigator: 'graph-causal',
+        generatedAt: '2024-01-01T00:00:00.000Z',
+      },
+    });
+    const symptom = makeFinding({
+      id: 'finding:k8s:crashloop:app',
+      title: 'CrashLoopBackOff',
+      severity: 'critical',
+      confidence: 0.99,
+    });
+
+    expect([symptom, root].sort((a, b) => compareFindingsForDisplay(a, b))[0]).toBe(root);
   });
 
   it('metadata rawFindingCount equals sum of findings from all three investigators', async () => {
@@ -716,7 +743,7 @@ describe('runInvestigation', () => {
     const crashLoopSecretPod: K8sResource = {
       apiVersion: 'v1',
       kind: 'Pod',
-      metadata: { name: 'svc-pod', namespace: 'default' },
+      metadata: { name: 'svc-pod', namespace: 'default', labels: { app: 'svc' } },
       spec: {
         containers: [
           {
@@ -742,12 +769,16 @@ describe('runInvestigation', () => {
       },
     };
 
-    /** Deployment with 0 ready replicas in the same namespace as crashLoopSecretPod. */
+    /** Deployment with 0 ready replicas whose selector owns crashLoopSecretPod. */
     const unhealthyDeploymentFixture: K8sResource = {
       apiVersion: 'apps/v1',
       kind: 'Deployment',
       metadata: { name: 'svc-deploy', namespace: 'default' },
-      spec: { replicas: 1 },
+      spec: {
+        replicas: 1,
+        selector: { matchLabels: { app: 'svc' } },
+        template: { metadata: { labels: { app: 'svc' } } },
+      },
       status: { readyReplicas: 0, availableReplicas: 0, replicas: 1 },
     };
 
@@ -915,11 +946,11 @@ describe('runInvestigation', () => {
       ).toBe(false);
     });
 
-    it('suppresses Unhealthy Workload finding when a root-cause finding covers a pod in the same namespace', async () => {
+    it('suppresses Unhealthy Workload only when a root cause covers a selector-related pod', async () => {
       // missing-secret hypothesis reaches confidence ~1.0 from FailedMount event +
       // pod secret reference.  Its component is Pod/default/svc-pod (namespace 'default').
-      // The workload finding component is Deployment/default/svc-deploy (same namespace).
-      // The suppression pass must remove the workload finding.
+      // The workload selector matches svc-pod, so the structural graph ties the
+      // root cause to Deployment/default/svc-deploy.
       const context = makeContext({
         resources: [crashLoopSecretPod, unhealthyDeploymentFixture, otherDefaultSecret],
         events: [failedMountCrashEvent],
@@ -930,6 +961,32 @@ describe('runInvestigation', () => {
         f.id.startsWith('finding:k8s:workload:'),
       );
       expect(workloadFinding).toBeUndefined();
+    });
+
+    it('preserves an unrelated unhealthy workload in the same namespace', async () => {
+      const unrelatedDeployment: K8sResource = {
+        apiVersion: 'apps/v1',
+        kind: 'Deployment',
+        metadata: { name: 'unrelated', namespace: 'default' },
+        spec: {
+          replicas: 1,
+          selector: { matchLabels: { app: 'unrelated' } },
+          template: { metadata: { labels: { app: 'unrelated' } } },
+        },
+        status: { readyReplicas: 0, availableReplicas: 0, replicas: 1 },
+      };
+      const context = makeContext({
+        resources: [crashLoopSecretPod, unrelatedDeployment, otherDefaultSecret],
+        events: [failedMountCrashEvent],
+      });
+
+      const result = await runInvestigation(context);
+
+      expect(result.findings.some(
+        (finding) =>
+          finding.id.startsWith('finding:k8s:workload:') &&
+          finding.affectedComponents.includes('Deployment/default/unrelated'),
+      )).toBe(true);
     });
 
     it('preserves CrashLoopBackOff finding even when a root-cause hypothesis covers the same pod', async () => {
@@ -1170,9 +1227,9 @@ describe('runInvestigation', () => {
   //            (primaryComponent, issueFamily) and applies a single merge
   //            strategy (AI > hypothesis > heuristic; evidence absorbed from
   //            non-winners).
-  //   Pass 2 — title-based dedup (cosmetic): normalises titles and keeps the
-  //            higher-confidence entry when two findings share the same
-  //            normalised title. AI findings win title collisions.
+  //   Pass 2 — incident-aware title dedup: normalises titles, but merges only
+  //            when component/namespace/evidence identifies the same incident;
+  //            shared causes preserve the union of components and evidence.
   //   Symptom suppression remains a separate post-dedup filter.
   //
   // The tests below validate the behavioural contracts of each pass and
@@ -1388,7 +1445,7 @@ describe('runInvestigation', () => {
 
     // ── Pass 2: Title-based dedup ─────────────────────────────────────────────
 
-    it('Pass 2 — keeps the higher-confidence finding when normalized titles match across components', () => {
+    it('Pass 2 — merges a concrete shared cause and unions affected components', () => {
       const lowConfidence = makeFinding({
         id: 'finding:heuristic:0',
         title:
@@ -1407,7 +1464,63 @@ describe('runInvestigation', () => {
 
       expect(result).toHaveLength(1);
       expect(result[0]!.id).toBe('finding:heuristic:1');
-      expect(result[0]!.affectedComponents).toContain('Pod/default/pod-b');
+      expect(result[0]!.affectedComponents).toEqual(
+        expect.arrayContaining(['Pod/default/pod-a', 'Pod/default/pod-b']),
+      );
+    });
+
+    it('Pass 2 — preserves identical concrete titles in different namespaces', () => {
+      const title = "Missing Secret 'shared-credentials' is absent from the namespace";
+      const result = __testOnlyPass2TitleDedup([
+        makeFinding({
+          id: 'finding:heuristic:team-a',
+          title,
+          affectedComponents: ['Pod/team-a/api'],
+        }),
+        makeFinding({
+          id: 'finding:heuristic:team-b',
+          title,
+          affectedComponents: ['Pod/team-b/api'],
+        }),
+      ]);
+
+      expect(result).toHaveLength(2);
+    });
+
+    it('Pass 2 — a shared global DNS label does not merge incidents across namespaces', () => {
+      const title = "DNS lookup for 'wrong-host.internal' failed";
+      const result = __testOnlyPass2TitleDedup([
+        makeFinding({
+          id: 'finding:log:dns:team-a',
+          title,
+          affectedComponents: ['Pod/team-a/api', 'DNS/wrong-host.internal'],
+        }),
+        makeFinding({
+          id: 'finding:log:dns:team-b',
+          title,
+          affectedComponents: ['Pod/team-b/api', 'DNS/wrong-host.internal'],
+        }),
+      ]);
+
+      expect(result).toHaveLength(2);
+    });
+
+    it('Pass 2 — preserves generic equal-title findings for independent components', () => {
+      const title = 'A required dependency is unavailable, blocking readiness';
+      const result = __testOnlyPass2TitleDedup([
+        makeFinding({
+          id: 'finding:hypothesis:connectivity:one',
+          title,
+          affectedComponents: ['Pod/default/api'],
+        }),
+        makeFinding({
+          id: 'finding:hypothesis:connectivity:two',
+          title,
+          affectedComponents: ['Pod/default/worker'],
+        }),
+      ]);
+
+      expect(result).toHaveLength(2);
     });
 
     it('non-overlap — evidence absorbed in Pass 1 is preserved when Pass 2 selects that finding', () => {
@@ -1461,7 +1574,11 @@ describe('runInvestigation', () => {
         expect.arrayContaining([
           expect.objectContaining({ note: 'Pod A references secret shared-credentials' }),
           expect.objectContaining({ note: 'FailedMount event confirms shared-credentials is missing' }),
+          expect.objectContaining({ note: 'Pod B also references the secret' }),
         ]),
+      );
+      expect(pass2[0]!.affectedComponents).toEqual(
+        expect.arrayContaining(['Pod/default/pod-a', 'Pod/default/pod-b']),
       );
     });
 
@@ -1617,15 +1734,7 @@ describe('runInvestigation', () => {
       expect(matchingFindings[0]!.confidence).toBeCloseTo(0.9, 1);
     });
 
-    it('Pass 2 — higher-confidence finding wins title collision regardless of source order', async () => {
-      // Lower-confidence finding arrives before higher-confidence one in the
-      // sorted array.  Pass 2 must replace the lower-confidence entry when it
-      // encounters the higher-confidence duplicate, not keep insertion order.
-      //
-      // We identify the winner by its affectedComponents ('Pod/default/svc-b'
-      // for the higher-confidence entry, 'Pod/default/svc-a' for the lower),
-      // since post-processing adjustments may shift the absolute confidence
-      // value away from the original 0.9 / 0.6.
+    it('Pass 2 — generic equal-title AI findings for separate pods both survive', async () => {
       const sharedTitle = 'DNS resolution failure: service endpoint unreachable';
 
       const lowConf = {
@@ -1655,7 +1764,6 @@ describe('runInvestigation', () => {
       };
 
       const deps = makeEmptyAIDeps();
-      // Deliver low-confidence first so insertion order cannot be the winning factor
       (deps.llmClient.investigateSeed as ReturnType<typeof vi.fn>).mockResolvedValue({
         findings: [lowConf, highConf],
       });
@@ -1664,10 +1772,10 @@ describe('runInvestigation', () => {
       const result = await runInvestigation(context, deps);
 
       const matchingFindings = result.findings.filter((f) => f.title === sharedTitle);
-      // Exactly one finding should survive Pass 2
-      expect(matchingFindings).toHaveLength(1);
-      // The higher-confidence entry (svc-b) wins; the lower-confidence entry (svc-a) is dropped
-      expect(matchingFindings[0]!.affectedComponents).toContain('Pod/default/svc-b');
+      expect(matchingFindings).toHaveLength(2);
+      expect(matchingFindings.flatMap((finding) => finding.affectedComponents)).toEqual(
+        expect.arrayContaining(['Pod/default/svc-a', 'Pod/default/svc-b']),
+      );
     });
 
     // ── Symptom suppression: separate post-dedup filter ───────────────────────
@@ -1930,7 +2038,7 @@ describe('runInvestigation', () => {
 
     // ── Test 3: root causes ranked by path length, edge weights, evidence count ──
 
-    it('multiple graph root causes appear in the finding list and are in severity-confidence order', async () => {
+    it('multiple graph root causes appear in root-aware display order', async () => {
       // Two causal templates match:
       //   - missing-secret-crashloop (crashloop + FailedMount with secret)
       //   - bad-image-tag (imagepull + ErrImagePull)
@@ -1953,8 +2061,13 @@ describe('runInvestigation', () => {
       expect(missingSecretRoot).toBeDefined();
       expect(badImageRoot).toBeDefined();
 
-      // Result findings are sorted by severity desc, confidence desc
-      // (the existing sort logic applies to graph root-cause findings too)
+      const causalRootIds = new Set(
+        result.edges
+          .filter((edge) => edge.type === 'causes')
+          .map((edge) => edge.source),
+      );
+
+      // Result findings are sorted by severity, causal role, then confidence.
       for (let i = 0; i < result.findings.length - 1; i++) {
         const severityOrder: Record<string, number> = {
           critical: 4, high: 3, medium: 2, low: 1, info: 0,
@@ -1963,10 +2076,9 @@ describe('runInvestigation', () => {
         const nxt = result.findings[i + 1]!;
         const curSev = severityOrder[cur.severity] ?? 0;
         const nxtSev = severityOrder[nxt.severity] ?? 0;
+        expect(curSev).toBeGreaterThanOrEqual(nxtSev);
         if (curSev === nxtSev) {
-          expect(cur.confidence).toBeGreaterThanOrEqual(nxt.confidence);
-        } else {
-          expect(curSev).toBeGreaterThanOrEqual(nxtSev);
+          expect(compareFindingsForDisplay(cur, nxt, causalRootIds)).toBeLessThanOrEqual(0);
         }
       }
     });

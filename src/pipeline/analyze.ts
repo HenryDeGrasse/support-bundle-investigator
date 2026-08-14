@@ -293,6 +293,31 @@ function ensureInvestigationEdgeEndpoints(
   return addedCount;
 }
 
+/**
+ * The extractor's implicit destination is always a direct child of the OS
+ * temp directory created with the `sbi-bundle-` prefix.  Keep this guard
+ * deliberately narrower than a generic "path is somewhere under /tmp" check
+ * so cleanup can never recurse into a caller-owned directory.
+ */
+function isAutoCreatedExtractionPath(extractedPath: string): boolean {
+  const resolvedPath = path.resolve(extractedPath);
+  const tempRoot = path.resolve(os.tmpdir());
+  return (
+    path.dirname(resolvedPath) === tempRoot &&
+    path.basename(resolvedPath).startsWith('sbi-bundle-')
+  );
+}
+
+async function cleanupAutoCreatedExtractionPath(extractedPath: string): Promise<void> {
+  if (!isAutoCreatedExtractionPath(extractedPath)) return;
+
+  try {
+    await fsp.rm(path.resolve(extractedPath), { recursive: true, force: true });
+  } catch {
+    // Cleanup is best-effort and must not hide the pipeline's original error.
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Pipeline
 // ---------------------------------------------------------------------------
@@ -332,6 +357,11 @@ export async function analyzeBundlePipeline(
   log('Extracting bundle…', verbose);
 
   const manifest = await extractBundle(bundlePath);
+
+  // Once extraction succeeds, every later failure must release the internal
+  // extraction directory because no PipelineResult will be returned for the
+  // caller to pass to cleanupPipelineResult.
+  try {
 
   completeTraceStep(trace, step1, manifest.files.length);
   emitProgress(options, { step: 'extract', status: 'completed', artifactsProcessed: manifest.files.length });
@@ -519,6 +549,8 @@ export async function analyzeBundlePipeline(
           // Log chunks: attempt late chunking per unique source file
           if (logChunks.length > 0) {
             if (supportsLateChunking) {
+              const logsByPath = new Map(logs.map((logFile) => [logFile.path, logFile]));
+
               // Group log chunks by artifactId (one late-chunk call per source file)
               const byArtifact = new Map<string, typeof logChunks>();
               for (const c of logChunks) {
@@ -527,11 +559,42 @@ export async function analyzeBundlePipeline(
                 byArtifact.set(c.artifactId, group);
               }
 
-              for (const [, fileChunks] of byArtifact) {
-                // Reconstruct the full document text from chunk content
-                const fullDocument = fileChunks.map((c) => c.content).join('\n');
-                const documentLines = fullDocument.split('\n');
-                const boundaries = fileChunks.map((c) => ({
+              for (const [artifactId, fileChunks] of byArtifact) {
+                const sourceLog = logsByPath.get(artifactId);
+
+                // Summary chunks contain synthetic descriptions of omitted healthy
+                // regions, so their source ranges do not describe their content.
+                // Embed them normally rather than trying to pool source-document
+                // tokens across a discontinuous range.
+                const sourceAlignedChunks = fileChunks.filter(
+                  (c) => c.metadata?.['chunkType'] !== 'summary',
+                );
+                const syntheticChunks = fileChunks.filter(
+                  (c) => c.metadata?.['chunkType'] === 'summary',
+                );
+
+                if (sourceLog === undefined || sourceAlignedChunks.length === 0) {
+                  // A chunk index supplied by an external caller may not retain the
+                  // originating LogFile. In that case, preserve correctness by using
+                  // ordinary per-chunk embeddings rather than reconstructing a fake
+                  // document whose line numbers cannot match the source ranges.
+                  const fallbackEmbeddings = await embeddingClient.embed(
+                    fileChunks.map((c) => c.contextualizedContent ?? c.summary),
+                  );
+                  for (let i = 0; i < fileChunks.length; i++) {
+                    const globalIdx = chunks.indexOf(fileChunks[i]!);
+                    if (globalIdx >= 0) allEmbeddings[globalIdx] = fallbackEmbeddings[i] ?? [];
+                  }
+                  continue;
+                }
+
+                // Late chunking must operate on the original, complete log document.
+                // Error-aware chunks are sparse (preamble + error windows + a
+                // synthetic summary), so concatenating chunk content would shift all
+                // source line boundaries and pool embeddings from unrelated text.
+                const documentLines = sourceLog.lines.map((line) => line.content);
+                const fullDocument = documentLines.join('\n');
+                const boundaries = sourceAlignedChunks.map((c) => ({
                   startLine: c.startLine,
                   endLine: c.endLine,
                 }));
@@ -543,9 +606,21 @@ export async function analyzeBundlePipeline(
                   boundaries,
                 );
 
-                for (let i = 0; i < fileChunks.length; i++) {
-                  const globalIdx = chunks.indexOf(fileChunks[i]!);
+                for (let i = 0; i < sourceAlignedChunks.length; i++) {
+                  const globalIdx = chunks.indexOf(sourceAlignedChunks[i]!);
                   if (globalIdx >= 0) allEmbeddings[globalIdx] = lateEmbeddings[i] ?? [];
+                }
+
+                if (syntheticChunks.length > 0) {
+                  const syntheticEmbeddings = await embeddingClient.embed(
+                    syntheticChunks.map((c) => c.contextualizedContent ?? c.summary),
+                  );
+                  for (let i = 0; i < syntheticChunks.length; i++) {
+                    const globalIdx = chunks.indexOf(syntheticChunks[i]!);
+                    if (globalIdx >= 0) {
+                      allEmbeddings[globalIdx] = syntheticEmbeddings[i] ?? [];
+                    }
+                  }
                 }
               }
               log(`Late chunking: embedded ${logChunks.length} log chunks with token-level context`, verbose);
@@ -817,19 +892,23 @@ export async function analyzeBundlePipeline(
       helmReleases.length,
   });
 
-  return {
-    profile,
-    analyzerResults,
-    resources,
-    events,
-    logs,
-    findings: sanitizedFindings,
-    findingTree: sanitizedFindingTree,
-    graph,
-    trace,
-    aiMode,
-    debug: options.debug,
-  };
+    return {
+      profile,
+      analyzerResults,
+      resources,
+      events,
+      logs,
+      findings: sanitizedFindings,
+      findingTree: sanitizedFindingTree,
+      graph,
+      trace,
+      aiMode,
+      debug: options.debug,
+    };
+  } catch (error) {
+    await cleanupAutoCreatedExtractionPath(manifest.extractedPath);
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -844,23 +923,5 @@ export async function analyzeBundlePipeline(
  * responsible for deciding whether to clean up.
  */
 export async function cleanupPipelineResult(result: PipelineResult): Promise<void> {
-  const extractedPath = path.resolve(result.profile.manifest.extractedPath);
-  const tempRoot = path.resolve(os.tmpdir());
-  const relativeToTempRoot = path.relative(tempRoot, extractedPath);
-
-  const isAutoCreatedTempDir =
-    relativeToTempRoot !== '' &&
-    !relativeToTempRoot.startsWith('..') &&
-    !path.isAbsolute(relativeToTempRoot) &&
-    path.basename(extractedPath).startsWith('sbi-bundle-');
-
-  if (!isAutoCreatedTempDir) {
-    return;
-  }
-
-  try {
-    await fsp.rm(extractedPath, { recursive: true, force: true });
-  } catch {
-    // Silently ignore cleanup failures
-  }
+  await cleanupAutoCreatedExtractionPath(result.profile.manifest.extractedPath);
 }

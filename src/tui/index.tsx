@@ -1,13 +1,13 @@
 import React from 'react';
 import { render } from 'ink';
 import { App } from './components/App.js';
-import { analyzeBundlePipeline } from '../pipeline/index.js';
-import type { TUIOptions } from './types.js';
+import { analyzeBundlePipeline, cleanupPipelineResult } from '../pipeline/index.js';
+import type { TUIOptions, TUIOutcome } from './types.js';
 
 // Re-export shared types and helpers so external consumers (e.g. the CLI
 // runner, tests, or package users) can import from the TUI entry point
 // without reaching into sub-modules.
-export type { TUIOptions, StepStatus } from './types.js';
+export type { TUIOptions, TUIOutcome, StepStatus } from './types.js';
 export { initialState, transition, mapKeyToAction } from './state-machine.js';
 export type { TUIView, TUIAction, TUIState } from './state-machine.js';
 export {
@@ -27,6 +27,7 @@ export {
   sourceTag,
   truncateTitle,
   confidenceBar,
+  calculateViewport,
   evidenceIcon,
   extractDifferentialContext,
   formatCausalChain,
@@ -44,8 +45,14 @@ export {
 export async function renderTUI(
   bundlePath: string,
   options: TUIOptions = {},
-): Promise<void> {
-  const { outputDir, ...pipelineOptions } = options;
+): Promise<TUIOutcome> {
+  const { outputDir, ...requestedPipelineOptions } = options;
+  const pipelineOptions = {
+    ...requestedPipelineOptions,
+    verbose: requestedPipelineOptions.verbose || requestedPipelineOptions.debug,
+    trace: requestedPipelineOptions.trace || requestedPipelineOptions.debug,
+  };
+  let outcome: TUIOutcome = { ok: true };
 
   // Use Ink's fullscreen mode: clears the terminal on enter, restores on exit.
   // Combined with explicit width/height on the root Box (set in App.tsx via
@@ -56,15 +63,25 @@ export async function renderTUI(
       pipelineOptions={pipelineOptions}
       outputDir={outputDir}
       runPipeline={analyzeBundlePipeline}
+      cleanupPipeline={cleanupPipelineResult}
+      onOutcome={(nextOutcome) => {
+        // A pipeline error is terminal and must not be overwritten by the
+        // subsequent q/ctrl-c used to dismiss its error screen.
+        if (!outcome.ok && 'error' in outcome) return;
+        outcome = nextOutcome;
+      }}
     />,
-    { exitOnCtrlC: true },
+    { exitOnCtrlC: false },
   );
 
   // Clear screen on entry for a clean fullscreen look
   process.stdout.write('\x1B[2J\x1B[H');
 
-  await waitUntilExit();
-
-  // Restore screen on exit
-  process.stdout.write('\x1B[2J\x1B[H');
+  try {
+    await waitUntilExit();
+    return outcome;
+  } finally {
+    // Restore screen even if Ink itself rejects while shutting down.
+    process.stdout.write('\x1B[2J\x1B[H');
+  }
 }

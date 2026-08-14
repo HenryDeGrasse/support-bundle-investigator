@@ -16,6 +16,7 @@ import {
   extractDifferentialContext,
   formatCausalChain,
   formatConfidenceWithQuality,
+  calculateViewport,
 } from '../helpers.js';
 import type { FindingTreeNode } from '../../types/index.js';
 
@@ -144,6 +145,28 @@ describe('confidenceBar()', () => {
 
   it('renders 1.0 as "100%"', () => {
     expect(confidenceBar(1.0)).toBe('100%');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// calculateViewport
+// ---------------------------------------------------------------------------
+
+describe('calculateViewport()', () => {
+  it('shows the entire collection when it fits', () => {
+    expect(calculateViewport(4, 2, 10)).toEqual({ start: 0, end: 4 });
+  });
+
+  it('keeps a selection beyond the first page visible', () => {
+    expect(calculateViewport(20, 8, 5)).toEqual({ start: 4, end: 9 });
+  });
+
+  it('clamps the final page without leaving unused rows', () => {
+    expect(calculateViewport(10, 99, 4)).toEqual({ start: 6, end: 10 });
+  });
+
+  it('handles empty collections and invalid capacity safely', () => {
+    expect(calculateViewport(0, 0, 0)).toEqual({ start: 0, end: 0 });
   });
 });
 

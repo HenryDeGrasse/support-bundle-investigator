@@ -20,6 +20,7 @@ import { validateAIFindings } from './schemas.js';
 import type { HydeLLMClient } from './hyde.js';
 import { estimateLLMCostUsd } from './telemetry.js';
 import type { AICallMetrics } from './telemetry.js';
+import { sanitizeSensitiveText } from '../utils/sensitive-data.js';
 
 // ---------------------------------------------------------------------------
 // AIFindingResponse
@@ -73,9 +74,10 @@ export interface SeedAwareInvestigationLLMClient extends InvestigationLLMClient 
  * Implements {@link HydeLLMClient} so it can be passed directly to
  * `generateHypotheticalDocument` without any adapter.
  *
- * Instantiate with a loaded {@link AIConfig} (must have `enabled: true` and a
- * valid `apiKey`). If the config is disabled, callers should not construct
- * this class — use the `isAIEnabled` guard from `config.ts` first.
+ * Instantiate with a loaded {@link AIConfig} whose AI mode is enabled. Cloud
+ * mode requires `apiKey`; local mode uses the separate `llmApiKey` field or a
+ * non-secret placeholder. If disabled, callers should use the `isAIEnabled`
+ * guard from `config.ts` instead of constructing this class.
  *
  * Supports both cloud (OpenAI) and local (Ollama, llama.cpp, vLLM, LM Studio)
  * backends via the `llmUrl` config field. Local backends use an OpenAI-
@@ -88,7 +90,12 @@ export class LLMClient implements InvestigationLLMClient {
 
   constructor(config: AIConfig) {
     this.client = new OpenAI({
-      apiKey: config.apiKey,
+      // Local OpenAI-compatible servers must never receive the user's cloud
+      // OpenAI credential. loadAIConfig supplies SBI_LLM_API_KEY (or a safe
+      // placeholder), and hand-built local configs also fail closed here.
+      apiKey: config.llmBackend === 'local'
+        ? (config.llmApiKey?.trim() || 'local')
+        : config.apiKey,
       baseURL: config.llmUrl,
     });
     this.model = config.model;
@@ -97,6 +104,17 @@ export class LLMClient implements InvestigationLLMClient {
 
   getModel(): string {
     return this.model;
+  }
+
+  /**
+   * GPT-5.6 chat-completions requests must explicitly disable reasoning for
+   * this latency-sensitive investigation path. Keep local OpenAI-compatible
+   * servers free of cloud-model-specific request fields.
+   */
+  private reasoningOptions(): { reasoning_effort: 'none' } | Record<string, never> {
+    return this.backend === 'openai' && /^gpt-5\.6(?:-|$)/i.test(this.model)
+      ? { reasoning_effort: 'none' }
+      : {};
   }
 
   /**
@@ -116,9 +134,10 @@ export class LLMClient implements InvestigationLLMClient {
   async generateText(systemPrompt: string, userPrompt: string): Promise<string> {
     const response = await this.client.chat.completions.create({
       model: this.model,
+      ...this.reasoningOptions(),
       messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
+        { role: 'system', content: sanitizeSensitiveText(systemPrompt) },
+        { role: 'user', content: sanitizeSensitiveText(userPrompt) },
       ],
     });
 
@@ -151,10 +170,11 @@ export class LLMClient implements InvestigationLLMClient {
     try {
       const response = await this.client.chat.completions.create({
         model: this.model,
+        ...this.reasoningOptions(),
         response_format: { type: 'json_object' },
         messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
+          { role: 'system', content: sanitizeSensitiveText(systemPrompt) },
+          { role: 'user', content: sanitizeSensitiveText(userPrompt) },
         ],
       });
 

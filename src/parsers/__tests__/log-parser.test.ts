@@ -538,6 +538,24 @@ describe('parseLogFile', () => {
     consoleSpy.mockRestore();
     await fsp.unlink(tmpFile);
   });
+
+  it('parses printable Unicode logs instead of treating them as binary', async () => {
+    const tmpDir = os.tmpdir();
+    const tmpFile = path.join(tmpDir, 'unicode.log');
+    await fsp.writeFile(
+      tmpFile,
+      '2024-01-15T10:00:00Z INFO 服务已启动 ✅\n2024-01-15T10:00:01Z ERROR Échec de connexion\n',
+      'utf-8',
+    );
+
+    const result = await parseLogFile(tmpFile);
+
+    expect(result.lines).toHaveLength(2);
+    expect(result.errorCount).toBe(1);
+    expect(result.lines[0]?.content).toContain('服务已启动');
+
+    await fsp.unlink(tmpFile);
+  });
 });
 
 // ---------------------------------------------------------------------------

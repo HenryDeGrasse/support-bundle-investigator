@@ -8,7 +8,9 @@
 //
 // Environment variables:
 //   OPENAI_API_KEY         — OpenAI API key (required for AI features)
-//   SBI_AI_MODEL           — Chat completion model (default: gpt-4o)
+//   SBI_LLM_API_KEY        — Optional credential for a local LLM endpoint.
+//                            Defaults to a non-secret placeholder in local mode.
+//   SBI_AI_MODEL           — Chat completion model (default: gpt-5.6-terra)
 //   SBI_LLM_BACKEND        — LLM backend (default: openai)
 //                            Values: openai | local
 //   SBI_LLM_URL            — LLM endpoint URL (default: https://api.openai.com/v1)
@@ -31,8 +33,8 @@ export type AIProvider = 'openai' | 'none';
  * - `openai` — OpenAI API (default). Requires OPENAI_API_KEY.
  * - `local`  — Any OpenAI-compatible local server (Ollama, llama.cpp,
  *              vLLM, LM Studio). Uses SBI_LLM_URL as the base endpoint.
- *              OPENAI_API_KEY can be any non-empty string (local servers
- *              typically don't validate it).
+ *              Uses SBI_LLM_API_KEY when configured, otherwise a non-secret
+ *              placeholder; OPENAI_API_KEY is never sent to the endpoint.
  */
 export type LLMBackend = 'openai' | 'local';
 
@@ -50,8 +52,15 @@ export type EmbeddingBackend = 'local' | 'openai' | 'none';
 export interface AIConfig {
   /** AI provider. 'none' means AI features are disabled. */
   provider: AIProvider;
-  /** API key for the chosen provider. Empty string when AI is disabled. */
+  /** OpenAI API key used for cloud LLM calls and OpenAI embeddings. */
   apiKey: string;
+  /**
+   * Credential sent to the configured LLM endpoint.
+   *
+   * Local backends never inherit `OPENAI_API_KEY`; they use
+   * `SBI_LLM_API_KEY` or a non-secret placeholder instead.
+   */
+  llmApiKey?: string;
   /** Chat completion model identifier. */
   model: string;
   /**
@@ -105,24 +114,36 @@ export interface LoadAIConfigOverrides {
 function resolveRequestedProvider(aiProvider?: string): AIProvider {
   const normalized = aiProvider?.trim().toLowerCase();
 
+  if (normalized === undefined || normalized === '' || normalized === 'openai') {
+    return 'openai';
+  }
   if (normalized === 'none') {
     return 'none';
   }
-
-  return 'openai';
+  throw new Error(
+    `Invalid AI provider "${aiProvider}". Expected one of: openai, none.`,
+  );
 }
 
 function resolveLLMBackend(raw: string | undefined): LLMBackend {
   const normalized = raw?.trim().toLowerCase();
+  if (normalized === undefined || normalized === '') return 'openai';
   if (normalized === 'local') return 'local';
-  return 'openai'; // default
+  if (normalized === 'openai') return 'openai';
+  throw new Error(
+    `Invalid SBI_LLM_BACKEND "${raw}". Expected one of: openai, local.`,
+  );
 }
 
 function resolveEmbeddingBackend(raw: string | undefined): EmbeddingBackend {
   const normalized = raw?.trim().toLowerCase();
+  if (normalized === undefined || normalized === '') return 'local';
+  if (normalized === 'local') return 'local';
   if (normalized === 'openai') return 'openai';
   if (normalized === 'none') return 'none';
-  return 'local'; // default
+  throw new Error(
+    `Invalid SBI_EMBEDDING_BACKEND "${raw}". Expected one of: local, openai, none.`,
+  );
 }
 
 /** Default LLM base URL for OpenAI cloud. */
@@ -140,14 +161,14 @@ const LOCAL_LLM_DEFAULT_URL = 'http://localhost:11434/v1';
  *  - The requested provider is not `none`, AND
  *  - Either:
  *    - A non-empty `OPENAI_API_KEY` env var is present (cloud mode), OR
- *    - `SBI_LLM_BACKEND=local` is set (local mode — any API key accepted,
- *      since local servers typically don't validate keys).
+ *    - `SBI_LLM_BACKEND=local` is set (local mode uses SBI_LLM_API_KEY or a
+ *      non-secret placeholder, since most local servers do not require auth).
  */
 export function loadAIConfig(overrides: LoadAIConfigOverrides = {}): AIConfig {
   const { noAi = false, aiProvider } = overrides;
 
   const apiKey = process.env['OPENAI_API_KEY'] ?? '';
-  const model = process.env['SBI_AI_MODEL'] ?? 'gpt-4o';
+  const model = process.env['SBI_AI_MODEL'] ?? 'gpt-5.6-terra';
   const llmBackend = resolveLLMBackend(process.env['SBI_LLM_BACKEND']);
   const embeddingModel = process.env['SBI_EMBEDDING_MODEL'] ?? 'text-embedding-3-small';
   const embeddingBackend = resolveEmbeddingBackend(process.env['SBI_EMBEDDING_BACKEND']);
@@ -180,19 +201,29 @@ export function loadAIConfig(overrides: LoadAIConfigOverrides = {}): AIConfig {
 
   const provider: AIProvider = enabled ? 'openai' : 'none';
 
-  // For local backends or cassette replay without an explicit key, use a
-  // placeholder so the OpenAI client constructor doesn't throw.
+  // Keep cloud and local credentials separate. In particular, never forward
+  // an ambient OPENAI_API_KEY to an OpenAI-compatible local/LAN endpoint.
+  const localLLMApiKey = process.env['SBI_LLM_API_KEY']?.trim();
+  const llmApiKey = llmBackend === 'local'
+    ? (localLLMApiKey && localLLMApiKey.length > 0 ? localLLMApiKey : 'local')
+    : hasKey
+      ? apiKey
+      : recorderMode === 'replay'
+        ? 'replay'
+        : '';
+
+  // `apiKey` remains the cloud OpenAI credential because the embedding backend
+  // can be OpenAI even when chat completions use a local server.
   const effectiveApiKey = hasKey
     ? apiKey
     : recorderMode === 'replay'
       ? 'replay'
-      : llmBackend === 'local'
-        ? 'local'
-        : '';
+      : '';
 
   return {
     provider,
     apiKey: effectiveApiKey,
+    llmApiKey,
     model,
     llmBackend,
     llmUrl,

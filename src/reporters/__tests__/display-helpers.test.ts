@@ -242,7 +242,6 @@ describe('formatSummaryCard', () => {
 
   it('does not contain emoji', () => {
     const result = formatSummaryCard(finding, 5);
-    // eslint-disable-next-line no-control-regex
     expect(result).not.toMatch(/[\u{1F300}-\u{1F9FF}]/u);
   });
 });

@@ -67,6 +67,14 @@ export function cleanEvidencePath(filePath: string): string {
 // Title humanization
 // ---------------------------------------------------------------------------
 
+function stripLegacySymptomSuffix(value: string): string {
+  const trimmed = value.trimEnd();
+  if (!trimmed.endsWith(')')) return value;
+
+  const markerIndex = trimmed.toLowerCase().lastIndexOf('(symptom:');
+  return markerIndex < 0 ? value : trimmed.slice(0, markerIndex).trimEnd();
+}
+
 /**
  * Converts a machine-generated finding title into a human-friendly form.
  *
@@ -81,7 +89,7 @@ export function humanizeTitle(title: string): string {
   result = result.replace(/^\[Hypothesis\]\s*/i, '');
 
   // Strip legacy (symptom: ...) suffix
-  result = result.replace(/\s*\(symptom:\s*.+\)\s*$/, '');
+  result = stripLegacySymptomSuffix(result);
 
   // Clean absolute paths that may still appear in titles from older findings
   result = result.replace(
@@ -99,6 +107,20 @@ export function humanizeTitle(title: string): string {
 // Reasoning humanization
 // ---------------------------------------------------------------------------
 
+function removeConfidenceRationale(value: string): string {
+  const marker = 'Confidence rationale:';
+  const start = value.indexOf(marker);
+  if (start < 0) return value;
+
+  const contentStart = start + marker.length;
+  const possibleEnds = [
+    value.indexOf('Preferred over', contentStart),
+    value.indexOf('Derived from', contentStart),
+  ].filter((index) => index >= 0);
+  const end = possibleEnds.length > 0 ? Math.min(...possibleEnds) : value.length;
+  return `${value.slice(0, start)}${value.slice(end)}`;
+}
+
 /**
  * Converts machine-generated reasoning into human-readable prose.
  *
@@ -115,10 +137,7 @@ export function humanizeReasoning(reasoning: string): string {
 
   // Remove confidence rationale sentence — everything from "Confidence rationale:"
   // up to (and including) the period before "Preferred over" or "Derived from" or end.
-  result = result.replace(
-    /Confidence rationale:\s*Confidence\s+[\d.]+:[\s\S]*?(?=Preferred over|Derived from|$)/g,
-    '',
-  );
+  result = removeConfidenceRationale(result);
 
   // Remove "Derived from N raw finding(s): ..." sentence
   result = result.replace(/Derived from \d+ raw finding\(s\):[^.]*\.\s*/g, '');

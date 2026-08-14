@@ -22,6 +22,7 @@ import type { AIConfig } from './config.js';
 import type { EmbeddingClientInterface } from './embeddings.js';
 import { EmbeddingClient } from './embeddings.js';
 import type { LateChunkEmbeddingClient } from './late-chunking.js';
+import { sanitizeSensitiveText } from '../utils/sensitive-data.js';
 
 // ---------------------------------------------------------------------------
 // LocalEmbeddingClient config
@@ -46,7 +47,11 @@ export interface LocalEmbeddingClientConfig {
    * @default 'auto'
    */
   backend?: LocalBackendType;
+  /** Per-request timeout in milliseconds. @default 30000 */
+  timeoutMs?: number;
 }
+
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
 // ---------------------------------------------------------------------------
 // LocalEmbeddingClient
@@ -66,11 +71,27 @@ export class LocalEmbeddingClient implements LateChunkEmbeddingClient {
   private readonly url: string;
   private readonly model: string;
   private readonly backend: LocalBackendType;
+  private readonly timeoutMs: number;
 
   constructor(config: LocalEmbeddingClientConfig) {
     this.url = config.url.replace(/\/+$/, ''); // strip trailing slash(es)
     this.model = config.model;
     this.backend = config.backend ?? 'auto';
+    this.timeoutMs =
+      Number.isFinite(config.timeoutMs) && (config.timeoutMs ?? 0) > 0
+        ? Math.floor(config.timeoutMs!)
+        : DEFAULT_REQUEST_TIMEOUT_MS;
+  }
+
+  private async fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+
+    try {
+      return await fetch(url, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   /**
@@ -81,24 +102,25 @@ export class LocalEmbeddingClient implements LateChunkEmbeddingClient {
    */
   async embed(texts: string[]): Promise<number[][]> {
     if (texts.length === 0) return [];
+    const sanitizedTexts = texts.map(sanitizeSensitiveText);
 
     if (this.backend === 'ollama') {
-      return this.embedWithOllama(texts);
+      return this.embedWithOllama(sanitizedTexts);
     }
 
     // 'tei' or 'auto': try TEI first
-    const teiResult = await this.tryEmbedWithTEI(texts);
+    const teiResult = await this.tryEmbedWithTEI(sanitizedTexts);
     if (teiResult !== null) {
       return teiResult;
     }
 
     // TEI failed — if auto mode, fall back to Ollama
     if (this.backend === 'auto') {
-      return this.embedWithOllama(texts);
+      return this.embedWithOllama(sanitizedTexts);
     }
 
     // backend === 'tei' with no fallback: return empty arrays
-    return new Array(texts.length).fill([]) as number[][];
+    return new Array(sanitizedTexts.length).fill([]) as number[][];
   }
 
   /**
@@ -130,10 +152,10 @@ export class LocalEmbeddingClient implements LateChunkEmbeddingClient {
     if (this.backend === 'ollama') return null;
 
     try {
-      const response = await fetch(`${this.url}/embed_all`, {
+      const response = await this.fetchWithTimeout(`${this.url}/embed_all`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ inputs: text }),
+        body: JSON.stringify({ inputs: sanitizeSensitiveText(text) }),
       });
 
       if (!response.ok) {
@@ -167,7 +189,7 @@ export class LocalEmbeddingClient implements LateChunkEmbeddingClient {
    */
   private async tryEmbedWithTEI(texts: string[]): Promise<number[][] | null> {
     try {
-      const response = await fetch(`${this.url}/embed`, {
+      const response = await this.fetchWithTimeout(`${this.url}/embed`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ inputs: texts }),
@@ -206,7 +228,7 @@ export class LocalEmbeddingClient implements LateChunkEmbeddingClient {
 
     for (let i = 0; i < texts.length; i++) {
       try {
-        const response = await fetch(`${this.url}/api/embeddings`, {
+        const response = await this.fetchWithTimeout(`${this.url}/api/embeddings`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ model: this.model, prompt: texts[i] }),

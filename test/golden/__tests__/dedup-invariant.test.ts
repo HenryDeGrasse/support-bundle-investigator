@@ -2,13 +2,13 @@
 // Dedup Invariant Test
 // ---------------------------------------------------------------------------
 //
-// Structural assertion that runs across every scenario and verifies the
-// pipeline never emits duplicate findings that describe the same root cause.
+// Structural assertions that run across every scenario and verify the
+// pipeline never emits duplicate findings for the same concrete component.
 //
-// The invariant: after the full pipeline, no two findings in the output
-// should share the same (namespace, specific_family) pair. If they do,
-// the dedup logic has a gap that needs fixing — not a golden expectation
-// that needs loosening.
+// Namespace alone is intentionally not an incident identity: independent pods
+// in one namespace may have the same failure family. Dedup and suppression
+// therefore require a shared component (or a graph relationship covered by
+// focused orchestrator tests).
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as fs from 'fs';
@@ -62,10 +62,9 @@ const DEDUP_ENFORCED_FAMILIES = new Set([
 ]);
 
 function extractNamespace(finding: Finding): string {
-  for (const comp of finding.affectedComponents) {
-    const parts = comp.split('/');
+  for (const component of finding.affectedComponents) {
+    const parts = component.split('/');
     if (parts.length >= 3) return parts[1] ?? '';
-    // namespace/name format (hypothesis findings)
     if (parts.length === 2) {
       const first = parts[0] ?? '';
       if (!['Container', 'Image', 'DNS', 'NetworkPolicy', 'Node'].includes(first)) {
@@ -74,6 +73,26 @@ function extractNamespace(finding: Finding): string {
     }
   }
   return '';
+}
+
+function extractPrimaryComponent(finding: Finding): string {
+  const preferredPrefixes = [
+    'Pod/',
+    'Deployment/',
+    'StatefulSet/',
+    'DaemonSet/',
+    'Secret/',
+    'ConfigMap/',
+    'Service/',
+    'PersistentVolumeClaim/',
+  ];
+  for (const prefix of preferredPrefixes) {
+    const component = finding.affectedComponents.find((candidate) =>
+      candidate.startsWith(prefix),
+    );
+    if (component) return component;
+  }
+  return finding.affectedComponents[0] ?? finding.id;
 }
 
 // ---------------------------------------------------------------------------
@@ -106,9 +125,9 @@ afterAll(async () => {
 // Invariant tests
 // ---------------------------------------------------------------------------
 
-describe('Dedup invariant: no duplicate (namespace, family) pairs', () => {
+describe('Dedup invariant: no duplicate (component, family) pairs', () => {
   for (const scenario of Object.keys(GOLDEN_EXPECTATIONS)) {
-    it(`${scenario}: no two findings share a dedup-enforced (namespace, family) pair`, () => {
+    it(`${scenario}: no two findings share a dedup-enforced (component, family) pair`, () => {
       const result = results[scenario]!;
       const seen = new Map<string, string>(); // key → finding id
 
@@ -116,17 +135,16 @@ describe('Dedup invariant: no duplicate (namespace, family) pairs', () => {
         const family = inferFamily(finding);
         if (!DEDUP_ENFORCED_FAMILIES.has(family)) continue;
 
-        const ns = extractNamespace(finding);
-        const key = `${ns}::${family}`;
-
+        const namespace = extractNamespace(finding);
+        const component = extractPrimaryComponent(finding);
+        const key = `${namespace}::${component}::${family}`;
         const existing = seen.get(key);
-        if (existing) {
-          // Fail with a clear message showing both IDs
+        if (existing && existing !== finding.id) {
           expect.fail(
             `Dedup violation in "${scenario}": two findings share key "${key}":\n` +
             `  1) ${existing}\n` +
             `  2) ${finding.id}\n` +
-            `Both have family "${family}" in namespace "${ns}".`,
+            `Both have family "${family}" on primary component "${component}".`,
           );
         }
         seen.set(key, finding.id);
@@ -135,29 +153,34 @@ describe('Dedup invariant: no duplicate (namespace, family) pairs', () => {
   }
 });
 
-describe('Dedup invariant: generic-crash suppressed when specific root cause exists', () => {
+describe('Dedup invariant: generic-crash suppression is component-specific', () => {
   for (const scenario of Object.keys(GOLDEN_EXPECTATIONS)) {
-    it(`${scenario}: no generic-crash finding when a specific root cause covers the same namespace`, () => {
+    it(`${scenario}: no generic-crash finding when a specific root cause covers the same component`, () => {
       const result = results[scenario]!;
 
-      // Collect namespaces covered by specific root causes
-      const specificNamespaces = new Set<string>();
+      // Collect concrete components covered by specific root causes. A root
+      // elsewhere in the same namespace must not suppress an independent pod.
+      const specificComponents = new Set<string>();
       for (const f of result.findings) {
         const family = inferFamily(f);
         if (DEDUP_ENFORCED_FAMILIES.has(family)) {
-          const ns = extractNamespace(f);
-          if (ns) specificNamespaces.add(ns);
+          for (const component of f.affectedComponents) {
+            specificComponents.add(component);
+          }
         }
       }
 
-      // Check for generic-crash findings in those namespaces
+      // Check for generic-crash findings on those exact components. Structural
+      // graph-neighbour suppression is covered by orchestrator unit fixtures.
       for (const f of result.findings) {
         if (inferFamily(f) !== 'generic-crash') continue;
-        const ns = extractNamespace(f);
-        if (ns && specificNamespaces.has(ns)) {
+        const overlappingComponent = f.affectedComponents.find((component) =>
+          specificComponents.has(component),
+        );
+        if (overlappingComponent) {
           expect.fail(
             `Generic-crash finding "${f.id}" should have been suppressed in "${scenario}" ` +
-            `because namespace "${ns}" has a specific root-cause finding.`,
+            `because component "${overlappingComponent}" has a specific root-cause finding.`,
           );
         }
       }

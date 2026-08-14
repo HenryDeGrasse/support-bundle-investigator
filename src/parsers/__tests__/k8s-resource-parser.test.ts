@@ -269,6 +269,52 @@ data: here
     expect(resources[0]?.metadata.name).toBe('good-pod');
     expect(warnSpy).toHaveBeenCalled();
   });
+
+  it('skips resources without a non-empty metadata.name', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const resources = parseResourceYaml(`\
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: default
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "   "
+`);
+
+    expect(resources).toHaveLength(0);
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('filters invalid list items instead of returning unsafe resources', () => {
+    const resources = parseResourceYaml(`\
+apiVersion: v1
+kind: PodList
+metadata:
+  name: pods
+items:
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: safe-pod
+      labels:
+        app: web
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: unsafe-pod
+      labels:
+        replicas: 2
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      namespace: default
+`);
+
+    expect(resources.map((resource) => resource.metadata.name)).toEqual(['safe-pod']);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -312,6 +358,23 @@ describe('parseResourceJson', () => {
     expect(warnSpy).toHaveBeenCalled();
   });
 
+  it.each([
+    { metadata: null },
+    { metadata: {} },
+    { metadata: { name: '' } },
+    { metadata: { name: 'pod', namespace: 42 } },
+    { metadata: { name: 'pod', labels: { app: false } } },
+    { metadata: { name: 'pod', annotations: ['not', 'a', 'map'] } },
+  ])('rejects unsafe metadata shape %#', (partial) => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const resources = parseResourceJson(
+      JSON.stringify({ apiVersion: 'v1', kind: 'Pod', ...partial }),
+    );
+
+    expect(resources).toHaveLength(0);
+    expect(warnSpy).toHaveBeenCalled();
+  });
+
   it('parses JSON list-type resource — unwraps items', () => {
     const listJson = JSON.stringify({
       apiVersion: 'v1',
@@ -338,6 +401,24 @@ describe('parseResourceJson', () => {
     expect(resources).toHaveLength(2);
     expect(resources[0]?.metadata.name).toBe('json-pod-1');
     expect(resources[1]?.metadata.name).toBe('json-pod-2');
+  });
+
+  it('unwraps a List envelope whose metadata object has no name', () => {
+    const resources = parseResourceJson(JSON.stringify({
+      apiVersion: 'v1',
+      kind: 'PodList',
+      metadata: {},
+      items: [
+        {
+          apiVersion: 'v1',
+          kind: 'Pod',
+          metadata: { name: 'listed-pod', namespace: 'default' },
+        },
+      ],
+    }));
+
+    expect(resources).toHaveLength(1);
+    expect(resources[0]?.metadata.name).toBe('listed-pod');
   });
 });
 

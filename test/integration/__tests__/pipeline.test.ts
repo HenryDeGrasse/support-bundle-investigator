@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { analyzeBundlePipeline, cleanupPipelineResult } from '../../../src/pipeline/analyze.js';
 import { writePipelineResult, writeTraceFile } from '../../../src/cli/output.js';
+import { compareFindingsForDisplay } from '../../../src/investigators/orchestrator.js';
 import { createTestBundle, getFixturePath } from '../../helpers/create-test-bundle.js';
 
 // ---------------------------------------------------------------------------
@@ -276,19 +277,26 @@ describe('Pipeline Integration', () => {
 
     it('findings are sorted by severity — critical/high appear before low/info', async () => {
       const result = await runPipeline(missingSecretBundlePath);
+      const causalRootIds = new Set(
+        result.graph.edges
+          .filter((edge) => edge.type === 'causes')
+          .map((edge) => edge.source),
+      );
       const severityOrder: Record<string, number> = {
         critical: 4, high: 3, medium: 2, low: 1, info: 0,
       };
       for (let i = 0; i < result.findings.length - 1; i++) {
         const current = severityOrder[result.findings[i]!.severity] ?? 0;
         const next = severityOrder[result.findings[i + 1]!.severity] ?? 0;
-        // Confidence descending within same severity
+        expect(current).toBeGreaterThanOrEqual(next);
         if (current === next) {
-          expect(result.findings[i]!.confidence).toBeGreaterThanOrEqual(
-            result.findings[i + 1]!.confidence,
-          );
-        } else {
-          expect(current).toBeGreaterThanOrEqual(next);
+          expect(
+            compareFindingsForDisplay(
+              result.findings[i]!,
+              result.findings[i + 1]!,
+              causalRootIds,
+            ),
+          ).toBeLessThanOrEqual(0);
         }
       }
     });

@@ -92,8 +92,14 @@ function renderEvidenceTable(finding: Finding): string {
   const collapsed = collapseEvidence(finding.evidence);
   const rows = collapsed.map((ev) => {
     const cleanedPath = cleanEvidencePath(ev.path);
-    const escapedPath = cleanedPath.replace(/\|/g, '\\|');
-    const escapedNote = ev.note.replace(/\|/g, '\\|');
+    const escapedPath = cleanedPath
+      .replace(/\\/g, '\\\\')
+      .replace(/\|/g, '\\|')
+      .replace(/\r?\n|\r/g, ' ');
+    const escapedNote = ev.note
+      .replace(/\\/g, '\\\\')
+      .replace(/\|/g, '\\|')
+      .replace(/\r?\n|\r/g, ' ');
     return `| \`${escapedPath}\` | ${escapedNote} |`;
   });
 

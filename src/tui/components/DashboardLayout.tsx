@@ -81,6 +81,7 @@ export function DashboardLayout({
   // Reserve 2 rows for header + footer status bars.
   // Remaining rows go to the main content area.
   const contentHeight = height != null ? Math.max(height - 2, 4) : undefined;
+  const findingsWidth = width != null ? Math.floor(width * 0.35) : undefined;
 
   // When specs pane is visible, split the right column: detail gets ~65%, specs ~35%.
   const detailHeight =
@@ -111,6 +112,8 @@ export function DashboardLayout({
             selectedIndex={state.selectedIndex}
             focused={state.activePane === 'findings'}
             causalChildIds={causalChildIds}
+            maxVisibleRows={contentHeight != null ? Math.max(1, contentHeight - 5) : undefined}
+            maxTitleLength={findingsWidth != null ? Math.max(4, findingsWidth - 24) : undefined}
           />
         </Box>
 
@@ -131,6 +134,10 @@ export function DashboardLayout({
               <SpecsPane
                 recommendations={recommendations}
                 focused={state.activePane === 'specs'}
+                scrollOffset={state.specsScrollOffset}
+                maxVisibleItems={
+                  specsHeight != null ? Math.max(1, Math.floor((specsHeight - 3) / 3)) : undefined
+                }
               />
             </Box>
           )}

@@ -77,6 +77,26 @@ describe('EmbeddingClient', () => {
     );
   });
 
+  it('redacts secrets before sending text to the OpenAI embeddings API', async () => {
+    const client = new EmbeddingClient(makeConfig());
+    const mockCreate = vi.fn().mockResolvedValue({
+      data: [{ embedding: [1, 0, 0], index: 0 }],
+    });
+
+    // @ts-expect-error — accessing private field for test
+    client.client = { embeddings: { create: mockCreate } };
+
+    const secret = ['sk', 'proj', 'abcdefghijklmnopqrstuvwxyz123456'].join('-');
+    await client.embed([
+      `DATABASE_URL=postgres://alice:hunter2@db.internal/app token=${secret}`,
+    ]);
+
+    const request = mockCreate.mock.calls[0]?.[0] as { input: string[] };
+    expect(request.input[0]).not.toContain('hunter2');
+    expect(request.input[0]).not.toContain(secret);
+    expect(request.input[0]).toContain('[REDACTED]');
+  });
+
   it('returns empty arrays for failed batches without throwing', async () => {
     const client = new EmbeddingClient(makeConfig());
 

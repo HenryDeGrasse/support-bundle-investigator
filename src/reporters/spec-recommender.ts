@@ -296,8 +296,14 @@ function isEligibleForGapAnalysis(finding: Finding): boolean {
  * component-based grouping.
  */
 function extractHypothesisSymptom(finding: Finding): string | null {
-  const match = finding.title.match(/\(symptom:\s*(.+)\)$/);
-  return match?.[1]?.trim() || null;
+  const title = finding.title.trimEnd();
+  if (!title.endsWith(')')) return null;
+
+  const marker = '(symptom:';
+  const markerIndex = title.toLowerCase().lastIndexOf(marker);
+  if (markerIndex < 0) return null;
+
+  return title.slice(markerIndex + marker.length, -1).trim() || null;
 }
 
 /**

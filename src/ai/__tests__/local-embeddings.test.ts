@@ -119,6 +119,21 @@ describe('LocalEmbeddingClient (TEI backend)', () => {
     expect(result[1]).toEqual([0.4, 0.5, 0.6]);
   });
 
+  it('redacts sensitive values before sending text to a local endpoint', async () => {
+    const client = new LocalEmbeddingClient({
+      url: 'http://localhost:8080',
+      model: 'gte-Qwen2-1.5B',
+      backend: 'tei',
+    });
+    mockFetch.mockResolvedValue(makeFetchResponse([[0.1, 0.2]]));
+
+    await client.embed(['database_url=postgres://admin:hunter2@db.internal/app']);
+
+    const body = (mockFetch.mock.calls[0]?.[1] as RequestInit).body as string;
+    expect(body).not.toContain('hunter2');
+    expect(body).toContain('[REDACTED]');
+  });
+
   it('strips trailing slash from URL', async () => {
     const client = new LocalEmbeddingClient({
       url: 'http://localhost:8080/',
@@ -175,6 +190,31 @@ describe('LocalEmbeddingClient (TEI backend)', () => {
     expect(result[1]).toEqual([]);
     expect(warnSpy).toHaveBeenCalled();
 
+    warnSpy.mockRestore();
+  });
+
+  it('aborts an unresponsive local endpoint after the configured timeout', async () => {
+    const client = new LocalEmbeddingClient({
+      url: 'http://localhost:8080',
+      model: 'gte-Qwen2-1.5B',
+      backend: 'tei',
+      timeoutMs: 5,
+    });
+
+    mockFetch.mockImplementation(
+      (_url: string, init: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () => reject(new Error('aborted')), {
+            once: true,
+          });
+        }),
+    );
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = await client.embed(['stalled']);
+
+    expect(result).toEqual([[]]);
+    expect((mockFetch.mock.calls[0]?.[1] as RequestInit).signal?.aborted).toBe(true);
     warnSpy.mockRestore();
   });
 

@@ -88,10 +88,18 @@ describe('Pipeline performance benchmark', () => {
       const medianTrace = median(traceDurations);
 
       expect(medianWallClock).toBeGreaterThan(0);
-      expect(maxWallClock / medianWallClock).toBeLessThanOrEqual(2);
+      // Ratio-only checks are unstable when runs complete in a few
+      // milliseconds: one scheduler pause can look like a 2x regression while
+      // absolute throughput remains excellent. Keep the 2x ceiling for slower
+      // runs and allow up to 100 ms of fixed jitter for fast ones.
+      expect(maxWallClock).toBeLessThanOrEqual(
+        Math.max(medianWallClock * 2, medianWallClock + 100),
+      );
       expect(medianTrace).toBeGreaterThanOrEqual(0);
       if (medianTrace > 0) {
-        expect(maxTrace / medianTrace).toBeLessThanOrEqual(2);
+        expect(maxTrace).toBeLessThanOrEqual(
+          Math.max(medianTrace * 2, medianTrace + 100),
+        );
       }
 
       expect(stepDurationSets).toHaveLength(3);

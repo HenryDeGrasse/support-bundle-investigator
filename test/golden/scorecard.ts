@@ -2,6 +2,7 @@ import type { EvalReport, ScenarioEvalResult } from './evaluate.js';
 
 function escapeMarkdownCell(value: string): string {
   return value
+    .replace(/\\/g, '\\\\')
     .replace(/\|/g, '\\|')
     .replace(/\r?\n|\r/g, ' ')
     .trim();

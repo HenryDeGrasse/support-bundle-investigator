@@ -1,6 +1,7 @@
 import React from 'react';
 import { Box, Text } from 'ink';
 import type { SpecRecommendation, SpecRecommendationType } from '../../reporters/index.js';
+import { calculateViewport } from '../helpers.js';
 import { Pane } from './Pane.js';
 
 // ---------------------------------------------------------------------------
@@ -13,6 +14,10 @@ export interface SpecsPaneProps {
   recommendations: SpecRecommendation[];
   /** When true the pane border and title render in their focused style. */
   focused: boolean;
+  /** Index of the focused recommendation; the viewport follows it. */
+  scrollOffset?: number;
+  /** Maximum recommendations that fit in the pane. */
+  maxVisibleItems?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -46,7 +51,17 @@ function typeBadge(type: SpecRecommendationType): { label: string; color: string
 export function SpecsPane({
   recommendations,
   focused,
+  scrollOffset = 0,
+  maxVisibleItems,
 }: SpecsPaneProps): React.ReactElement {
+  const capacity = Math.max(1, maxVisibleItems ?? Math.max(1, recommendations.length));
+  const focusedIndex = Math.min(
+    Math.max(0, scrollOffset),
+    Math.max(0, recommendations.length - 1),
+  );
+  const viewport = calculateViewport(recommendations.length, focusedIndex, capacity);
+  const visibleRecommendations = recommendations.slice(viewport.start, viewport.end);
+
   return (
     <Pane title="Spec Recommendations" focused={focused}>
       {recommendations.length === 0 ? (
@@ -55,24 +70,33 @@ export function SpecsPane({
         </Box>
       ) : (
         <Box flexDirection="column" paddingX={1}>
-          {recommendations.map((rec, index) => {
+          {visibleRecommendations.map((rec, index) => {
             const badge = typeBadge(rec.type);
+            const itemIndex = viewport.start + index;
+            const isSelected = focused && itemIndex === focusedIndex;
             return (
-              <Box key={index} flexDirection="column" marginBottom={1}>
+              <Box key={`${itemIndex}-${rec.type}`} flexDirection="column" marginBottom={1}>
                 <Box>
-                  <Text color={badge.color} bold>
+                  <Text color="cyan">{isSelected ? '▸ ' : '  '}</Text>
+                  <Text color={badge.color} bold={isSelected}>
                     [{badge.label}]
                   </Text>
-                  <Text> {rec.description}</Text>
+                  <Text bold={isSelected} wrap="truncate-end"> {rec.description}</Text>
                 </Box>
                 <Box marginLeft={2}>
-                  <Text color="gray" dimColor>
+                  <Text color="gray" dimColor wrap="truncate-end">
                     Rationale: {rec.rationale}
                   </Text>
                 </Box>
               </Box>
             );
           })}
+          {recommendations.length > capacity && (
+            <Text color="gray" dimColor>
+              Showing {viewport.start + 1}–{viewport.end} of{' '}
+              {recommendations.length} · [↑↓/jk] scroll
+            </Text>
+          )}
         </Box>
       )}
     </Pane>

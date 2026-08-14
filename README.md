@@ -1,16 +1,21 @@
 # Support Bundle Investigator (SBI)
 
+[![CI](https://github.com/HenryDeGrasse/support-bundle-investigator/actions/workflows/ci.yml/badge.svg)](https://github.com/HenryDeGrasse/support-bundle-investigator/actions/workflows/ci.yml)
+
 > CLI-first, local-first tool that takes a [Troubleshoot](https://troubleshoot.sh/) support bundle `.tar.gz` and produces evidence-backed diagnosis.
 
-**Status: Complete** — full investigation pipeline with differential diagnosis, AI-augmented analysis, interactive TUI, and fixture scenarios verified by **3800+ tests across 97 files**.
+**Status: Complete** — full investigation pipeline with differential diagnosis, AI-augmented analysis, interactive TUI, and fixture scenarios verified by **3,800+ tests across 99 files**.
 
 ---
 
 ## Quick Start
 
+SBI requires Node.js 20 or Node.js 22 and newer. CI verifies Node.js 20, 22,
+and 24.
+
 ```bash
-# 1. Install dependencies
-npm install
+# 1. Install the locked dependencies
+npm ci
 
 # 2. Drop a support bundle into the bundles/ directory
 cp /path/to/support-bundle-*.tar.gz bundles/
@@ -44,24 +49,25 @@ The `bundles/` directory is gitignored — support bundles contain sensitive clu
 ### Interactive TUI (recommended)
 
 ```bash
-npm run rat                          # auto-build + scan bundles/ + TUI
-
-npx rat                              # same, via bin (after npm link or npm install -g)
-npx rat /path/to/dir                 # scan a specific directory
-npx rat /path/to/bundle.tar.gz       # analyze a specific file directly
-npx rat --no-embedding-setup         # skip embedding setup prompt
+npm run rat                              # auto-build + scan bundles/ + TUI
+npm run rat -- /path/to/dir              # scan a specific directory
+npm run rat -- /path/to/bundle.tar.gz    # analyze a specific file directly
+npm run rat -- --no-embedding-setup      # skip embedding setup prompt
 ```
+
+Run `npm link` once if you prefer the global-style `rat` and `sbi` commands
+while developing from a clone.
 
 ### CLI (non-interactive)
 
 ```bash
 npm run build
 
-npx sbi analyze bundles/bundle.tar.gz          # text output (heuristic mode)
-npx sbi analyze bundles/bundle.tar.gz --no-ai  # explicitly heuristic-only
-npx sbi analyze bundles/bundle.tar.gz --tui    # TUI from the CLI
-npx sbi analyze bundles/bundle.tar.gz --format json --output-dir ./reports
-npx sbi analyze bundles/bundle.tar.gz --verbose
+node dist/cli/run.mjs analyze bundles/bundle.tar.gz          # text output
+node dist/cli/run.mjs analyze bundles/bundle.tar.gz --no-ai  # heuristic-only
+node dist/cli/run.mjs analyze bundles/bundle.tar.gz --tui    # TUI from the CLI
+node dist/cli/run.mjs analyze bundles/bundle.tar.gz --format json --output-dir ./reports
+node dist/cli/run.mjs analyze bundles/bundle.tar.gz --verbose
 ```
 
 ---
@@ -84,46 +90,54 @@ The AI layer uses **three retrieval channels** merged via Reciprocal Rank Fusion
 
 The LLM used for AI investigation can run in the cloud (OpenAI, default) or locally via any OpenAI-compatible server. The TUI status bar shows the active mode: `AI:cloud`, `AI:local`, or `AI:off`.
 
-**Cloud mode (default):** Requires `OPENAI_API_KEY`. Uses OpenAI's API (`gpt-4o` by default). Best quality, fastest response time. Bundle data is sent to OpenAI.
+**Cloud mode (default):** Requires `OPENAI_API_KEY` and uses OpenAI's API (`gpt-5.6-terra` by default). Common credential patterns and Kubernetes Secret payloads are redacted from prompts before transmission, but the remaining diagnostic context from the bundle is sent to OpenAI.
 
-**Local mode:** Uses a locally-running LLM server (Ollama, llama.cpp, vLLM, LM Studio). All data stays on your machine. Requires a model with good JSON output and sufficient context window.
+**Local mode:** Uses a configured OpenAI-compatible endpoint such as Ollama, llama.cpp, vLLM, or LM Studio. Data stays on your machine only when `SBI_LLM_URL` points to a service running on infrastructure you control; a remote URL receives the redacted diagnostic context. The selected model should support reliable JSON output and a sufficient context window.
 
 ```bash
 # Cloud mode (default)
 OPENAI_API_KEY=sk-proj-...
-SBI_AI_MODEL=gpt-4o
+SBI_AI_MODEL=gpt-5.6-terra
 
 # Local mode with Ollama
 SBI_LLM_BACKEND=local
 SBI_LLM_URL=http://localhost:11434/v1
+SBI_LLM_API_KEY=                 # optional; only for endpoints that require auth
 SBI_AI_MODEL=qwen2.5:32b
 SBI_TOKEN_BUDGET=20000          # reduce for smaller context windows
 
 # Local mode with llama.cpp server
 SBI_LLM_BACKEND=local
 SBI_LLM_URL=http://localhost:8081/v1
+SBI_LLM_API_KEY=                 # optional; only for endpoints that require auth
 SBI_AI_MODEL=local-model
 SBI_TOKEN_BUDGET=20000
 ```
 
-**Local model recommendations (Apple Silicon MacBook):**
+**Local model examples for Apple Silicon:** Model fit and speed depend heavily
+on quantization, context size, and available memory, so treat these as starting
+points rather than benchmarked rankings.
 
-| Model | RAM Needed | Context | JSON Quality | Overall Quality |
-|---|---|---|---|---|
-| `qwen2.5:32b` | ~20 GB | 128K | Good | Medium-High |
-| `llama3.1:70b` (q4) | ~40 GB | 128K | Good | High (needs 64 GB+ RAM) |
-| `deepseek-r1:32b` | ~20 GB | 128K | Good | Medium-High |
-| `llama3.1:8b` | ~5 GB | 128K | Okay | Low (will hallucinate) |
-| `mistral-small:22b` | ~14 GB | 32K | Good | Medium (small context) |
+| Model | Approx. RAM | Advertised context | Practical note |
+|---|---:|---:|---|
+| `qwen2.5:32b` | ~20 GB | 128K | A reasonable larger-model starting point |
+| `llama3.1:70b` (q4) | ~40 GB | 128K | Usually needs a 64 GB-or-larger machine |
+| `deepseek-r1:32b` | ~20 GB | 128K | Validate JSON reliability with your server and quantization |
+| `llama3.1:8b` | ~5 GB | 128K | Fast and compact, but expect weaker diagnostic reliability |
+| `mistral-small:22b` | ~14 GB | 32K | Reduce `SBI_TOKEN_BUDGET` to fit the smaller context |
 
-> **Note:** Local models are slower (~5-15 tok/s vs ~80-100 tok/s cloud) and less reliable at structured JSON output. The heuristic floor ensures you always get useful results even if the local LLM produces lower-quality findings. Use `SBI_TOKEN_BUDGET` to reduce context size for models with smaller windows.
+> **Note:** Local performance and structured-JSON reliability vary by model,
+> quantization, server, and hardware. The heuristic floor still produces useful
+> results if the local LLM fails, and `SBI_TOKEN_BUDGET` can be reduced for
+> models with smaller usable context windows.
 
 ### Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
-| `OPENAI_API_KEY` | — | API key. Required for cloud mode. For local mode, any non-empty value works (or omit entirely). |
-| `SBI_AI_MODEL` | `gpt-4o` | Chat model identifier. For Ollama, use the model tag (e.g. `qwen2.5:32b`). |
+| `OPENAI_API_KEY` | — | API key for cloud LLM calls or OpenAI embeddings. It is never forwarded to a local LLM endpoint. |
+| `SBI_LLM_API_KEY` | `local` | Optional credential for an authenticated `SBI_LLM_URL`; local mode uses a non-secret placeholder when omitted. |
+| `SBI_AI_MODEL` | `gpt-5.6-terra` | Chat model identifier. For Ollama, use the model tag (e.g. `qwen2.5:32b`). |
 | `SBI_LLM_BACKEND` | `openai` | LLM backend: `openai` (cloud) or `local` (Ollama, llama.cpp, vLLM, LM Studio). |
 | `SBI_LLM_URL` | auto | LLM API base URL. Defaults to `https://api.openai.com/v1` for cloud, `http://localhost:11434/v1` for local. |
 | `SBI_TOKEN_BUDGET` | `100000` | Max tokens of context per AI seed call. Reduce for local models with smaller windows (e.g. `20000`). |
@@ -131,12 +145,13 @@ SBI_TOKEN_BUDGET=20000
 | `SBI_EMBEDDING_URL` | `http://localhost:8080` | URL of the local embedding service. Change to `http://localhost:11434` for Ollama. |
 | `SBI_EMBEDDING_MODEL` | `text-embedding-3-small` | Model name passed to Ollama (TEI ignores this — model is baked into the server). |
 
-Put these in a `.env` file in the project root (it's gitignored):
+Put these in a `.env` file in the directory from which you run SBI (or a parent
+directory). In a source checkout, the project-root `.env` is gitignored.
 
 ```bash
 # .env — Cloud mode (default)
 OPENAI_API_KEY=sk-proj-...
-SBI_AI_MODEL=gpt-4o
+SBI_AI_MODEL=gpt-5.6-terra
 SBI_EMBEDDING_BACKEND=local     # or: openai | none
 SBI_EMBEDDING_URL=http://localhost:8080
 ```
@@ -288,16 +303,18 @@ When you run `rat`, it checks whether a local embedding service is reachable. If
   Select [1]:
 ```
 
-Choosing TEI will start the Docker container and write the settings to `.env`. Choosing OpenAI or None writes the setting to `.env`. The choice persists across runs.
+Choosing TEI will start the Docker container and write the settings to `.env` in the caller's current working directory. Choosing OpenAI or None writes its setting there as well. The choice persists across runs from that directory.
 
 ---
 
 ## Testing
 
 ```bash
-npm run unit               # 3800+ tests across 97 files
+npm run unit               # 3,800+ tests across 99 files
 npm run lint               # zero-warning ESLint
 npm run typecheck          # tsc --noEmit
+npm audit --omit=dev       # production dependency advisories
+npm run pack:smoke         # clean pack/install/import/bin verification
 ```
 
 ### Evaluation and benchmarks
@@ -307,7 +324,7 @@ npm run build
 npm run eval:golden               # golden eval scorecard across all 9 scenarios
 npm run eval:cassette             # AI replay eval using recorded LLM cassettes
 npm run audit                     # full self-test: dedup invariants + confidence quality
-npm run benchmark:hypotheses      # heuristic diagnosis quality across all scenarios
+npm run benchmark:hypotheses      # top-1 diagnosis accuracy + confidence calibration
 npm run benchmark:retrieval       # P@5, R@5, MRR for graph + lexical retrieval
 npm run test:robustness           # corrupt/truncated/oversized/partial bundle tests
 npm run test:sensitive            # sensitive-data leakage protection tests
@@ -321,14 +338,14 @@ Nine failure scenarios in `test/fixtures/scenarios/`:
 | Scenario | Root Cause | Top Diagnosis | Confidence |
 |---|---|---|---|
 | **wrong-db-endpoint** | `DB_HOST` points to non-existent DNS name | dns-failure | 1.00 (strong) |
-| **missing-secret-crashloop** | `app-credentials` Secret absent | missing-secret | 1.00 (strong) |
+| **missing-secret-crashloop** | `app-credentials` Secret absent | missing-secret | 0.95 (strong) |
 | **bad-image-tag** | Image tag `myapp:v999.99.99` doesn't exist | image-pull-failure | 0.95 (strong) |
 | **pvc-pending** | PVC references non-existent StorageClass | volume-mount-failure | 0.95 (strong) |
 | **ghost-service** | Cross-namespace DNS failure (staging Service) | crashloop | 1.00 (moderate) |
 | **network-policy-deny** | NetworkPolicy blocks all egress | network-policy-block | 0.98 (moderate) |
 | **node-taint-memory-pressure** | NoSchedule taint + MemoryPressure | scheduling-failure | 0.90 (moderate) |
 | **helm-release-failure** | Failed Helm hook CrashLoopBackOff | crashloop | 1.00 (moderate) |
-| **multi-namespace-retrieval** | Multi-namespace DNS + auth failures | dns-failure | 0.90 (moderate) |
+| **multi-namespace-retrieval** | Multi-namespace DNS + auth failures | dns-failure | 0.89 (moderate) |
 
 `realistic-bundle-format/` is additionally used as a format-validation fixture.
 
@@ -344,9 +361,9 @@ tar czf /tmp/pvc.tar.gz pvc-pending/
 tar czf /tmp/ghost-service.tar.gz ghost-service/
 tar czf /tmp/netpol.tar.gz network-policy-deny/
 
-npx sbi analyze /tmp/wrong-db.tar.gz --no-ai
-npx sbi analyze /tmp/missing-secret.tar.gz --format json --output-dir ./out
-npx sbi analyze /tmp/netpol.tar.gz --no-ai --debug --output-dir ./debug-out
+node dist/cli/run.mjs analyze /tmp/wrong-db.tar.gz --no-ai
+node dist/cli/run.mjs analyze /tmp/missing-secret.tar.gz --format json --output-dir ./out
+node dist/cli/run.mjs analyze /tmp/netpol.tar.gz --no-ai --debug --output-dir ./debug-out
 ```
 
 ---
@@ -364,11 +381,11 @@ When `--output-dir` is set, all three report files are written:
 | `provenance.json` | JSON | Per-finding provenance metadata (only in `--debug` mode). Maps each finding to its originating investigator, seed, confidence adjustments, and merge lineage. |
 
 ```bash
-npx sbi analyze bundle.tar.gz --output-dir ./reports --trace
+node dist/cli/run.mjs analyze bundle.tar.gz --output-dir ./reports --trace
 ls reports/
 # findings.json  report.md  report.html  trace.json
 
-npx sbi analyze bundle.tar.gz --output-dir ./reports --debug
+node dist/cli/run.mjs analyze bundle.tar.gz --output-dir ./reports --debug
 ls reports/
 # findings.json  report.md  report.html  trace.json  provenance.json
 ```
@@ -425,9 +442,9 @@ bundle.tar.gz
          +--> Hypothesis engine (declarative templates + evidence rules, 3-5 competing hypotheses per symptom)
          +--> Cross-symptom correlation (cluster-wide meta-findings for convergent root causes)
          +--> Verifier (contradictions, confidence adjustment, confidenceQuality)
-         +--> Orchestrator merge (Pass 1 structural merge -> Pass 2 title dedup -> symptom suppression)
+         +--> Orchestrator merge (Pass 1 structural merge -> Pass 2 incident-aware title dedup -> symptom suppression)
          |
-         +--> Sort by severity + confidence
+         +--> Sort by severity + diagnostic/root-cause tier + confidence
   |
   +--> Report (JSON + Markdown + HTML + TUI)
          specRecommendations: what to add to your bundle spec
@@ -502,8 +519,11 @@ support-bundle-investigator/
 |   +-- integration/                # Pipeline, robustness, sensitive-data, perf tests
 |   +-- e2e/                        # End-to-end scenario tests
 +-- scripts/
+|   +-- audit-findings.mjs          # Structural finding/dedup audit across scenarios
 |   +-- benchmark-hypotheses.mjs    # Diagnosis quality benchmark
 |   +-- benchmark-retrieval.mjs     # Retrieval precision/recall benchmark
+|   +-- package-smoke.mjs           # Pack/install/import/bin release verification
+|   +-- record-cassettes.mjs        # Sanitized AI cassette recording workflow
 +-- docs/
 |   +-- support_bundle_investigator_prd_v2.md  # Product requirements doc
 |   +-- evals.md                               # Evaluation and testing reference
@@ -544,13 +564,15 @@ Arguments:
 Options:
   --no-build          Skip auto-build check
   --no-embedding-setup  Skip embedding setup prompt (useful in CI or scripts)
+  -V, --version       Print the version
+  -h, --help          Show this help
 ```
 
 ---
 
 ## Design Decisions
 
-**Local-first.** Support bundles contain sensitive cluster data. All heuristic analysis runs locally — no data leaves your machine. AI investigation (LLM calls) is additive and optional. Both the LLM and embedding backends can run entirely locally via Ollama, llama.cpp, or TEI — set `SBI_LLM_BACKEND=local` for a fully offline, air-gapped deployment.
+**Local-first.** Support bundles contain sensitive cluster data. All heuristic analysis runs locally — no data leaves your machine. AI investigation (LLM calls) is additive and optional. Both the LLM and embedding backends can run entirely locally via Ollama, llama.cpp, or TEI; point both configured endpoint URLs at services on infrastructure you control for an offline deployment.
 
 **Heuristic precision floor.** Five deterministic investigators (Kubernetes, Log, Config, Service, NetworkPolicy) provide reliable offline analysis. AI findings are merged on top, never replacing the heuristic baseline.
 
@@ -562,7 +584,7 @@ Options:
 
 **Confidence quality, not just a number.** Every finding carries `confidenceQuality: strong | moderate | weak` alongside the numeric confidence. `81% (weak)` means the number could shift significantly with more bundle data; `100% (strong)` means it's well-grounded across multiple independent sources. Confidence calibration is regression-tested with monotonicity, penalty, and scenario-ranking unit tests.
 
-**Two-pass dedup architecture.** Final finding consolidation is explicit and documented: Pass 1 performs structural component/family merges with evidence absorption, Pass 2 performs title-based cosmetic dedup, and symptom suppression runs afterward as a separate step.
+**Two-pass dedup architecture.** Final finding consolidation is explicit and documented: Pass 1 performs structural component/family merges with evidence absorption, Pass 2 treats normalized titles as candidates but merges only findings tied to the same incident, and symptom suppression runs afterward as a separate step.
 
 **DiagnosticGraph.** A unified graph replaces two disconnected legacy graphs. It combines structural K8s edges (owner-refs, label-selectors, service-selectors), causal edges (from template matching and investigators), and temporal edges (log chunk ↔ event correlations, sequential event causality). Graph traversal for AI retrieval uses this richer edge set.
 
@@ -578,7 +600,7 @@ Options:
 
 **Cassette record/replay.** AI investigation calls can be recorded to disk (`SBI_AI_MODE=record`) and replayed deterministically (`SBI_AI_MODE=replay`). This enables cost-free CI regression testing of the AI path without API credentials.
 
-**Sensitive-data protection.** Prompts and report output are sanitized to prevent leakage of base64 secret values, passwords, API keys, and tokens from bundle data. Integration tests verify that canary values planted in fixtures never appear in findings, reports, or prompts.
+**Sensitive-data protection.** Redaction is best-effort: common credential patterns and Kubernetes Secret payloads are removed from prompts and report output. Integration tests verify that representative canary values planted in fixtures never appear in findings, reports, or prompts.
 
 **Robustness.** The pipeline is tested against corrupt archives, truncated gzip streams, empty bundles, partial bundles (missing entire artifact categories), malformed YAML/JSON resources, oversized archives, and bundles with 500+ tiny files. The system either fails with a clear error message or degrades gracefully with partial results — it never crashes silently.
 

@@ -21,7 +21,15 @@ export interface TUIOptions {
   noAi?: boolean;
   /** Capture a detailed investigation trace. */
   trace?: boolean;
+  /** Preserve provenance and diagnostic artifacts; implies trace/verbose. */
+  debug?: boolean;
 }
+
+/** Final status returned to CLI callers after the interactive UI exits. */
+export type TUIOutcome =
+  | { ok: true }
+  | { ok: false; cancelled: true }
+  | { ok: false; cancelled?: false; error: string };
 
 // Re-export progress step status so consumers don't need to import from the
 // component layer, keeping the dependency graph clean.

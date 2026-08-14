@@ -348,6 +348,34 @@ describe('correlateEventsWithPod', () => {
     expect(correlated.find((e) => e.involvedObject.name === 'other-pod')).toBeUndefined();
   });
 
+  it('uses namespace when supplied so same-name pods do not cross-correlate', () => {
+    const events: K8sEvent[] = [
+      makeEvent({
+        reason: 'FailedMount',
+        involvedObject: { kind: 'Pod', name: 'app-pod', namespace: 'team-a' },
+      }),
+      makeEvent({
+        reason: 'BackOff',
+        involvedObject: { kind: 'Pod', name: 'app-pod', namespace: 'team-b' },
+      }),
+    ];
+
+    const correlated = correlateEventsWithPod(events, 'app-pod', 'team-b');
+
+    expect(correlated).toHaveLength(1);
+    expect(correlated[0]?.reason).toBe('BackOff');
+  });
+
+  it('treats an omitted event namespace as default when filtering by namespace', () => {
+    const event = makeEvent({
+      reason: 'Scheduled',
+      involvedObject: { kind: 'Pod', name: 'app-pod' },
+    });
+
+    expect(correlateEventsWithPod([event], 'app-pod', 'default')).toEqual([event]);
+    expect(correlateEventsWithPod([event], 'app-pod', 'other')).toHaveLength(0);
+  });
+
   it('does not return non-Pod events even with matching name', () => {
     // Deployment with same name as pod — should not be returned
     const events: K8sEvent[] = [

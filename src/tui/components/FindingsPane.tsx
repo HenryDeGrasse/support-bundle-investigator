@@ -7,6 +7,7 @@ import {
   confidenceBar,
   sourceTag,
   truncateTitle,
+  calculateViewport,
 } from '../helpers.js';
 import { humanizeTitle } from '../../reporters/display-helpers.js';
 import { Pane } from './Pane.js';
@@ -29,6 +30,10 @@ export interface FindingsPaneProps {
    * rendered with a `→` causal chain indicator.
    */
   causalChildIds?: ReadonlySet<string>;
+  /** Maximum finding rows that fit in the pane body. */
+  maxVisibleRows?: number;
+  /** Maximum title width after fixed metadata columns. */
+  maxTitleLength?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -54,7 +59,13 @@ export function FindingsPane({
   selectedIndex,
   focused,
   causalChildIds,
+  maxVisibleRows,
+  maxTitleLength = 40,
 }: FindingsPaneProps): React.ReactElement {
+  const capacity = maxVisibleRows ?? Math.max(1, findings.length);
+  const viewport = calculateViewport(findings.length, selectedIndex, capacity);
+  const visibleFindings = findings.slice(viewport.start, viewport.end);
+
   return (
     <Pane title="Findings" focused={focused}>
       {/* Column header */}
@@ -71,7 +82,8 @@ export function FindingsPane({
           <Text color="gray">No findings.</Text>
         </Box>
       ) : (
-        findings.map((finding, index) => {
+        visibleFindings.map((finding, visibleIndex) => {
+          const index = viewport.start + visibleIndex;
           const isSelected = index === selectedIndex;
           const color = severityColor(finding.severity);
           const label = formatSeverityLabel(finding.severity).padEnd(9);
@@ -79,7 +91,10 @@ export function FindingsPane({
           const tag = sourceTag(finding.id).padEnd(4);
           // Reserve 2 chars for chain indicator; reduce title space by 2 to compensate
           const isCausalEffect = causalChildIds?.has(finding.id) ?? false;
-          const title = truncateTitle(humanizeTitle(finding.title), isCausalEffect ? 38 : 40);
+          const title = truncateTitle(
+            humanizeTitle(finding.title),
+            Math.max(1, maxTitleLength - (isCausalEffect ? 2 : 0)),
+          );
 
           return (
             <Box key={finding.id}>
@@ -100,6 +115,13 @@ export function FindingsPane({
             </Box>
           );
         })
+      )}
+
+      {findings.length > capacity && (
+        <Text color="gray" dimColor>
+          {' '}
+          Showing {viewport.start + 1}–{viewport.end} of {findings.length}
+        </Text>
       )}
     </Pane>
   );

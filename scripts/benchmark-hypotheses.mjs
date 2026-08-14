@@ -257,12 +257,17 @@ function printConfidenceCalibration(allFindingStats) {
     );
   }
 
-  // ── Overall accuracy ─────────────────────────────────────────────────────
+  // ── Expected-category prevalence ────────────────────────────────────────
+  // Differential diagnosis intentionally includes competing alternatives, so
+  // this is not an overall diagnosis-accuracy metric. It is useful only as a
+  // supporting calibration signal: the expected root category should be more
+  // concentrated in higher-confidence bands.
   const totalAll = allFindingStats.length;
   const correctAll = allFindingStats.filter((s) => s.correct).length;
   if (totalAll > 0) {
     console.log(
-      `\nOverall accuracy: ${correctAll}/${totalAll} = ${((correctAll / totalAll) * 100).toFixed(1)}%`,
+      `\nExpected-category share across all competing findings: ` +
+        `${correctAll}/${totalAll} = ${((correctAll / totalAll) * 100).toFixed(1)}%`,
     );
   }
 }
@@ -394,6 +399,15 @@ async function main() {
 
     // ── Confidence calibration (7.7) ───────────────────────────────────────
     printConfidenceCalibration(allFindingStats);
+
+    const correctTop1 = rows.filter((row) => row.correctTop1).length;
+    console.log(
+      `\nScenario top-1 accuracy: ${correctTop1}/${rows.length} = ` +
+        `${((correctTop1 / rows.length) * 100).toFixed(1)}%`,
+    );
+    if (correctTop1 !== rows.length) {
+      throw new Error('Top-1 diagnosis benchmark failed.');
+    }
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }

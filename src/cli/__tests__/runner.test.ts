@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CommanderError } from '../cli.js';
 import type { PipelineResult } from '../../pipeline/analyze.js';
 import type { RunCliOptions } from '../runner.js';
@@ -82,6 +82,10 @@ describe('runCli()', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('cleans up extracted artifacts after a successful run', async () => {
@@ -237,13 +241,45 @@ describe('runCli()', () => {
     expect(cleanupPipelineResultMock).not.toHaveBeenCalled();
   });
 
+  it('routes verbose pipeline diagnostics to stderr without contaminating stdout', async () => {
+    const result = makePipelineResult();
+    const stdoutSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    analyzeBundlePipelineMock.mockImplementation(async () => {
+      console.log('pipeline diagnostic');
+      return result;
+    });
+    writePipelineResultMock.mockImplementation(async () => {
+      console.log('{"findings":[]}');
+    });
+    cleanupPipelineResultMock.mockResolvedValue();
+    parseArgsMock.mockReturnValue({
+      bundlePath: '/tmp/bundle.tar.gz',
+      format: 'json',
+      outputDir: undefined,
+      verbose: true,
+      trace: false,
+      debug: false,
+      noAi: false,
+      tui: false,
+    });
+
+    await expect(runCli(['node', 'sbi', 'analyze', '/tmp/bundle.tar.gz'])).resolves.toBe(0);
+
+    expect(console.error).toHaveBeenCalledWith('pipeline diagnostic');
+    expect(stdoutSpy).toHaveBeenCalledTimes(1);
+    expect(stdoutSpy).toHaveBeenCalledWith('{"findings":[]}');
+  });
+
   // ── TUI mode tests ────────────────────────────────────────────────────────
 
   it('calls renderTUI with correct args when --tui flag is set and loadTUI is provided', async () => {
-    const renderTUIMock = vi.fn().mockResolvedValue(undefined);
+    const renderTUIMock = vi.fn().mockResolvedValue({ ok: true });
     const loadTUIMock = vi.fn().mockResolvedValue({ renderTUI: renderTUIMock });
 
-    const options: RunCliOptions = { loadTUI: loadTUIMock };
+    const options: RunCliOptions = {
+      loadTUI: loadTUIMock,
+      isInteractiveTerminal: () => true,
+    };
 
     parseArgsMock.mockReturnValue({
       bundlePath: '/tmp/bundle.tar.gz',
@@ -307,7 +343,10 @@ describe('runCli()', () => {
     });
 
     await expect(
-      runCli(['node', 'sbi', 'analyze', '/tmp/bundle.tar.gz', '--tui'], { loadTUI: loadTUIMock }),
+      runCli(['node', 'sbi', 'analyze', '/tmp/bundle.tar.gz', '--tui'], {
+        loadTUI: loadTUIMock,
+        isInteractiveTerminal: () => true,
+      }),
     ).resolves.toBe(1);
 
     expect(loadTUIMock).toHaveBeenCalledOnce();
@@ -323,9 +362,78 @@ describe('runCli()', () => {
     expect(cleanupPipelineResultMock).not.toHaveBeenCalled();
   });
 
+  it('fails fast without loading the TUI when the terminal is non-interactive', async () => {
+    const loadTUIMock = vi.fn();
+    parseArgsMock.mockReturnValue({
+      bundlePath: '/tmp/bundle.tar.gz',
+      format: 'text',
+      outputDir: undefined,
+      verbose: false,
+      trace: false,
+      debug: false,
+      noAi: false,
+      tui: true,
+    });
+
+    await expect(
+      runCli(['node', 'sbi', 'analyze', '/tmp/bundle.tar.gz', '--tui'], {
+        loadTUI: loadTUIMock,
+        isInteractiveTerminal: () => false,
+      }),
+    ).resolves.toBe(1);
+
+    expect(loadTUIMock).not.toHaveBeenCalled();
+    expect(console.error).toHaveBeenCalledWith('Error: --tui requires an interactive terminal.');
+  });
+
+  it('propagates a rendered TUI pipeline failure as a nonzero exit', async () => {
+    const renderTUIMock = vi.fn().mockResolvedValue({ ok: false, error: 'analysis failed' });
+    const loadTUIMock = vi.fn().mockResolvedValue({ renderTUI: renderTUIMock });
+    parseArgsMock.mockReturnValue({
+      bundlePath: '/tmp/bundle.tar.gz',
+      format: 'text',
+      outputDir: undefined,
+      verbose: false,
+      trace: false,
+      debug: false,
+      noAi: false,
+      tui: true,
+    });
+
+    await expect(
+      runCli(['node', 'sbi', 'analyze', '/tmp/bundle.tar.gz', '--tui'], {
+        loadTUI: loadTUIMock,
+        isInteractiveTerminal: () => true,
+      }),
+    ).resolves.toBe(1);
+    expect(console.error).toHaveBeenCalledWith('Error:', 'analysis failed');
+  });
+
+  it('uses the conventional SIGINT exit code for TUI cancellation', async () => {
+    const renderTUIMock = vi.fn().mockResolvedValue({ ok: false, cancelled: true });
+    const loadTUIMock = vi.fn().mockResolvedValue({ renderTUI: renderTUIMock });
+    parseArgsMock.mockReturnValue({
+      bundlePath: '/tmp/bundle.tar.gz',
+      format: 'text',
+      outputDir: undefined,
+      verbose: false,
+      trace: false,
+      debug: false,
+      noAi: false,
+      tui: true,
+    });
+
+    await expect(
+      runCli(['node', 'sbi', 'analyze', '/tmp/bundle.tar.gz', '--tui'], {
+        loadTUI: loadTUIMock,
+        isInteractiveTerminal: () => true,
+      }),
+    ).resolves.toBe(130);
+  });
+
   it('runs the standard pipeline path when tui is false, even if loadTUI is provided', async () => {
     const result = makePipelineResult();
-    const renderTUIMock = vi.fn().mockResolvedValue(undefined);
+    const renderTUIMock = vi.fn().mockResolvedValue({ ok: true });
     const loadTUIMock = vi.fn().mockResolvedValue({ renderTUI: renderTUIMock });
 
     const options: RunCliOptions = { loadTUI: loadTUIMock };

@@ -11,7 +11,16 @@ function withEnv(
   fn: () => void,
 ): void {
   const managedVars: Record<string, string | undefined> = {
+    OPENAI_API_KEY: undefined,
     SBI_AI_MODE: undefined,
+    SBI_AI_MODEL: undefined,
+    SBI_LLM_BACKEND: undefined,
+    SBI_LLM_API_KEY: undefined,
+    SBI_LLM_URL: undefined,
+    SBI_TOKEN_BUDGET: undefined,
+    SBI_EMBEDDING_MODEL: undefined,
+    SBI_EMBEDDING_BACKEND: undefined,
+    SBI_EMBEDDING_URL: undefined,
     ...vars,
   };
   const originals: Record<string, string | undefined> = {};
@@ -51,10 +60,12 @@ describe('loadAIConfig()', () => {
         SBI_EMBEDDING_MODEL: undefined,
         SBI_EMBEDDING_BACKEND: undefined,
         SBI_EMBEDDING_URL: undefined,
+        SBI_LLM_BACKEND: undefined,
+        SBI_LLM_API_KEY: undefined,
       },
       () => {
         const config = loadAIConfig();
-        expect(config.model).toBe('gpt-4o');
+        expect(config.model).toBe('gpt-5.6-terra');
         expect(config.embeddingModel).toBe('text-embedding-3-small');
         expect(config.embeddingBackend).toBe('local');
         expect(config.embeddingUrl).toBe('http://localhost:8080');
@@ -117,11 +128,52 @@ describe('loadAIConfig()', () => {
     });
   });
 
-  it('treats unknown SBI_EMBEDDING_BACKEND values as local', () => {
+  it('rejects unknown SBI_EMBEDDING_BACKEND values', () => {
     withEnv({ SBI_EMBEDDING_BACKEND: 'some-unknown-backend' }, () => {
-      const config = loadAIConfig();
-      expect(config.embeddingBackend).toBe('local');
+      expect(() => loadAIConfig()).toThrow(
+        'Invalid SBI_EMBEDDING_BACKEND "some-unknown-backend"',
+      );
     });
+  });
+
+  it('rejects unknown SBI_LLM_BACKEND values instead of falling back to cloud', () => {
+    withEnv(
+      { OPENAI_API_KEY: 'sk-cloud-key', SBI_LLM_BACKEND: 'locla' },
+      () => {
+        expect(() => loadAIConfig()).toThrow('Invalid SBI_LLM_BACKEND "locla"');
+      },
+    );
+  });
+
+  it('never uses OPENAI_API_KEY as the local LLM credential', () => {
+    withEnv(
+      {
+        OPENAI_API_KEY: 'sk-cloud-key',
+        SBI_LLM_BACKEND: 'local',
+        SBI_LLM_API_KEY: undefined,
+      },
+      () => {
+        const config = loadAIConfig();
+        expect(config.enabled).toBe(true);
+        expect(config.apiKey).toBe('sk-cloud-key');
+        expect(config.llmApiKey).toBe('local');
+      },
+    );
+  });
+
+  it('uses SBI_LLM_API_KEY only for the local LLM endpoint', () => {
+    withEnv(
+      {
+        OPENAI_API_KEY: 'sk-cloud-key',
+        SBI_LLM_BACKEND: 'local',
+        SBI_LLM_API_KEY: 'local-server-token',
+      },
+      () => {
+        const config = loadAIConfig();
+        expect(config.apiKey).toBe('sk-cloud-key');
+        expect(config.llmApiKey).toBe('local-server-token');
+      },
+    );
   });
 
   it('reads SBI_EMBEDDING_URL from env', () => {
@@ -167,6 +219,14 @@ describe('loadAIConfig()', () => {
       const config = loadAIConfig({ aiProvider: ' OpenAI ' });
       expect(config.enabled).toBe(true);
       expect(config.provider).toBe('openai');
+    });
+  });
+
+  it('rejects unknown provider overrides instead of enabling cloud AI', () => {
+    withEnv({ OPENAI_API_KEY: 'sk-valid-key' }, () => {
+      expect(() => loadAIConfig({ aiProvider: 'opneai' })).toThrow(
+        'Invalid AI provider "opneai"',
+      );
     });
   });
 

@@ -2,8 +2,7 @@
  * Lexical retrieval precision/recall tests — Phase 2 quality gate.
  *
  * These tests exercise `LexicalSearchIndex` against realistic multi-namespace
- * fixture data.  Tests that depend on later Phase 2 steps are marked
- * `it.skip()` with an explicit comment identifying the enabling step.
+ * fixture data, including the completed BM25 quality gate.
  *
  * Fixture sources:
  *   - `missing-secret-crashloop`  — app-pod + FailedMount event (signal)
@@ -411,42 +410,45 @@ describe('lexical retrieval — CrashLoopBackOff app-pod', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Test suite 4: BM25 scoring quality gate (SKIPPED: needs step-12)
-//
-// SKIP — depends on:
-//   step-12 (2.1): replace raw TF scoring with BM25
+// Test suite 4: BM25 scoring quality gate
 //
 // BM25 normalises term frequency by document length so that long chunks
 // (e.g. full JSON resources) don't dominate short, precise error messages.
 // ---------------------------------------------------------------------------
 
-describe('lexical retrieval — BM25 scoring (SKIPPED: needs step-12)', () => {
-  it.skip(
-    // step-12 (2.1): With raw TF scoring, a long JSON resource that happens
-    //   to contain 'app-credentials' once ranks similarly to the short event
-    //   message that mentions it three times.  BM25 normalises by document
-    //   length, so the dense event message ranks higher than the sparse
-    //   resource JSON.
-    'FailedMount event ranks above long resource JSON for single-term query (needs step-12 BM25)',
+describe('lexical retrieval — BM25 scoring', () => {
+  it(
+    'ranks a short dense match above a long sparse match',
     () => {
+      const shortDenseChunk: IndexedChunk = {
+        id: 'test:bm25-short-dense',
+        artifactId: 'events/short.txt',
+        artifactCategory: 'event',
+        startLine: 1,
+        endLine: 1,
+        summary: 'Short dense match',
+        identifiers: [],
+        content: 'app-credentials app-credentials mount failed',
+      };
+      const longSparseChunk: IndexedChunk = {
+        id: 'test:bm25-long-sparse',
+        artifactId: 'resources/long.json',
+        artifactCategory: 'kubernetes-resource',
+        startLine: 1,
+        endLine: 1,
+        summary: 'Long sparse match',
+        identifiers: [],
+        content: `app-credentials ${'unrelated configuration '.repeat(250)}`,
+      };
       const index = new LexicalSearchIndex();
-      index.build(missingSecretChunks);
+      index.build([longSparseChunk, shortDenseChunk]);
 
-      const results = index.search('app-credentials', 10);
-      const eventResult = results.find(
-        (r) => r.chunk.artifactCategory === 'event' && r.chunk.identifiers.includes('FailedMount'),
-      );
-      const resourceResult = results.find(
-        (r) =>
-          r.chunk.artifactCategory === 'kubernetes-resource' &&
-          r.chunk.identifiers.includes('app-credentials'),
-      );
-
-      // After BM25: the event chunk (short, dense match) should rank near the
-      // resource chunk (long JSON with one match).  The assertion below may
-      // be relaxed once BM25 is wired.
-      expect(eventResult).toBeDefined();
-      expect(resourceResult).toBeDefined();
+      const results = index.search('app-credentials', 2);
+      expect(results.map((result) => result.chunk.id)).toEqual([
+        shortDenseChunk.id,
+        longSparseChunk.id,
+      ]);
+      expect(results[0]!.score).toBeGreaterThan(results[1]!.score);
     },
   );
 });

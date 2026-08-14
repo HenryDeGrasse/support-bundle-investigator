@@ -11,17 +11,20 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mockCreate = vi.fn();
 
 vi.mock('openai', () => ({
-  default: vi.fn().mockImplementation(() => ({
-    chat: {
-      completions: {
-        create: mockCreate,
+  default: vi.fn().mockImplementation(function MockOpenAI() {
+    return {
+      chat: {
+        completions: {
+          create: mockCreate,
+        },
       },
-    },
-  })),
+    };
+  }),
 }));
 
 import { LLMClient } from '../llm-client.js';
 import type { AIConfig } from '../config.js';
+import OpenAI from 'openai';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -87,6 +90,7 @@ function makeApiResponse(
 
 beforeEach(() => {
   mockCreate.mockReset();
+  vi.mocked(OpenAI).mockClear();
 });
 
 
@@ -97,6 +101,91 @@ beforeEach(() => {
 describe('LLMClient — construction', () => {
   it('can be instantiated with a valid AIConfig', () => {
     expect(() => new LLMClient(TEST_CONFIG)).not.toThrow();
+  });
+
+  it('never forwards the cloud key to a local LLM endpoint', () => {
+    new LLMClient({
+      ...TEST_CONFIG,
+      apiKey: 'sk-cloud-secret',
+      llmBackend: 'local',
+      llmUrl: 'http://localhost:11434/v1',
+    });
+
+    expect(OpenAI).toHaveBeenCalledWith({
+      apiKey: 'local',
+      baseURL: 'http://localhost:11434/v1',
+    });
+  });
+
+  it('uses the explicit local LLM key without exposing the cloud key', () => {
+    new LLMClient({
+      ...TEST_CONFIG,
+      apiKey: 'sk-cloud-secret',
+      llmApiKey: 'local-server-token',
+      llmBackend: 'local',
+      llmUrl: 'http://localhost:11434/v1',
+    });
+
+    expect(OpenAI).toHaveBeenCalledWith({
+      apiKey: 'local-server-token',
+      baseURL: 'http://localhost:11434/v1',
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Outbound request boundary
+// ---------------------------------------------------------------------------
+
+describe('LLMClient — outbound request boundary', () => {
+  it('adds reasoning_effort none to both GPT-5.6 cloud request types', async () => {
+    mockCreate
+      .mockResolvedValueOnce({ choices: [{ message: { content: 'generated' } }] })
+      .mockResolvedValueOnce(makeApiResponse([]));
+
+    const client = new LLMClient({ ...TEST_CONFIG, model: 'gpt-5.6-terra' });
+    await client.generateText('system', 'user');
+    await client.investigateSeed('system', 'user');
+
+    expect(mockCreate).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ model: 'gpt-5.6-terra', reasoning_effort: 'none' }),
+    );
+    expect(mockCreate).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ model: 'gpt-5.6-terra', reasoning_effort: 'none' }),
+    );
+  });
+
+  it('does not send cloud-only reasoning options to local endpoints', async () => {
+    mockCreate.mockResolvedValueOnce({ choices: [{ message: { content: 'generated' } }] });
+
+    const client = new LLMClient({
+      ...TEST_CONFIG,
+      model: 'gpt-5.6-terra',
+      llmBackend: 'local',
+      llmUrl: 'http://localhost:11434/v1',
+    });
+    await client.generateText('system', 'user');
+
+    expect(mockCreate.mock.calls[0]![0]).not.toHaveProperty('reasoning_effort');
+  });
+
+  it('sanitizes system and user prompts for every chat completion call', async () => {
+    mockCreate
+      .mockResolvedValueOnce({ choices: [{ message: { content: 'generated' } }] })
+      .mockResolvedValueOnce(makeApiResponse([]));
+
+    const client = new LLMClient(TEST_CONFIG);
+    const rawApiKey = ['sk', 'proj', 'abcdefghijklmnopqrstuvwxyz123456'].join('-');
+    const rawPassword = 'raw-database-password';
+    await client.generateText(`OPENAI_API_KEY=${rawApiKey}`, `password=${rawPassword}`);
+    await client.investigateSeed(`Authorization: Bearer ${rawApiKey}`, `password=${rawPassword}`);
+
+    const outboundRequests = JSON.stringify(mockCreate.mock.calls);
+    expect(outboundRequests).not.toContain(rawApiKey);
+    expect(outboundRequests).not.toContain(rawPassword);
+    expect(outboundRequests).toContain('[REDACTED]');
   });
 });
 
@@ -162,7 +251,7 @@ describe('LLMClient.investigateSeed — happy path', () => {
       promptTokens: 123,
       completionTokens: 45,
     });
-    expect(result.telemetry?.estimatedCostUsd).toBeCloseTo(0.00129, 6);
+    expect(result.telemetry?.estimatedCostUsd).toBeCloseTo(0.000758, 6);
   });
 
   it('returns multiple findings when API returns multiple', async () => {

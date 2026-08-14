@@ -6,7 +6,13 @@ import * as os from 'os';
 import * as zlib from 'zlib';
 import { promisify } from 'util';
 import * as tar from 'tar';
-import { extractBundle } from '../extractor.js';
+import {
+  DEFAULT_MAX_ENTRIES,
+  DEFAULT_MAX_ENTRY_SIZE,
+  DEFAULT_MAX_PATH_LENGTH,
+  DEFAULT_MAX_UNCOMPRESSED_SIZE,
+  extractBundle,
+} from '../extractor.js';
 import * as manifestModule from '../manifest.js';
 
 const gzip = promisify(zlib.gzip);
@@ -166,6 +172,16 @@ describe('extractBundle', () => {
     await expect(extractBundle(zipPath)).rejects.toThrow(/\.tar\.gz/);
   });
 
+  it('accepts a case-insensitive .tar.gz extension consistently with RAT', async () => {
+    const upperCasePath = path.join(tmpDir, 'bundle.TAR.GZ');
+    await fsp.copyFile(validBundlePath, upperCasePath);
+
+    const manifest = await extractBundle(upperCasePath);
+    expect(manifest.bundlePath).toBe(path.resolve(upperCasePath));
+
+    fs.rmSync(manifest.extractedPath, { recursive: true, force: true });
+  });
+
   it('handles empty archive gracefully', async () => {
     const emptyPath = path.join(tmpDir, 'empty.tar.gz');
     await createEmptyTarGz(emptyPath);
@@ -181,6 +197,52 @@ describe('extractBundle', () => {
 
   it('enforces maxSize when provided', async () => {
     await expect(extractBundle(validBundlePath, { maxSize: 1 })).rejects.toThrow(/maxSize/i);
+  });
+
+  it('applies finite archive safety limits by default', () => {
+    expect(DEFAULT_MAX_UNCOMPRESSED_SIZE).toBe(5 * 1024 * 1024 * 1024);
+    expect(DEFAULT_MAX_ENTRY_SIZE).toBe(1024 * 1024 * 1024);
+    expect(DEFAULT_MAX_ENTRIES).toBe(100_000);
+    expect(DEFAULT_MAX_PATH_LENGTH).toBe(4_096);
+  });
+
+  it('rejects an entry that exceeds maxEntrySize before extracting', async () => {
+    const outputDir = fs.mkdtempSync(path.join(tmpDir, 'entry-limit-extracted-'));
+
+    await expect(
+      extractBundle(validBundlePath, { outputDir, maxEntrySize: 1 }),
+    ).rejects.toThrow(/maxEntrySize/i);
+
+    expect(fs.readdirSync(outputDir)).toHaveLength(0);
+  });
+
+  it('rejects archives that exceed maxEntries before extracting', async () => {
+    const outputDir = fs.mkdtempSync(path.join(tmpDir, 'count-limit-extracted-'));
+
+    await expect(
+      extractBundle(validBundlePath, { outputDir, maxEntries: 1 }),
+    ).rejects.toThrow(/maxEntries/i);
+
+    expect(fs.readdirSync(outputDir)).toHaveLength(0);
+  });
+
+  it('rejects entry paths that exceed maxPathLength before extracting', async () => {
+    const outputDir = fs.mkdtempSync(path.join(tmpDir, 'path-limit-extracted-'));
+
+    await expect(
+      extractBundle(validBundlePath, { outputDir, maxPathLength: 4 }),
+    ).rejects.toThrow(/maxPathLength/i);
+
+    expect(fs.readdirSync(outputDir)).toHaveLength(0);
+  });
+
+  it('rejects invalid archive limits before reading entries', async () => {
+    await expect(
+      extractBundle(validBundlePath, { maxEntries: Number.POSITIVE_INFINITY }),
+    ).rejects.toThrow(/maxEntries must be a non-negative safe integer/i);
+    await expect(
+      extractBundle(validBundlePath, { maxPathLength: -1 }),
+    ).rejects.toThrow(/maxPathLength must be a non-negative safe integer/i);
   });
 
   it('protects against path traversal (entries with ../ are rejected)', async () => {

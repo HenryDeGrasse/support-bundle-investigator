@@ -13,11 +13,13 @@ import {
   DEFAULT_TOKEN_BUDGET,
   computeChunkOverlap,
   deduplicateSeeds,
+  resolveSeedStartNodes,
 } from '../ai-investigator.js';
 import type { RetrievalList } from '../ai-investigator.js';
 import { estimateTokens } from '../../ai/chunk-indexer.js';
 import { generateHypotheticalDocument } from '../../ai/hyde.js';
 import type { HydeLLMClient } from '../../ai/hyde.js';
+import { DiagnosticGraph } from '../../graph/diagnostic-graph.js';
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -115,6 +117,51 @@ const VALID_AI_FINDING = {
     'Inspect container logs with `kubectl logs app-pod -n default --previous`.',
   missingEvidence: [],
 };
+
+describe('resolveSeedStartNodes', () => {
+  function makePodGraph(): DiagnosticGraph {
+    const graph = new DiagnosticGraph();
+    for (const namespace of ['team-a', 'team-b']) {
+      graph.addNode({
+        id: `Pod:${namespace}/api`,
+        nodeType: 'resource',
+        data: { kind: 'Pod', namespace, name: 'api' },
+      });
+    }
+    return graph;
+  }
+
+  it('resolves the canonical pod:namespace/name source without matching a same-named pod elsewhere', () => {
+    const graph = makePodGraph();
+    const seed = makeSeed(
+      'seed:pod:0',
+      'kubernetes',
+      'Pod api is in CrashLoopBackOff',
+      100,
+      'pod:team-b/api',
+    );
+
+    expect(resolveSeedStartNodes(seed, graph)).toEqual(['Pod:team-b/api']);
+  });
+
+  it('uses every canonical member source from a clustered seed', () => {
+    const graph = makePodGraph();
+    const first = makeSeed('seed:pod:0', 'kubernetes', 'team-a api failing', 100, 'pod:team-a/api');
+    const second = makeSeed('seed:pod:1', 'kubernetes', 'team-b api failing', 90, 'pod:team-b/api');
+    const clusteredSeed = {
+      ...first,
+      hypothesis: `${first.hypothesis}\n\nAlso investigate: ${second.hypothesis}`,
+      memberSeeds: [first, second],
+      clusterLabel: 'api failures',
+      originalPriority: first.priority,
+    };
+
+    expect(resolveSeedStartNodes(clusteredSeed, graph)).toEqual([
+      'Pod:team-a/api',
+      'Pod:team-b/api',
+    ]);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Build mock deps
@@ -2381,6 +2428,16 @@ describe('grounding verification and confidence scoring (7.1 + 7.2)', () => {
     expect(result.findings).toHaveLength(1);
     // -0.10 for one ungrounded citation: 0.9 - 0.10 = 0.80
     expect(result.findings[0]!.confidence).toBeCloseTo(0.80, 5);
+    expect(result.findings[0]!.evidence).toEqual([
+      expect.objectContaining({
+        path: 'cluster-resources/pods/default.json',
+        note: 'grounded evidence',
+      }),
+    ]);
+    expect(result.edges.map((edge) => edge.source)).toEqual([
+      'evidence:cluster-resources/pods/default.json',
+    ]);
+    expect(result.edges.some((edge) => edge.source.includes('fabricated.yaml'))).toBe(false);
   });
 
   it('applies -0.10 per ungrounded citation (two ungrounded)', async () => {

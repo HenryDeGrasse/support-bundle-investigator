@@ -1,4 +1,5 @@
 import { Command, CommanderError, InvalidArgumentError } from 'commander';
+import { VERSION } from '../version.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -73,7 +74,7 @@ export function parseArgs(argv: string[] = process.argv): ParsedArgs {
     .description(
       'Support Bundle Investigator — evidence-backed diagnosis from support bundles',
     )
-    .version('0.1.0');
+    .version(VERSION);
 
   const analyzeCmd = new Command('analyze');
   analyzeCmd

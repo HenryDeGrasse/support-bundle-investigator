@@ -83,22 +83,27 @@ const TIMESTAMP_PATTERNS: RegExp[] = [
 // ---------------------------------------------------------------------------
 
 /**
- * Returns true if the buffer content looks like binary (contains NUL bytes
- * or a high proportion of non-printable characters).
+ * Returns true if decoded content looks binary (contains NUL bytes or a high
+ * proportion of control/invalid UTF-8 characters). Printable Unicode is valid
+ * log text and must not be mistaken for binary data.
  */
 function isBinaryContent(content: string): boolean {
   // NUL byte is a clear binary indicator
   if (content.includes('\0')) return true;
 
-  // Sample the first 1 KB and check for non-printable chars
+  // Sample the first 1 KB and check for control/invalid characters. Values
+  // above the ASCII range are intentionally allowed: logs commonly contain
+  // names, messages, and emoji in UTF-8.
   const sample = content.slice(0, 1024);
   if (sample.length === 0) return false;
 
   let nonPrintable = 0;
   for (let i = 0; i < sample.length; i++) {
     const code = sample.charCodeAt(i);
-    // Allow tab (9), newline (10), carriage return (13), and printable ASCII (32-126)
-    if (code !== 9 && code !== 10 && code !== 13 && (code < 32 || code > 126)) {
+    const isAllowedWhitespace = code === 9 || code === 10 || code === 13;
+    const isControl = code < 32 || (code >= 0x7f && code <= 0x9f);
+    const isInvalidUtf8Replacement = code === 0xfffd;
+    if (!isAllowedWhitespace && (isControl || isInvalidUtf8Replacement)) {
       nonPrintable++;
     }
   }

@@ -1,6 +1,8 @@
 import type { Finding, FindingSeverity, GraphEdge, Evidence, FindingTreeNode } from '../types/index.js';
 import type { InvestigatorContext, InvestigationSeed, ClusteredSeed } from './types.js';
 import { buildFindingTree } from '../graph/finding-tree.js';
+import { buildDiagnosticGraph } from '../graph/diagnostic-graph.js';
+import type { DiagnosticGraph, DiagnosticEdgeType } from '../graph/diagnostic-graph.js';
 import { generateSeeds } from './seed-generator.js';
 import { clusterSeeds, toUnclusteredSeeds } from './seed-clusterer.js';
 import { investigateKubernetes } from './kubernetes-investigator.js';
@@ -115,6 +117,90 @@ const SEVERITY_ORDER: Record<FindingSeverity, number> = {
   info: 0,
 };
 
+const ROOT_DIAGNOSIS_FAMILIES = new Set([
+  'missing-secret',
+  'bad-db-endpoint',
+  'dns-failure',
+  'image-pull-failure',
+  'oom-kill',
+  'volume-mount-failure',
+  'missing-service',
+  'config-error',
+]);
+
+const LOW_SPECIFICITY_HYPOTHESIS_FAMILIES = new Set([
+  'generic-crash',
+  'connectivity-failure',
+  'readiness-failure',
+]);
+
+/**
+ * Returns the diagnostic display tier for a finding within its severity band.
+ * Lower values sort first: confirmed causal roots, other well-supported root
+ * diagnoses, symptoms/heuristics, then weak differential hypotheses.
+ */
+function findingDiagnosticTier(
+  finding: Finding,
+  causalRootIds: ReadonlySet<string>,
+): number {
+  const mergedFromCausalRoot = finding.provenance?.mergedFrom?.some((id) =>
+    causalRootIds.has(id),
+  ) ?? false;
+  if (
+    causalRootIds.has(finding.id) ||
+    finding.provenance?.investigator === 'graph-causal' ||
+    mergedFromCausalRoot
+  ) {
+    return 0;
+  }
+
+  const family = normalizeIssueFamilyForPass1(finding);
+
+  if (
+    finding.id.startsWith('finding:ai:') ||
+    finding.id.startsWith('finding:meta:') ||
+    (!finding.id.startsWith('finding:hypothesis:') &&
+      ROOT_DIAGNOSIS_FAMILIES.has(family))
+  ) {
+    return 1;
+  }
+
+  if (finding.id.startsWith('finding:hypothesis:')) {
+    if (
+      finding.confidence < 0.5 ||
+      LOW_SPECIFICITY_HYPOTHESIS_FAMILIES.has(family)
+    ) {
+      return 3;
+    }
+    return 1;
+  }
+  return 2;
+}
+
+/**
+ * Root-cause-aware display comparator. Severity remains the primary safety
+ * signal; within a severity band, causal/root diagnoses lead symptoms even
+ * when the symptom has a slightly higher raw confidence.
+ */
+export function compareFindingsForDisplay(
+  left: Finding,
+  right: Finding,
+  causalRootIds: ReadonlySet<string> = new Set<string>(),
+): number {
+  const severityDiff =
+    (SEVERITY_ORDER[right.severity] ?? 0) - (SEVERITY_ORDER[left.severity] ?? 0);
+  if (severityDiff !== 0) return severityDiff;
+
+  const tierDiff =
+    findingDiagnosticTier(left, causalRootIds) -
+    findingDiagnosticTier(right, causalRootIds);
+  if (tierDiff !== 0) return tierDiff;
+
+  const confidenceDiff = right.confidence - left.confidence;
+  if (confidenceDiff !== 0) return confidenceDiff;
+  return left.id.localeCompare(right.id);
+}
+
 /**
  * Issue families that represent specific diagnostic categories rather than
  * generic fallback slugs. Used for namespace-level group coalescing in Pass 1
@@ -136,6 +222,104 @@ const SPECIFIC_FAMILIES = new Set([
   'readiness-failure',
   'generic-crash',
 ]);
+
+const STRUCTURAL_RELATION_EDGES = new Set<DiagnosticEdgeType>([
+  'owner-reference',
+  'references-secret',
+  'references-configmap',
+  'references-pvc',
+  'label-selector',
+  'service-selector',
+]);
+
+/** Converts a canonical `Kind/namespace/name` component to a graph node id. */
+function componentNodeId(component: string): string | undefined {
+  const parts = component.split('/');
+  if (parts.length < 3) return undefined;
+  const [kind, namespace, ...nameParts] = parts;
+  const name = nameParts.join('/');
+  if (!kind || !namespace || !name) return undefined;
+  return `${kind}:${namespace}/${name}`;
+}
+
+/**
+ * Matches concrete component identity without treating a cluster-global label
+ * such as `DNS/hostname` as proof that incidents in different namespaces are
+ * the same. Canonical namespaced components remain globally unambiguous.
+ */
+function findingsShareComponentIdentity(left: Finding, right: Finding): boolean {
+  const rightComponents = new Set(right.affectedComponents);
+  const sharedComponents = left.affectedComponents.filter((component) =>
+    rightComponents.has(component),
+  );
+  if (sharedComponents.length === 0) return false;
+
+  if (sharedComponents.some((component) => component.split('/').length >= 3)) {
+    return true;
+  }
+
+  const leftNamespaces = findingNamespaces(left);
+  const rightNamespaces = findingNamespaces(right);
+  return (
+    leftNamespaces.size === 0 ||
+    rightNamespaces.size === 0 ||
+    setsOverlap(leftNamespaces, rightNamespaces)
+  );
+}
+
+/**
+ * Returns true when two findings identify the same component or resources
+ * connected through the Kubernetes structural graph. Traversal is undirected
+ * because a root cause may cite either the dependent Pod or the dependency it
+ * references. Depth four covers Pod → ReplicaSet → Deployment chains while
+ * remaining tightly scoped to one concrete workload/resource neighborhood.
+ */
+function findingsAreStructurallyRelated(
+  left: Finding,
+  right: Finding,
+  graph: DiagnosticGraph,
+): boolean {
+  if (findingsShareComponentIdentity(left, right)) {
+    return true;
+  }
+
+  const targets = new Set(
+    right.affectedComponents
+      .map(componentNodeId)
+      .filter((nodeId): nodeId is string => nodeId !== undefined),
+  );
+  if (targets.size === 0) return false;
+
+  const starts = left.affectedComponents
+    .map(componentNodeId)
+    .filter((nodeId): nodeId is string => nodeId !== undefined);
+
+  for (const start of starts) {
+    if (targets.has(start)) return true;
+    const queue: Array<{ nodeId: string; depth: number }> = [{ nodeId: start, depth: 0 }];
+    const visited = new Set<string>([start]);
+
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      if (current.depth >= 4) continue;
+
+      const adjacentEdges = [
+        ...graph.getEdgesFrom(current.nodeId),
+        ...graph.getEdgesTo(current.nodeId),
+      ].filter((edge) => STRUCTURAL_RELATION_EDGES.has(edge.type));
+
+      for (const edge of adjacentEdges) {
+        const next = edge.source === current.nodeId ? edge.target : edge.source;
+        if (targets.has(next)) return true;
+        if (visited.has(next)) continue;
+        visited.add(next);
+        queue.push({ nodeId: next, depth: current.depth + 1 });
+      }
+    }
+  }
+
+  return false;
+}
 
 function buildHypothesisSupportEdges(findings: Finding[]): GraphEdge[] {
   const edges: GraphEdge[] = [];
@@ -627,17 +811,16 @@ function pass1ComponentMerge(
 }
 
 // ---------------------------------------------------------------------------
-// Pass 2: Title-based dedup (cosmetic)
+// Pass 2: Incident-aware title dedup
 // ---------------------------------------------------------------------------
 //
-// Contract: one normalization strategy (strip decorators, lowercase) and one
-// merge strategy (higher confidence wins; AI findings win title collisions
-// before confidence is compared).
+// Contract: title normalization identifies possible duplicates, but findings
+// are merged only when they can be tied to the same incident. Independent
+// components and namespaces must survive even when an LLM/template uses the
+// same generic wording for both.
 //
-// This pass catches LLM wording variants (the same root-cause described with
-// slightly different words) and cross-component duplicates where the same
-// missing resource affects multiple pods (same title, different components —
-// not merged by Pass 1 which operates on component identity).
+// This pass catches duplicate descriptions of the same concrete root cause
+// that survived Pass 1, including one named resource affecting multiple pods.
 
 /**
  * **The single normalization strategy for Pass 2.**
@@ -656,60 +839,100 @@ export function normalizeTitleForPass2(title: string): string {
 }
 
 /**
- * **Pass 2: Title-based dedup.**
+ * Extracts all namespace identities represented by a finding.
  *
- * Iterates over Pass-1 output with AI findings sorted first (so they win title
- * collisions before confidence is compared). For each finding, normalises its
- * title via {@link normalizeTitleForPass2} and keeps only the first seen (or
- * the higher-confidence duplicate when a collision occurs).
+ * Components without a namespace (for example `Node/name`) are ignored here;
+ * they can still be matched by exact component identity below.
+ */
+function findingNamespaces(finding: Finding): Set<string> {
+  return new Set(
+    finding.affectedComponents
+      .map(extractNamespaceFromComponent)
+      .filter((namespace) => namespace.length > 0),
+  );
+}
+
+/** Returns true when two sets have at least one member in common. */
+function setsOverlap<T>(left: ReadonlySet<T>, right: ReadonlySet<T>): boolean {
+  for (const value of left) {
+    if (right.has(value)) return true;
+  }
+  return false;
+}
+
+/**
+ * Returns true when a title names a concrete shared object/value rather than
+ * only a generic failure class. Quoted and backtick-delimited identifiers are
+ * used throughout the deterministic and graph root-cause titles.
+ */
+function hasConcreteCauseIdentity(title: string): boolean {
+  return /(['"`])[^'"`\n]+\1/.test(title);
+}
+
+/**
+ * Determines whether an equal-title collision represents the same incident.
  *
- * This pass uses one normalization strategy ({@link normalizeTitleForPass2})
- * and one merge strategy (higher confidence wins; AI wins before confidence is
- * compared, making the pass stable when confidence values are equal).
+ * Exact affected-component overlap is always sufficient. Cross-component
+ * merging additionally requires a shared namespace and either a concrete
+ * named cause in the title or the exact same evidence citation. This preserves
+ * independent incidents that happen to use a generic hypothesis template.
+ */
+function findingsShareIncident(left: Finding, right: Finding): boolean {
+  if (findingsShareComponentIdentity(left, right)) {
+    return true;
+  }
+
+  const leftNamespaces = findingNamespaces(left);
+  const rightNamespaces = findingNamespaces(right);
+  if (!setsOverlap(leftNamespaces, rightNamespaces)) return false;
+
+  if (hasConcreteCauseIdentity(left.title) || hasConcreteCauseIdentity(right.title)) {
+    return true;
+  }
+
+  const leftEvidence = new Set(left.evidence.map((item) => `${item.path}|${item.note}`));
+  return right.evidence.some((item) => leftEvidence.has(`${item.path}|${item.note}`));
+}
+
+/** Selects the base finding for a confirmed title/incident collision. */
+function selectPass2Winner(left: Finding, right: Finding): Finding {
+  if (left.confidence !== right.confidence) {
+    return left.confidence > right.confidence ? left : right;
+  }
+  return findingPriority(left) <= findingPriority(right) ? left : right;
+}
+
+/**
+ * **Pass 2: incident-aware title dedup.**
  *
- * **Non-overlap boundary with Pass 1:** this pass is purely cosmetic. It must
- * not recompute component/family identity, and it must preserve any evidence
- * already absorbed by Pass 1 on the winning finding. It chooses *which whole
- * finding survives* for a title collision; it does not re-merge evidence.
+ * Normalized titles identify candidates, then {@link findingsShareIncident}
+ * prevents unrelated components/namespaces from collapsing. Confirmed shared
+ * causes are merged with {@link absorbIntoWinner}, preserving the union of
+ * components, evidence, contradictions, and missing-evidence entries.
  */
 function pass2TitleDedup(findings: Finding[]): Finding[] {
-  // AI findings are sorted first so they win title collisions over non-AI
-  // findings with equal-or-lower confidence without needing a special case.
-  const aiFirst = [...findings].sort((a, b) => {
-    const aIsAi = a.id.startsWith('finding:ai:') ? 0 : 1;
-    const bIsAi = b.id.startsWith('finding:ai:') ? 0 : 1;
-    return aIsAi - bIsAi;
-  });
-
   const result: Finding[] = [];
-  const seenTitles = new Map<string, Finding>();
+  const indexesByTitle = new Map<string, number[]>();
 
-  for (const finding of aiFirst) {
+  for (const finding of findings) {
     const normTitle = normalizeTitleForPass2(finding.title);
-    const existing = seenTitles.get(normTitle);
+    const candidateIndexes = indexesByTitle.get(normTitle) ?? [];
+    const existingIndex = candidateIndexes.find((index) =>
+      findingsShareIncident(result[index]!, finding),
+    );
 
-    if (existing == null) {
-      seenTitles.set(normTitle, applyFindingProvenance(finding, {
-        hypothesisFamily: normalizeIssueFamilyForPass1(finding),
-      }));
-      result.push(seenTitles.get(normTitle)!);
-    } else if (finding.confidence > existing.confidence) {
-      // Replace the lower-confidence duplicate in-place
-      const replacement = applyFindingProvenance(finding, {
-        mergedFrom: collectMergedFindingIds([existing]),
+    if (existingIndex === undefined) {
+      const retained = applyFindingProvenance(finding, {
         hypothesisFamily: normalizeIssueFamilyForPass1(finding),
       });
-      const idx = result.indexOf(existing);
-      if (idx !== -1) result[idx] = replacement;
-      seenTitles.set(normTitle, replacement);
+      result.push(retained);
+      candidateIndexes.push(result.length - 1);
+      indexesByTitle.set(normTitle, candidateIndexes);
     } else {
-      const retained = applyFindingProvenance(existing, {
-        mergedFrom: collectMergedFindingIds([finding]),
-        hypothesisFamily: normalizeIssueFamilyForPass1(existing),
-      });
-      const idx = result.indexOf(existing);
-      if (idx !== -1) result[idx] = retained;
-      seenTitles.set(normTitle, retained);
+      const existing = result[existingIndex]!;
+      const winner = selectPass2Winner(existing, finding);
+      const loser = winner === existing ? finding : existing;
+      result[existingIndex] = absorbIntoWinner(winner, [loser]);
     }
   }
 
@@ -1521,12 +1744,10 @@ export async function runInvestigation(
 
   // ── 7. Pass 2: Title-based dedup ─────────────────────────────────────────
   //
-  // Catches cosmetic wording variants that survived Pass 1 because they
-  // reference different components (e.g. the same missing Secret affecting
-  // two pods, or LLM findings with rephrased titles).  Normalises titles via
-  // {@link normalizeTitleForPass2} and keeps the higher-confidence entry per
-  // normalised title.  AI findings win title collisions before confidence is
-  // compared.
+  // Catches cosmetic wording variants that survived Pass 1 for the same
+  // concrete incident. Normalised titles are only merged when components,
+  // a quoted cause identity, or exact evidence show they describe the same
+  // incident; independent same-title failures remain separate.
   //
   // The full normalised title is the dedup key — no character-count
   // truncation — so findings that differ only after position 80 are kept.
@@ -1551,9 +1772,9 @@ export async function runInvestigation(
   //   finding has a component that exactly matches one of the symptom
   //   finding's pod components.
   //
-  // For 'Unhealthy Workload': suppress when any root-cause finding has a Pod
-  //   component in the same namespace as the workload.  This is a sound proxy
-  //   for "the workload's pods are already diagnosed".
+  // For 'Unhealthy Workload': suppress only when the root cause is connected to
+  //   that workload through owner references, selectors, or another concrete
+  //   structural dependency. Namespace equality alone is never sufficient.
   const rootCauseFindings = dedupedFindings.filter(
     (f) =>
       (f.id.startsWith('finding:hypothesis:') && f.confidence >= 0.5) ||
@@ -1567,36 +1788,16 @@ export async function runInvestigation(
       graphRootCauseIds.has(f.id),
   );
 
-  // Collect pod components and namespaces covered by root-cause findings
-  const rootCausePodComponents = new Set<string>();
-  const rootCausePodNamespaces = new Set<string>();
-
-  for (const rcf of rootCauseFindings) {
-    for (const comp of rcf.affectedComponents) {
-      if (comp.startsWith('Pod/')) {
-        rootCausePodComponents.add(comp);
-        const parts = comp.split('/');
-        if (parts[1] != null) rootCausePodNamespaces.add(parts[1]);
-      }
-    }
-  }
-
-  // Collect the specific (non-generic) families covered by root-cause findings
-  // so we can suppress generic-crash hypotheses that are just re-describing
-  // an already-diagnosed issue with vaguer language.
-  const rootCauseFamiliesByNamespace = new Map<string, Set<string>>();
-  for (const rcf of rootCauseFindings) {
-    const family = normalizeIssueFamilyForPass1(rcf);
-    // Only count specific families — generic-crash itself should not suppress
-    if (family === 'generic-crash' || !SPECIFIC_FAMILIES.has(family)) continue;
-    for (const comp of rcf.affectedComponents) {
-      const ns = extractNamespaceFromComponent(comp);
-      if (!ns) continue;
-      const families = rootCauseFamiliesByNamespace.get(ns) ?? new Set<string>();
-      families.add(family);
-      rootCauseFamiliesByNamespace.set(ns, families);
-    }
-  }
+  const structuralGraph = aiDeps?.diagnosticGraph ?? buildDiagnosticGraph(context.resources, context.events);
+  const coveringRootCause = (
+    finding: Finding,
+    predicate: (rootCause: Finding) => boolean = () => true,
+  ): Finding | undefined => rootCauseFindings.find(
+    (rootCause) =>
+      rootCause.id !== finding.id &&
+      predicate(rootCause) &&
+      findingsAreStructurallyRelated(finding, rootCause, structuralGraph),
+  );
 
   const suppressedFindings = dedupedFindings.filter((f) => {
     // Suppress 'Not Ready Pod' and 'Pending Pod' when a root-cause finding
@@ -1606,71 +1807,57 @@ export async function runInvestigation(
       f.id.startsWith('finding:k8s:notready:') ||
       f.id.startsWith('finding:k8s:pending:')
     ) {
-      return !f.affectedComponents.some((comp) => rootCausePodComponents.has(comp));
+      return coveringRootCause(f) === undefined;
     }
 
-    // Suppress 'Unhealthy Workload' when a root-cause finding covers a Pod in
-    // the same namespace (the workload's pods have been diagnosed)
+    // Suppress 'Unhealthy Workload' only when a root cause covers this exact
+    // workload or a structurally-related Pod/dependency.
     if (f.id.startsWith('finding:k8s:workload:')) {
-      return !f.affectedComponents.some((comp) => {
-        const parts = comp.split('/');
-        const ns = parts[1];
-        return ns != null && rootCausePodNamespaces.has(ns);
-      });
+      return coveringRootCause(f) === undefined;
     }
 
     // Suppress generic-crash hypotheses and meta-findings when a more specific
     // root-cause finding (dns-failure, image-pull-failure, missing-secret, etc.)
-    // already covers a pod in the same namespace. The generic-crash finding is
-    // just re-describing the same symptoms with less diagnostic specificity.
+    // covers the same component/resource neighborhood. The generic-crash
+    // finding is then just re-describing the same symptoms less specifically.
     const isGenericCrash =
       normalizeIssueFamilyForPass1(f) === 'generic-crash' ||
       f.id.includes(':generic-crash:');
     if (isGenericCrash) {
-      for (const comp of f.affectedComponents) {
-        const ns = extractNamespaceFromComponent(comp);
-        if (ns && rootCauseFamiliesByNamespace.has(ns)) {
-          return false; // suppress: a specific root cause covers this namespace
-        }
-      }
+      const specificRootCause = coveringRootCause(f, (rootCause) => {
+        const family = normalizeIssueFamilyForPass1(rootCause);
+        return family !== 'generic-crash' && SPECIFIC_FAMILIES.has(family);
+      });
+      if (specificRootCause !== undefined) return false;
     }
 
     // Suppress hypothesis findings when a higher-priority root-cause finding
-    // (graph-causal or AI) with the same family already covers the same
-    // namespace. Absorb the hypothesis's evidence into the root cause so
+    // (graph-causal or AI) with the same family covers the same concrete
+    // resource neighborhood. Absorb the hypothesis's evidence into the root cause so
     // thin graph-causal findings (e.g. 1 event) inherit the hypothesis's
     // richer evidence set and confidence quality improves.
     if (f.id.startsWith('finding:hypothesis:')) {
       const family = normalizeIssueFamilyForPass1(f);
       if (SPECIFIC_FAMILIES.has(family) && family !== 'generic-crash') {
-        for (const comp of f.affectedComponents) {
-          const ns = extractNamespaceFromComponent(comp);
-          if (!ns) continue;
-          const coveredFamilies = rootCauseFamiliesByNamespace.get(ns);
-          if (coveredFamilies?.has(family)) {
-            const matchingRootCause = rootCauseFindings.find(
-              (rcf) =>
-                !rcf.id.startsWith('finding:hypothesis:') &&
-                normalizeIssueFamilyForPass1(rcf) === family &&
-                rcf.affectedComponents.some(
-                  (c) => extractNamespaceFromComponent(c) === ns,
-                ),
-            );
-            if (matchingRootCause) {
-              // Absorb evidence from the suppressed hypothesis into the root cause
-              const existingPaths = new Set(matchingRootCause.evidence.map(e => `${e.path}|${e.note}`));
-              for (const ev of f.evidence) {
-                const key = `${ev.path}|${ev.note}`;
-                if (!existingPaths.has(key)) {
-                  matchingRootCause.evidence.push(ev);
-                  existingPaths.add(key);
-                }
-              }
-              // Recompute confidence quality after evidence absorption
-              matchingRootCause.confidenceQuality = computeConfidenceQuality(matchingRootCause);
-              return false; // suppress the hypothesis
+        const matchingRootCause = coveringRootCause(
+          f,
+          (rootCause) =>
+            !rootCause.id.startsWith('finding:hypothesis:') &&
+            normalizeIssueFamilyForPass1(rootCause) === family,
+        );
+        if (matchingRootCause) {
+          // Absorb evidence from the suppressed hypothesis into the root cause
+          const existingPaths = new Set(matchingRootCause.evidence.map(e => `${e.path}|${e.note}`));
+          for (const ev of f.evidence) {
+            const key = `${ev.path}|${ev.note}`;
+            if (!existingPaths.has(key)) {
+              matchingRootCause.evidence.push(ev);
+              existingPaths.add(key);
             }
           }
+          // Recompute confidence quality after evidence absorption
+          matchingRootCause.confidenceQuality = computeConfidenceQuality(matchingRootCause);
+          return false; // suppress the hypothesis
         }
       }
     }
@@ -1678,22 +1865,22 @@ export async function runInvestigation(
     return true;
   });
 
-  // ── 7c. Sort by severity desc, then confidence desc ───────────────────────
+  // ── 7c. Sort by severity, diagnostic role, then confidence ───────────────
   // Also stamp confidenceQuality on any finding that still lacks it (synthetic
   // root-cause findings from causal templates and heuristic investigators that
   // bypassed verifyFindings don't get it from the verifier path).
+  const causalRootIds = new Set(graphRootCauseIds);
+  for (const edge of combinedEdges) {
+    if (edge.type === 'causes') causalRootIds.add(edge.source);
+  }
+
   const sortedFindings = [...suppressedFindings]
     .map((f) =>
       f.confidenceQuality !== undefined
         ? f
         : { ...f, confidenceQuality: computeConfidenceQuality(f) },
     )
-    .sort((a, b) => {
-      const severityDiff =
-        (SEVERITY_ORDER[b.severity] ?? 0) - (SEVERITY_ORDER[a.severity] ?? 0);
-      if (severityDiff !== 0) return severityDiff;
-      return b.confidence - a.confidence;
-    });
+    .sort((a, b) => compareFindingsForDisplay(a, b, causalRootIds));
 
   // Final graph cleanup: step 7a/7b can remove findings after the first edge
   // filtering pass, so re-filter once more against the final retained finding

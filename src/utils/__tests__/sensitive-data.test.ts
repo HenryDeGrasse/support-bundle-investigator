@@ -40,6 +40,45 @@ describe('sanitizeSensitiveText', () => {
     expect(sanitized).toContain('Authorization: Bearer [REDACTED]');
     expect(sanitized).toContain('https://user:[REDACTED]@example.com');
   });
+
+  it('redacts non-HTTP connection strings and JWTs', () => {
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyLTEyMyJ9.signature12345678';
+    const sanitized = sanitizeSensitiveText(
+      `DATABASE_URL=postgres://alice:hunter2@db.internal/app JWT=${jwt}`,
+    );
+
+    expect(sanitized).not.toContain('hunter2');
+    expect(sanitized).not.toContain(jwt);
+    expect(sanitized).toContain('DATABASE_URL=[REDACTED]');
+    expect(sanitized).toContain('JWT=[REDACTED]');
+  });
+
+  it('redacts common standalone API keys and private-key blocks', () => {
+    const apiKey = ['sk', 'proj', 'abcdefghijklmnopqrstuvwxyz123456'].join('-');
+    const privateKey = [
+      `-----BEGIN ${'PRIVATE KEY'}-----`,
+      'sensitive-key-material',
+      `-----END ${'PRIVATE KEY'}-----`,
+    ].join('\n');
+    const sanitized = sanitizeSensitiveText(`${apiKey}\n${privateKey}`);
+
+    expect(sanitized).not.toContain(apiKey);
+    expect(sanitized).not.toContain('sensitive-key-material');
+    expect(sanitized).toContain('[REDACTED PRIVATE KEY]');
+  });
+
+  it('redacts common non-OpenAI tokens and Basic authorization headers', () => {
+    const gitlabToken = `glpat-${'a'.repeat(24)}`;
+    const slackToken = `xoxb-${'1'.repeat(12)}-${'a'.repeat(20)}`;
+    const sanitized = sanitizeSensitiveText(
+      `${gitlabToken}\n${slackToken}\nAuthorization: Basic dXNlcjpwYXNzd29yZA==`,
+    );
+
+    expect(sanitized).not.toContain(gitlabToken);
+    expect(sanitized).not.toContain(slackToken);
+    expect(sanitized).not.toContain('dXNlcjpwYXNzd29yZA==');
+    expect(sanitized.match(/\[REDACTED\]/g)?.length).toBeGreaterThanOrEqual(3);
+  });
 });
 
 describe('sanitizeFinding', () => {

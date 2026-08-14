@@ -130,12 +130,19 @@ export function getEventWindow(
  * An event is considered correlated when:
  * - `involvedObject.kind === 'Pod'`
  * - `involvedObject.name === podName`
+ * - when `namespace` is supplied, the event has the same effective namespace
+ *   (`default` is used for events that omit it)
  */
 export function correlateEventsWithPod(
   events: K8sEvent[],
   podName: string,
+  namespace?: string,
 ): K8sEvent[] {
   return events.filter(
-    (e) => e.involvedObject.kind === 'Pod' && e.involvedObject.name === podName,
+    (e) =>
+      e.involvedObject.kind === 'Pod' &&
+      e.involvedObject.name === podName &&
+      (namespace === undefined ||
+        (e.involvedObject.namespace ?? 'default') === namespace),
   );
 }

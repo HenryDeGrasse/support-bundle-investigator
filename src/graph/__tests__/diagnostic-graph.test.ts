@@ -1055,6 +1055,26 @@ describe('addTemporalCorrelationEdges (4.6)', () => {
     expect(tcEdges).toHaveLength(0);
   });
 
+  it('does NOT correlate an event for the same pod name in another namespace', () => {
+    const chunk = makeLogChunk(
+      'chunk-team-a',
+      'app-pod',
+      'team-a',
+      '2024-01-01T10:00:00Z',
+    );
+    const event = makeTimedPodEvent(
+      'FailedMount',
+      'app-pod',
+      'team-b',
+      '2024-01-01T10:00:10Z',
+    );
+
+    const graph = new DiagnosticGraph();
+    addTemporalCorrelationEdges(graph, [chunk], [event]);
+
+    expect(graph.edges.filter((edge) => edge.type === 'temporal-correlation')).toHaveLength(0);
+  });
+
   it('skips log chunks without a timestamp', () => {
     // Log chunk with no timestamp field
     const chunk: IndexedChunk = {
@@ -1178,6 +1198,26 @@ describe('addTemporalSequenceEdges (4.6)', () => {
 
     const seqEdges = graph.edges.filter((e) => e.type === 'temporal-sequence');
     expect(seqEdges).toHaveLength(0);
+  });
+
+  it('does NOT create a sequence across same-name pods in different namespaces', () => {
+    const failedMount = makeTimedPodEvent(
+      'FailedMount',
+      'app-pod',
+      'team-a',
+      '2024-01-01T10:00:00Z',
+    );
+    const backOff = makeTimedPodEvent(
+      'BackOff',
+      'app-pod',
+      'team-b',
+      '2024-01-01T10:00:30Z',
+    );
+
+    const graph = new DiagnosticGraph();
+    addTemporalSequenceEdges(graph, [failedMount, backOff]);
+
+    expect(graph.edges.filter((edge) => edge.type === 'temporal-sequence')).toHaveLength(0);
   });
 
   it('does NOT create edge for event pairs without causal affinity', () => {

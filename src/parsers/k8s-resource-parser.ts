@@ -2,22 +2,45 @@ import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
 import type { K8sResource } from '../types/index.js';
-
-// ---------------------------------------------------------------------------
-// Type guards
-// ---------------------------------------------------------------------------
+import { isK8sResource } from '../utils/type-guards.js';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/**
- * Returns true if the parsed object has the minimum fields required to be
- * treated as a K8sResource (apiVersion + kind are strings).
- */
+/** Returns true only for resources with a safe, usable object identity. */
 function isValidResource(doc: unknown): doc is K8sResource {
-  if (!isRecord(doc)) return false;
-  return typeof doc['apiVersion'] === 'string' && typeof doc['kind'] === 'string';
+  return (
+    isK8sResource(doc) &&
+    doc.apiVersion.trim().length > 0 &&
+    doc.kind.trim().length > 0 &&
+    doc.metadata.name.trim().length > 0
+  );
+}
+
+interface K8sListEnvelope {
+  apiVersion: string;
+  kind: string;
+  items: unknown[];
+}
+
+/**
+ * Kubernetes List envelopes do not have an object identity and commonly omit
+ * `metadata.name`. They are safe as containers as long as their own required
+ * fields and items array are well-shaped; every returned item is still passed
+ * through the strict resource validator above.
+ */
+function isValidListEnvelope(doc: unknown): doc is K8sListEnvelope {
+  return (
+    isRecord(doc) &&
+    typeof doc['apiVersion'] === 'string' &&
+    doc['apiVersion'].trim().length > 0 &&
+    typeof doc['kind'] === 'string' &&
+    doc['kind'].trim().length > 0 &&
+    doc['kind'].endsWith('List') &&
+    Array.isArray(doc['items']) &&
+    (doc['metadata'] === undefined || isRecord(doc['metadata']))
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -29,19 +52,13 @@ function isValidResource(doc: unknown): doc is K8sResource {
  * contains an `items` array, returns the individual items.  Otherwise
  * returns a single-element array containing the resource itself.
  */
-function expandListResource(resource: K8sResource): K8sResource[] {
+function expandListResource(resource: K8sResource | K8sListEnvelope): K8sResource[] {
   if (!resource.kind.endsWith('List')) {
-    return [resource];
+    return [resource as K8sResource];
   }
 
-  const raw = resource as unknown as Record<string, unknown>;
-  const items = raw['items'];
-
-  if (!Array.isArray(items)) {
-    return [];
-  }
-
-  return items.filter(isValidResource);
+  const items = (resource as unknown as Record<string, unknown>)['items'];
+  return Array.isArray(items) ? items.filter(isValidResource) : [];
 }
 
 // ---------------------------------------------------------------------------
@@ -80,9 +97,9 @@ export function parseResourceYaml(content: string): K8sResource[] {
 
     if (doc === null || doc === undefined) continue;
 
-    if (!isValidResource(doc)) {
+    if (!isValidResource(doc) && !isValidListEnvelope(doc)) {
       console.warn(
-        '[k8s-resource-parser] Skipping document — missing required apiVersion or kind fields',
+        '[k8s-resource-parser] Skipping document — invalid apiVersion, kind, or metadata shape/name',
       );
       continue;
     }
@@ -116,9 +133,9 @@ export function parseResourceJson(content: string): K8sResource[] {
     return [];
   }
 
-  if (!isValidResource(parsed)) {
+  if (!isValidResource(parsed) && !isValidListEnvelope(parsed)) {
     console.warn(
-      '[k8s-resource-parser] JSON does not represent a valid K8sResource — missing apiVersion or kind',
+      '[k8s-resource-parser] JSON does not represent a valid K8sResource — invalid apiVersion, kind, or metadata shape/name',
     );
     return [];
   }

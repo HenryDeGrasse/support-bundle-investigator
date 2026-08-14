@@ -31,8 +31,11 @@ interface ModelPricing {
 }
 
 const OPENAI_MODEL_PRICING: ReadonlyArray<[prefix: string, pricing: ModelPricing]> = [
+  ['gpt-5.6-sol', { promptUsdPerMillion: 5, completionUsdPerMillion: 30 }],
+  ['gpt-5.6-terra', { promptUsdPerMillion: 2, completionUsdPerMillion: 12 }],
+  ['gpt-5.6-luna', { promptUsdPerMillion: 0.2, completionUsdPerMillion: 1.2 }],
   ['gpt-4o-mini', { promptUsdPerMillion: 0.15, completionUsdPerMillion: 0.6 }],
-  ['gpt-4o', { promptUsdPerMillion: 5, completionUsdPerMillion: 15 }],
+  ['gpt-4o', { promptUsdPerMillion: 2.5, completionUsdPerMillion: 10 }],
 ];
 
 function resolvePricing(model: string): ModelPricing | undefined {

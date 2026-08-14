@@ -1381,7 +1381,7 @@ describe('collectFalsifyingEvidence — image-pull-failure: searches for success
     const result = collectFalsifyingEvidence(hypothesis, ctx);
 
     expect(
-      result.contradicting.some((e) => e.note.includes('myregistry.io')),
+      result.contradicting.some((e) => /\bmyregistry\.io\b/.test(e.note)),
     ).toBe(false);
   });
 
@@ -1402,7 +1402,9 @@ describe('collectFalsifyingEvidence — image-pull-failure: searches for success
     });
     const result = collectFalsifyingEvidence(hypothesis, ctx);
 
-    expect(result.contradicting.some((e) => e.note.toLowerCase().includes('private.registry.com'))).toBe(true);
+    expect(
+      result.contradicting.some((e) => /\bprivate\.registry\.com\b/i.test(e.note)),
+    ).toBe(true);
   });
 });
 

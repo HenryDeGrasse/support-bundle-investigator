@@ -52,7 +52,7 @@ const SCENARIOS = [
   'multi-namespace-retrieval',
 ];
 
-/** Families where duplicates in the same namespace = bug. */
+/** Families where duplicates on the same concrete component = bug. */
 const DEDUP_FAMILIES = new Set([
   'missing-secret', 'dns-failure', 'image-pull-failure',
   'oom-kill', 'volume-mount-failure', 'network-policy',
@@ -89,6 +89,26 @@ function extractNs(finding) {
   return '';
 }
 
+function extractPrimaryComponent(finding) {
+  const preferredPrefixes = [
+    'Pod/',
+    'Deployment/',
+    'StatefulSet/',
+    'DaemonSet/',
+    'Secret/',
+    'ConfigMap/',
+    'Service/',
+    'PersistentVolumeClaim/',
+  ];
+  for (const prefix of preferredPrefixes) {
+    const component = (finding.affectedComponents ?? []).find(candidate =>
+      candidate.startsWith(prefix),
+    );
+    if (component) return component;
+  }
+  return finding.affectedComponents?.[0] ?? finding.id;
+}
+
 // ---------------------------------------------------------------------------
 // Run
 // ---------------------------------------------------------------------------
@@ -115,7 +135,8 @@ for (const scenario of SCENARIOS) {
       const family = inferFamily(f);
       if (!DEDUP_FAMILIES.has(family)) continue;
       const ns = extractNs(f);
-      const key = `${ns}::${family}`;
+      const component = extractPrimaryComponent(f);
+      const key = `${ns}::${component}::${family}`;
       if (seen.has(key)) {
         dupViolations.push({ key, first: seen.get(key), second: f.id });
       } else {
@@ -124,19 +145,22 @@ for (const scenario of SCENARIOS) {
     }
 
     // ── Generic-crash suppression check ──────────────────────────────────
-    const specificNs = new Set();
+    const specificComponents = new Set();
     for (const f of findings) {
       if (DEDUP_FAMILIES.has(inferFamily(f))) {
-        const ns = extractNs(f);
-        if (ns) specificNs.add(ns);
+        for (const component of f.affectedComponents ?? []) {
+          specificComponents.add(component);
+        }
       }
     }
     const genericCrashViolations = [];
     for (const f of findings) {
       if (inferFamily(f) !== 'generic-crash') continue;
-      const ns = extractNs(f);
-      if (ns && specificNs.has(ns)) {
-        genericCrashViolations.push({ findingId: f.id, namespace: ns });
+      const component = (f.affectedComponents ?? []).find(candidate =>
+        specificComponents.has(candidate),
+      );
+      if (component) {
+        genericCrashViolations.push({ findingId: f.id, component });
       }
     }
 
