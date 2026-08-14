@@ -121,6 +121,43 @@ function removeConfidenceRationale(value: string): string {
   return `${value.slice(0, start)}${value.slice(end)}`;
 }
 
+function removeDerivedFromSummaries(value: string): string {
+  const marker = 'Derived from ';
+  const suffix = ' raw finding(s):';
+  let result = value;
+  let searchFrom = 0;
+
+  while (searchFrom < result.length) {
+    const start = result.indexOf(marker, searchFrom);
+    if (start < 0) break;
+
+    let cursor = start + marker.length;
+    const digitStart = cursor;
+    while (cursor < result.length) {
+      const code = result.charCodeAt(cursor);
+      if (code < 48 || code > 57) break;
+      cursor++;
+    }
+
+    if (cursor === digitStart || !result.startsWith(suffix, cursor)) {
+      searchFrom = start + marker.length;
+      continue;
+    }
+
+    const sentenceEnd = result.indexOf('.', cursor + suffix.length);
+    if (sentenceEnd < 0) break;
+
+    let removeThrough = sentenceEnd + 1;
+    while (removeThrough < result.length && /\s/u.test(result[removeThrough]!)) {
+      removeThrough++;
+    }
+    result = `${result.slice(0, start)}${result.slice(removeThrough)}`;
+    searchFrom = start;
+  }
+
+  return result;
+}
+
 /**
  * Converts machine-generated reasoning into human-readable prose.
  *
@@ -140,7 +177,7 @@ export function humanizeReasoning(reasoning: string): string {
   result = removeConfidenceRationale(result);
 
   // Remove "Derived from N raw finding(s): ..." sentence
-  result = result.replace(/Derived from \d+ raw finding\(s\):[^.]*\.\s*/g, '');
+  result = removeDerivedFromSummaries(result);
 
   // Clean absolute temp paths embedded in reasoning text
   result = result.replace(

@@ -227,8 +227,16 @@ export function extractDifferentialContext(reasoningSummary: string): {
   const rank = rankMatch ? `rank #${rankMatch[1]}` : '';
 
   // ── Root cause ─────────────────────────────────────────────────────────
-  const rootCauseMatch = /Root cause:\s*(.+?)\./.exec(reasoningSummary);
-  const rootCause = rootCauseMatch ? rootCauseMatch[1].trim() : reasoningSummary;
+  const rootCauseMarker = 'Root cause:';
+  const rootCauseStart = reasoningSummary.indexOf(rootCauseMarker);
+  const rootCauseSentenceEnd = rootCauseStart < 0
+    ? -1
+    : reasoningSummary.indexOf('.', rootCauseStart + rootCauseMarker.length);
+  const rootCause = rootCauseStart >= 0 && rootCauseSentenceEnd >= 0
+    ? reasoningSummary
+      .slice(rootCauseStart + rootCauseMarker.length, rootCauseSentenceEnd)
+      .trim()
+    : reasoningSummary;
 
   // ── Runner-up comparison ────────────────────────────────────────────────
   // The runner-up sentence begins with "Preferred over runner-up" and ends at
@@ -237,9 +245,11 @@ export function extractDifferentialContext(reasoningSummary: string): {
   const runnerUpStart = reasoningSummary.indexOf('Preferred over runner-up');
   if (runnerUpStart !== -1) {
     const rest = reasoningSummary.slice(runnerUpStart);
-    // Match greedily to the period that precedes "Derived from" or end-of-string.
-    const endMatch = /^(.+?\.)(?:\s+Derived from|\s*$)/s.exec(rest);
-    runnerUpComparison = endMatch ? endMatch[1].trim() : rest.trim();
+    const derivedStart = rest.indexOf('Derived from');
+    const comparison = derivedStart < 0
+      ? rest.trim()
+      : rest.slice(0, derivedStart).trimEnd();
+    runnerUpComparison = comparison.endsWith('.') ? comparison : rest.trim();
   }
 
   return { rank, rootCause, runnerUpComparison };
