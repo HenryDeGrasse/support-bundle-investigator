@@ -76,7 +76,7 @@
     "eslint": "^9.39.5",
     "tsup": "^8.0.0",
     "typescript": "^5.4.0",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   },
   "dependencies": {
     "commander": "^12.0.0",
